@@ -321,7 +321,8 @@ impl BlockEngineStage {
                 );
                 backend_endpoint = Self::get_endpoint(block_engine_url.as_str())?;
             }
-            shredstream_receiver_address.store(Arc::new(Some(shredstream_socket)));
+            // shredstream_receiver_address.store(Arc::new(Some(shredstream_socket)));
+            shredstream_receiver_address.store(Arc::new(None));
             attempted = true;
             let connect_start = Instant::now();
             match Self::connect_auth_and_stream(

@@ -1629,7 +1629,6 @@ mod tests {
             bank_forks.read().unwrap().root_bank().last_blockhash(),
         );
         let packet_batches = Arc::new(to_packet_batches(&[ok_tx, blacklisted_tx], 2));
-
         sender.send(packet_batches).unwrap();
 
         let ReceivingStats {
