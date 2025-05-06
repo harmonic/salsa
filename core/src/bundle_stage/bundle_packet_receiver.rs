@@ -53,6 +53,7 @@ impl BundleReceiver {
                     recv_timeout,
                     unprocessed_bundle_storage.max_receive_size(),
                     &|packet: ImmutableDeserializedPacket| {
+                        debug!("mevanoxx: packet filter");
                         // see packet_receiver.rs
                         packet.check_insufficent_compute_unit_limit()?;
                         packet.check_excessive_precompiles()?;
@@ -94,7 +95,7 @@ impl BundleReceiver {
             Duration::from_millis(0)
         } else {
             // BundleStage should pick up a working_bank as fast as possible
-            Duration::from_millis(100)
+            Duration::from_millis(1)
         }
     }
 
@@ -224,7 +225,7 @@ mod tests {
                             .map(|tx| Packet::from_data(None, tx).unwrap())
                             .collect(),
                     ),
-                    bundle_id,
+                    slot: 0,
                 }
             })
             .collect()
@@ -239,7 +240,7 @@ mod tests {
             .iter()
             .zip(bundles_to_process.iter())
             .for_each(|(packet_bundle, (_, sanitized_bundle))| {
-                assert_eq!(packet_bundle.bundle_id, sanitized_bundle.bundle_id);
+                assert_eq!(packet_bundle.slot, sanitized_bundle.slot);
                 assert_eq!(
                     packet_bundle.batch.len(),
                     sanitized_bundle.transactions.len()

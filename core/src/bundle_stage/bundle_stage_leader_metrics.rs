@@ -241,14 +241,6 @@ impl BundleStageStatsMetricsTracker {
                     saturating_add_assign!(bundle_stage_metrics.num_execution_timeouts, 1);
                 }
                 Err(BundleExecutionError::TransactionFailure(
-                    LoadAndExecuteBundleError::TransactionError { .. },
-                )) => {
-                    saturating_add_assign!(
-                        bundle_stage_metrics.execution_results_transaction_failures,
-                        1
-                    );
-                }
-                Err(BundleExecutionError::TransactionFailure(
                     LoadAndExecuteBundleError::LockError { .. },
                 ))
                 | Err(BundleExecutionError::LockError) => {
@@ -268,6 +260,9 @@ impl BundleStageStatsMetricsTracker {
                 )) => {
                     saturating_add_assign!(bundle_stage_metrics.bad_argument, 1);
                 }
+                Err(BundleExecutionError::OldBundle) => {
+                    // mevanoxx todo
+                }
             }
         }
     }
@@ -284,29 +279,29 @@ impl BundleStageStatsMetricsTracker {
         }
     }
 
-    pub(crate) fn increment_num_init_tip_account_errors(&mut self, count: u64) {
-        if let Some(bundle_stage_metrics) = &mut self.bundle_stage_metrics {
-            saturating_add_assign!(bundle_stage_metrics.num_init_tip_account_errors, count);
-        }
-    }
+    // pub(crate) fn increment_num_init_tip_account_errors(&mut self, count: u64) {
+    //     if let Some(bundle_stage_metrics) = &mut self.bundle_stage_metrics {
+    //         saturating_add_assign!(bundle_stage_metrics.num_init_tip_account_errors, count);
+    //     }
+    // }
 
-    pub(crate) fn increment_num_init_tip_account_ok(&mut self, count: u64) {
-        if let Some(bundle_stage_metrics) = &mut self.bundle_stage_metrics {
-            saturating_add_assign!(bundle_stage_metrics.num_init_tip_account_ok, count);
-        }
-    }
+    // pub(crate) fn increment_num_init_tip_account_ok(&mut self, count: u64) {
+    //     if let Some(bundle_stage_metrics) = &mut self.bundle_stage_metrics {
+    //         saturating_add_assign!(bundle_stage_metrics.num_init_tip_account_ok, count);
+    //     }
+    // }
 
-    pub(crate) fn increment_num_change_tip_receiver_errors(&mut self, count: u64) {
-        if let Some(bundle_stage_metrics) = &mut self.bundle_stage_metrics {
-            saturating_add_assign!(bundle_stage_metrics.num_change_tip_receiver_errors, count);
-        }
-    }
+    // pub(crate) fn increment_num_change_tip_receiver_errors(&mut self, count: u64) {
+    //     if let Some(bundle_stage_metrics) = &mut self.bundle_stage_metrics {
+    //         saturating_add_assign!(bundle_stage_metrics.num_change_tip_receiver_errors, count);
+    //     }
+    // }
 
-    pub(crate) fn increment_num_change_tip_receiver_ok(&mut self, count: u64) {
-        if let Some(bundle_stage_metrics) = &mut self.bundle_stage_metrics {
-            saturating_add_assign!(bundle_stage_metrics.num_change_tip_receiver_ok, count);
-        }
-    }
+    // pub(crate) fn increment_num_change_tip_receiver_ok(&mut self, count: u64) {
+    //     if let Some(bundle_stage_metrics) = &mut self.bundle_stage_metrics {
+    //         saturating_add_assign!(bundle_stage_metrics.num_change_tip_receiver_ok, count);
+    //     }
+    // }
 
     pub(crate) fn increment_change_tip_receiver_elapsed_us(&mut self, count: u64) {
         if let Some(bundle_stage_metrics) = &mut self.bundle_stage_metrics {

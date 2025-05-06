@@ -63,7 +63,7 @@ pub enum DeserializedBundleError {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ImmutableDeserializedBundle {
-    bundle_id: String,
+    slot: u64,
     packets: Vec<ImmutableDeserializedPacket>,
 }
 
@@ -101,7 +101,7 @@ impl ImmutableDeserializedBundle {
         }
 
         Ok(Self {
-            bundle_id: bundle.bundle_id.clone(),
+            slot: bundle.slot,
             packets: immutable_packets,
         })
     }
@@ -111,8 +111,8 @@ impl ImmutableDeserializedBundle {
         self.packets.len()
     }
 
-    pub fn bundle_id(&self) -> &str {
-        &self.bundle_id
+    pub fn slot(&self) -> u64 {
+        self.slot
     }
 
     /// A bundle has the following requirements:
@@ -175,6 +175,7 @@ impl ImmutableDeserializedBundle {
         );
 
         if check_results.iter().any(|r| r.is_err()) {
+            debug!("mevanoxx: {check_results:?}");
             return Err(DeserializedBundleError::FailedCheckTransactions);
         }
 
@@ -187,7 +188,7 @@ impl ImmutableDeserializedBundle {
 
         Ok(SanitizedBundle {
             transactions,
-            bundle_id: self.bundle_id.clone(),
+            slot: self.slot,
         })
     }
 }
@@ -241,7 +242,7 @@ mod tests {
                     Packet::from_data(None, &tx0).unwrap(),
                     Packet::from_data(None, &tx1).unwrap(),
                 ]),
-                bundle_id: String::default(),
+                slot: 0,
             },
             None,
             &Ok,
@@ -269,7 +270,7 @@ mod tests {
             ImmutableDeserializedBundle::new(
                 &mut PacketBundle {
                     batch: PacketBatch::new(vec![]),
-                    bundle_id: String::default(),
+                    slot: 0,
                 },
                 None,
                 &Ok
@@ -296,7 +297,7 @@ mod tests {
                             })
                             .collect()
                     ),
-                    bundle_id: String::default(),
+                    slot: 0,
                 },
                 Some(5),
                 &Ok
@@ -317,7 +318,7 @@ mod tests {
             ImmutableDeserializedBundle::new(
                 &mut PacketBundle {
                     batch: PacketBatch::new(vec![packet]),
-                    bundle_id: String::default(),
+                    slot: 0,
                 },
                 Some(5),
                 &Ok
@@ -339,7 +340,7 @@ mod tests {
             ImmutableDeserializedBundle::new(
                 &mut PacketBundle {
                     batch: PacketBatch::new(vec![Packet::from_data(None, tx0).unwrap()]),
-                    bundle_id: String::default(),
+                    slot: 0,
                 },
                 None,
                 &Ok
@@ -372,7 +373,7 @@ mod tests {
         let bundle = ImmutableDeserializedBundle::new(
             &mut PacketBundle {
                 batch: PacketBatch::new(vec![Packet::from_data(None, tx0).unwrap()]),
-                bundle_id: String::default(),
+                slot: 0,
             },
             None,
             &Ok,
@@ -410,7 +411,7 @@ mod tests {
                     Packet::from_data(None, &tx0).unwrap(),
                     Packet::from_data(None, &tx0).unwrap(),
                 ]),
-                bundle_id: String::default(),
+                slot: 0,
             },
             None,
             &Ok,
@@ -445,7 +446,7 @@ mod tests {
         let bundle = ImmutableDeserializedBundle::new(
             &mut PacketBundle {
                 batch: PacketBatch::new(vec![Packet::from_data(None, tx0).unwrap()]),
-                bundle_id: String::default(),
+                slot: 0,
             },
             None,
             &Ok,
@@ -482,7 +483,7 @@ mod tests {
         let bundle = ImmutableDeserializedBundle::new(
             &mut PacketBundle {
                 batch: PacketBatch::new(vec![Packet::from_data(None, tx0).unwrap()]),
-                bundle_id: String::default(),
+                slot: 0,
             },
             None,
             &Ok,
@@ -517,7 +518,7 @@ mod tests {
         let bundle = ImmutableDeserializedBundle::new(
             &mut PacketBundle {
                 batch: PacketBatch::new(vec![Packet::from_data(None, tx0).unwrap()]),
-                bundle_id: String::default(),
+                slot: 0,
             },
             None,
             &Ok,
@@ -559,7 +560,7 @@ mod tests {
         let bundle = ImmutableDeserializedBundle::new(
             &mut PacketBundle {
                 batch: PacketBatch::new(vec![Packet::from_data(None, tx).unwrap()]),
-                bundle_id: String::default(),
+                slot: 0,
             },
             None,
             &Ok,
@@ -606,7 +607,7 @@ mod tests {
         let bundle = ImmutableDeserializedBundle::new(
             &mut PacketBundle {
                 batch: PacketBatch::new(vec![Packet::from_data(None, tx).unwrap()]),
-                bundle_id: String::default(),
+                slot: 0,
             },
             None,
             &Ok,

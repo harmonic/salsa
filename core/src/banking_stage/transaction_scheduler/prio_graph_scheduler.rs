@@ -2,6 +2,7 @@ use {
     super::{
         in_flight_tracker::InFlightTracker,
         scheduler::Scheduler,
+        scheduler_controller::slot::consume_slot,
         scheduler_error::SchedulerError,
         thread_aware_account_locks::{ThreadAwareAccountLocks, ThreadId, ThreadSet},
         transaction_state::SanitizedTransactionTTL,
@@ -357,6 +358,7 @@ impl<Tx: TransactionWithMeta> PrioGraphScheduler<Tx> {
                         ids,
                         transactions,
                         max_ages,
+                        slot: _,
                     },
                 retryable_indexes,
             }) => {
@@ -447,6 +449,7 @@ impl<Tx: TransactionWithMeta> PrioGraphScheduler<Tx> {
             ids,
             transactions,
             max_ages,
+            slot: consume_slot(),
         };
         self.consume_work_senders[thread_index]
             .send(work)

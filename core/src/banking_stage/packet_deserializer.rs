@@ -24,6 +24,8 @@ pub struct ReceivePacketResults {
 pub struct PacketDeserializer {
     /// Receiver for packet batches from sigverify stage
     packet_batch_receiver: BankingPacketReceiver,
+    tpu_vote_receiver: Option<BankingPacketReceiver>,
+    gossip_vote_receiver: Option<BankingPacketReceiver>,
 }
 
 #[derive(Default, Debug, PartialEq)]
@@ -75,6 +77,20 @@ impl PacketDeserializer {
     pub fn new(packet_batch_receiver: BankingPacketReceiver) -> Self {
         Self {
             packet_batch_receiver,
+            tpu_vote_receiver: None,
+            gossip_vote_receiver: None,
+        }
+    }
+
+    pub fn new_external(
+        packet_batch_receiver: BankingPacketReceiver,
+        tpu_vote_receiver: BankingPacketReceiver,
+        gossip_vote_receiver: BankingPacketReceiver,
+    ) -> Self {
+        Self {
+            packet_batch_receiver,
+            tpu_vote_receiver: Some(tpu_vote_receiver),
+            gossip_vote_receiver: Some(gossip_vote_receiver),
         }
     }
 
@@ -143,24 +159,52 @@ impl PacketDeserializer {
         packet_count_upperbound: usize,
     ) -> Result<(usize, Vec<BankingPacketBatch>), RecvTimeoutError> {
         let start = Instant::now();
+        let mut num_packets_received = 0;
+        let mut messages = Vec::new();
 
-        let packet_batches = self.packet_batch_receiver.recv_timeout(recv_timeout)?;
-        let mut num_packets_received = packet_batches
-            .iter()
-            .map(|batch| batch.len())
-            .sum::<usize>();
-        let mut messages = vec![packet_batches];
+        let additional_receivers = [
+            Some(&self.packet_batch_receiver),
+            self.tpu_vote_receiver.as_ref(),
+            self.gossip_vote_receiver.as_ref(),
+        ];
 
-        while let Ok(packet_batches) = self.packet_batch_receiver.try_recv() {
-            trace!("got more packet batches in packet deserializer");
-            num_packets_received += packet_batches
-                .iter()
-                .map(|batch| batch.len())
-                .sum::<usize>();
-            messages.push(packet_batches);
+        // Try to receive from any receiver with timeout
+        let mut got_any = false;
 
-            if start.elapsed() >= recv_timeout || num_packets_received >= packet_count_upperbound {
-                break;
+        match self.packet_batch_receiver.recv_timeout(recv_timeout / 4) {
+            Ok(batch) => {
+                num_packets_received += batch.iter().map(|b| b.len()).sum::<usize>();
+                messages.push(batch);
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                // Try non-blocking reads from the others
+                for receiver in additional_receivers.iter().flatten() {
+                    if let Ok(batch) = receiver.try_recv() {
+                        num_packets_received += batch.iter().map(|b| b.len()).sum::<usize>();
+                        messages.push(batch);
+                        got_any = true;
+                        break;
+                    }
+                }
+
+                if !got_any {
+                    return Err(RecvTimeoutError::Timeout);
+                }
+            }
+            Err(e) => return Err(e),
+        }
+
+        // Drain all receivers if anything was received
+        for receiver in additional_receivers.iter().flatten() {
+            while let Ok(batch) = receiver.try_recv() {
+                trace!("got more packet batches in packet deserializer");
+                num_packets_received += batch.iter().map(|b| b.len()).sum::<usize>();
+                messages.push(batch);
+                if start.elapsed() >= recv_timeout
+                    || num_packets_received >= packet_count_upperbound
+                {
+                    break;
+                }
             }
         }
 

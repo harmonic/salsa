@@ -18,6 +18,7 @@ use {
         transaction_scheduler::transaction_state_container::StateContainer,
         ForwardOption, LikeClusterInfo, TOTAL_BUFFERED_PACKETS,
     },
+    slot::set_consume_slot,
     solana_measure::measure_us,
     solana_pubkey::Pubkey,
     solana_runtime::{bank::Bank, bank_forks::BankForks},
@@ -151,9 +152,12 @@ where
         &mut self,
         decision: &BufferedPacketsDecision,
     ) -> Result<(), SchedulerError> {
+        let decision = DecisionMaker::maybe_consume::<true /* vanilla */>(decision.clone());
+
         let forwarding_enabled = self.forwarder.is_some();
         match decision {
             BufferedPacketsDecision::Consume(bank_start) => {
+                set_consume_slot(bank_start.working_bank.slot());
                 let (scheduling_summary, schedule_time_us) = measure_us!(self.scheduler.schedule(
                     &mut self.container,
                     |txs, results| {
@@ -467,6 +471,22 @@ where
     }
 }
 
+pub(crate) mod slot {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static CONSUME_SLOT: AtomicU64 = AtomicU64::new(0);
+
+    #[inline]
+    pub(crate) fn consume_slot() -> u64 {
+        CONSUME_SLOT.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub(crate) fn set_consume_slot(slot: u64) {
+        CONSUME_SLOT.store(slot, Ordering::Relaxed);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use {
@@ -695,6 +715,7 @@ mod tests {
                     ids: vec![],
                     transactions: vec![],
                     max_ages: vec![],
+                    slot: 0, /* unused */
                 },
                 retryable_indexes: vec![],
             })

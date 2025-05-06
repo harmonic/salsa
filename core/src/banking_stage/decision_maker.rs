@@ -1,4 +1,5 @@
 use {
+    crate::scheduler_synchronization,
     solana_poh::poh_recorder::{BankStart, PohRecorder},
     solana_sdk::{
         clock::{
@@ -93,6 +94,8 @@ impl DecisionMaker {
         // otherwise, based on leader schedule to either forward or hold packets
         if let Some(bank_start) = bank_start_fn() {
             // If the bank is available, this node is the leader
+            //
+            // mevanoxx: should check if we are in delegation/fallback period, and check signal
             BufferedPacketsDecision::Consume(bank_start)
         } else if would_be_leader_shortly_fn() {
             // If the node will be the leader soon, hold the packets for now
@@ -115,6 +118,67 @@ impl DecisionMaker {
         }
     }
 
+    /// mevanoxx:
+    ///
+    /// vanilla: consume if we are in fallback period with no external signal.
+    ///          there are no other preconditions
+    /// block: consume if we are in delegation period.
+    ///        preconditions: there is a bundle (for this slot) to consume
+    pub(crate) fn maybe_consume<const VANILLA: bool>(
+        decision: BufferedPacketsDecision,
+    ) -> BufferedPacketsDecision {
+        let BufferedPacketsDecision::Consume(bank_start) = decision else {
+            // nothing to do
+            return decision;
+        };
+
+        // Are we in delegation period or fallback period
+        //
+        // mevanoxx TODO: we may want to change these loads from Relaxed to Acquire
+        let current_tick_height = bank_start.working_bank.tick_height();
+        let max_tick_height = bank_start.working_bank.max_tick_height();
+        let bank_ticks_per_slot = bank_start.working_bank.ticks_per_slot();
+        let start_tick = max_tick_height - bank_ticks_per_slot;
+        let ticks_into_slot = current_tick_height - start_tick;
+        let delegation_period_length = bank_ticks_per_slot * 3 / 4;
+        let in_delegation_period = ticks_into_slot < delegation_period_length;
+
+        let current_slot = bank_start.working_bank.slot();
+
+        // Check if we have a cached decision
+        CACHED_DECISION.with_borrow_mut(|cached_decision| {
+            // Use cached decision if there is one for this slot
+            if let Some((cached_slot, cached_decision)) = cached_decision {
+                if current_slot.eq(cached_slot) {
+                    return cached_decision
+                        // Consume if cached_decision = true
+                        .then_some(BufferedPacketsDecision::Consume(bank_start))
+                        // Hold if cached_decision = false
+                        .unwrap_or(BufferedPacketsDecision::Hold);
+                }
+            }
+
+            // No cached decision. Try to update cached decision
+            let should_schedule: fn(u64, bool) -> Option<bool> = if VANILLA {
+                scheduler_synchronization::vanilla_should_schedule
+            } else {
+                scheduler_synchronization::block_should_schedule
+            };
+
+            match should_schedule(current_slot, in_delegation_period) {
+                Some(decision) => {
+                    *cached_decision = Some((current_slot, decision));
+                    decision
+                        // Consume if cached_decision = true
+                        .then_some(BufferedPacketsDecision::Consume(bank_start))
+                        // Hold if cached_decision = false
+                        .unwrap_or(BufferedPacketsDecision::Hold)
+                }
+                None => return BufferedPacketsDecision::Hold,
+            }
+        })
+    }
+
     fn bank_start(poh_recorder: &PohRecorder) -> Option<BankStart> {
         poh_recorder
             .bank_start()
@@ -134,6 +198,11 @@ impl DecisionMaker {
     fn leader_pubkey(poh_recorder: &PohRecorder) -> Option<Pubkey> {
         poh_recorder.leader_after_n_slots(FORWARD_TRANSACTIONS_TO_LEADER_AT_SLOT_OFFSET)
     }
+}
+
+thread_local! {
+    /// Vanilla & Block threads have their own thread locals!!
+    static CACHED_DECISION: std::cell::RefCell<Option<(u64, bool)>> = std::cell::RefCell::new(None);
 }
 
 #[cfg(test)]

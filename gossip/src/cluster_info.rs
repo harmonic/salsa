@@ -438,6 +438,15 @@ impl ClusterInfo {
         Ok(())
     }
 
+    pub fn set_tpu_vote(&self, tpu_vote_addr: SocketAddr) -> Result<(), ContactInfoError> {
+        self.my_contact_info
+            .write()
+            .unwrap()
+            .set_tpu_vote(contact_info::Protocol::QUIC, tpu_vote_addr)?;
+        self.refresh_my_gossip_contact_info();
+        Ok(())
+    }
+
     pub fn lookup_contact_info<R>(
         &self,
         id: &Pubkey,

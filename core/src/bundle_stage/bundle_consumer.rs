@@ -18,7 +18,7 @@ use {
     },
     solana_bundle::{
         bundle_execution::{load_and_execute_bundle, BundleExecutionMetrics},
-        BundleExecutionError, BundleExecutionResult, SanitizedBundle, TipError,
+        BundleExecutionError, BundleExecutionResult, SanitizedBundle,
     },
     solana_cost_model::transaction_cost::TransactionCost,
     solana_gossip::cluster_info::ClusterInfo,
@@ -239,11 +239,11 @@ impl BundleConsumer {
 
     #[allow(clippy::too_many_arguments)]
     fn process_bundle(
-        bundle_account_locker: &BundleAccountLocker,
+        _todo_mevanoxx_bundle_account_locker: &BundleAccountLocker,
         tip_manager: &TipManager,
         last_tip_updated_slot: &mut Slot,
-        cluster_info: &Arc<ClusterInfo>,
-        block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
+        _todo_mevanoxx_cluster_info: &Arc<ClusterInfo>,
+        _todo_mevanoxx_block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         committer: &Committer,
         recorder: &TransactionRecorder,
         qos_service: &QosService,
@@ -267,28 +267,36 @@ impl BundleConsumer {
             )
         {
             let start = Instant::now();
-            let result = Self::handle_tip_programs(
-                bundle_account_locker,
-                tip_manager,
-                cluster_info,
-                block_builder_fee_info,
-                committer,
-                recorder,
-                qos_service,
-                log_messages_bytes_limit,
-                max_bundle_retry_duration,
-                bank_start,
-                bundle_stage_leader_metrics,
-            );
+            // let result = Self::handle_tip_programs(
+            //     bundle_account_locker,
+            //     tip_manager,
+            //     cluster_info,
+            //     block_builder_fee_info,
+            //     committer,
+            //     recorder,
+            //     qos_service,
+            //     log_messages_bytes_limit,
+            //     max_bundle_retry_duration,
+            //     bank_start,
+            //     bundle_stage_leader_metrics,
+            // );
 
             bundle_stage_leader_metrics
                 .bundle_stage_metrics_tracker()
                 .increment_change_tip_receiver_elapsed_us(start.elapsed().as_micros() as u64);
 
-            result?;
+            // result?;
 
             *last_tip_updated_slot = bank_start.working_bank.slot();
         }
+
+        // if locked_bundle.sanitized_bundle().slot != bank_start.working_bank.slot() {
+        //     if locked_bundle.sanitized_bundle().slot > bank_start.working_bank.slot() {
+        //         error!("mevanoxx: received bundle for future?");
+        //     }
+
+        //     return Err(BundleExecutionError::OldBundle);
+        // }
 
         Self::update_qos_and_execute_record_commit_bundle(
             committer,
@@ -304,121 +312,121 @@ impl BundleConsumer {
         Ok(())
     }
 
-    /// The validator needs to manage state on two programs related to tips
-    #[allow(clippy::too_many_arguments)]
-    fn handle_tip_programs(
-        bundle_account_locker: &BundleAccountLocker,
-        tip_manager: &TipManager,
-        cluster_info: &Arc<ClusterInfo>,
-        block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
-        committer: &Committer,
-        recorder: &TransactionRecorder,
-        qos_service: &QosService,
-        log_messages_bytes_limit: &Option<usize>,
-        max_bundle_retry_duration: Duration,
-        bank_start: &BankStart,
-        bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
-    ) -> Result<(), BundleExecutionError> {
-        debug!("handle_tip_programs");
+    // /// The validator needs to manage state on two programs related to tips
+    // #[allow(clippy::too_many_arguments)]
+    // fn handle_tip_programs(
+    //     bundle_account_locker: &BundleAccountLocker,
+    //     tip_manager: &TipManager,
+    //     cluster_info: &Arc<ClusterInfo>,
+    //     block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
+    //     committer: &Committer,
+    //     recorder: &TransactionRecorder,
+    //     qos_service: &QosService,
+    //     log_messages_bytes_limit: &Option<usize>,
+    //     max_bundle_retry_duration: Duration,
+    //     bank_start: &BankStart,
+    //     bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
+    // ) -> Result<(), BundleExecutionError> {
+    //     debug!("handle_tip_programs");
 
-        // This will setup the tip payment and tip distribution program if they haven't been
-        // initialized yet, which is typically helpful for local validators. On mainnet and testnet,
-        // this code should never run.
-        let keypair = cluster_info.keypair().clone();
-        let initialize_tip_programs_bundle =
-            tip_manager.get_initialize_tip_programs_bundle(&bank_start.working_bank, &keypair);
-        if let Some(bundle) = initialize_tip_programs_bundle {
-            debug!(
-                "initializing tip programs with {} transactions, bundle id: {}",
-                bundle.transactions.len(),
-                bundle.bundle_id
-            );
+    //     // This will setup the tip payment and tip distribution program if they haven't been
+    //     // initialized yet, which is typically helpful for local validators. On mainnet and testnet,
+    //     // this code should never run.
+    //     let keypair = cluster_info.keypair().clone();
+    //     let initialize_tip_programs_bundle =
+    //         tip_manager.get_initialize_tip_programs_bundle(&bank_start.working_bank, &keypair);
+    //     if let Some(bundle) = initialize_tip_programs_bundle {
+    //         debug!(
+    //             "initializing tip programs with {} transactions, bundle id: {}",
+    //             bundle.transactions.len(),
+    //             bundle.slot
+    //         );
 
-            let locked_init_tip_programs_bundle = bundle_account_locker
-                .prepare_locked_bundle(&bundle, &bank_start.working_bank)
-                .map_err(|_| BundleExecutionError::TipError(TipError::LockError))?;
+    //         let locked_init_tip_programs_bundle = bundle_account_locker
+    //             .prepare_locked_bundle(&bundle, &bank_start.working_bank)
+    //             .map_err(|_| BundleExecutionError::TipError(TipError::LockError))?;
 
-            Self::update_qos_and_execute_record_commit_bundle(
-                committer,
-                recorder,
-                qos_service,
-                log_messages_bytes_limit,
-                max_bundle_retry_duration,
-                locked_init_tip_programs_bundle.sanitized_bundle(),
-                bank_start,
-                bundle_stage_leader_metrics,
-            )
-            .map_err(|e| {
-                bundle_stage_leader_metrics
-                    .bundle_stage_metrics_tracker()
-                    .increment_num_init_tip_account_errors(1);
-                error!(
-                    "bundle: {} error initializing tip programs: {:?}",
-                    locked_init_tip_programs_bundle.sanitized_bundle().bundle_id,
-                    e
-                );
-                BundleExecutionError::TipError(TipError::InitializeProgramsError)
-            })?;
+    //         Self::update_qos_and_execute_record_commit_bundle(
+    //             committer,
+    //             recorder,
+    //             qos_service,
+    //             log_messages_bytes_limit,
+    //             max_bundle_retry_duration,
+    //             locked_init_tip_programs_bundle.sanitized_bundle(),
+    //             bank_start,
+    //             bundle_stage_leader_metrics,
+    //         )
+    //         .map_err(|e| {
+    //             bundle_stage_leader_metrics
+    //                 .bundle_stage_metrics_tracker()
+    //                 .increment_num_init_tip_account_errors(1);
+    //             error!(
+    //                 "bundle: {} error initializing tip programs: {:?}",
+    //                 locked_init_tip_programs_bundle.sanitized_bundle().slot,
+    //                 e
+    //             );
+    //             BundleExecutionError::TipError(TipError::InitializeProgramsError)
+    //         })?;
 
-            bundle_stage_leader_metrics
-                .bundle_stage_metrics_tracker()
-                .increment_num_init_tip_account_ok(1);
-        }
+    //         bundle_stage_leader_metrics
+    //             .bundle_stage_metrics_tracker()
+    //             .increment_num_init_tip_account_ok(1);
+    //     }
 
-        // There are two frequently run internal cranks inside the jito-solana validator that have to do with managing MEV tips.
-        // One is initialize the TipDistributionAccount, which is a validator's "tip piggy bank" for an epoch
-        // The other is ensuring the tip_receiver is configured correctly to ensure tips are routed to the correct
-        // address. The validator must drain the tip accounts to the previous tip receiver before setting the tip receiver to
-        // themselves.
+    //     // There are two frequently run internal cranks inside the jito-solana validator that have to do with managing MEV tips.
+    //     // One is initialize the TipDistributionAccount, which is a validator's "tip piggy bank" for an epoch
+    //     // The other is ensuring the tip_receiver is configured correctly to ensure tips are routed to the correct
+    //     // address. The validator must drain the tip accounts to the previous tip receiver before setting the tip receiver to
+    //     // themselves.
 
-        let kp = cluster_info.keypair().clone();
-        let tip_crank_bundle = tip_manager.get_tip_programs_crank_bundle(
-            &bank_start.working_bank,
-            &kp,
-            &block_builder_fee_info.lock().unwrap(),
-        )?;
-        debug!("tip_crank_bundle is_some: {}", tip_crank_bundle.is_some());
+    //     let kp = cluster_info.keypair().clone();
+    //     let tip_crank_bundle = tip_manager.get_tip_programs_crank_bundle(
+    //         &bank_start.working_bank,
+    //         &kp,
+    //         &block_builder_fee_info.lock().unwrap(),
+    //     )?;
+    //     debug!("tip_crank_bundle is_some: {}", tip_crank_bundle.is_some());
 
-        if let Some(bundle) = tip_crank_bundle {
-            info!(
-                "bundle id: {} cranking tip programs with {} transactions",
-                bundle.bundle_id,
-                bundle.transactions.len()
-            );
+    //     if let Some(bundle) = tip_crank_bundle {
+    //         info!(
+    //             "bundle id: {} cranking tip programs with {} transactions",
+    //             bundle.slot,
+    //             bundle.transactions.len()
+    //         );
 
-            let locked_tip_crank_bundle = bundle_account_locker
-                .prepare_locked_bundle(&bundle, &bank_start.working_bank)
-                .map_err(|_| BundleExecutionError::TipError(TipError::LockError))?;
+    //         let locked_tip_crank_bundle = bundle_account_locker
+    //             .prepare_locked_bundle(&bundle, &bank_start.working_bank)
+    //             .map_err(|_| BundleExecutionError::TipError(TipError::LockError))?;
 
-            Self::update_qos_and_execute_record_commit_bundle(
-                committer,
-                recorder,
-                qos_service,
-                log_messages_bytes_limit,
-                max_bundle_retry_duration,
-                locked_tip_crank_bundle.sanitized_bundle(),
-                bank_start,
-                bundle_stage_leader_metrics,
-            )
-            .map_err(|e| {
-                bundle_stage_leader_metrics
-                    .bundle_stage_metrics_tracker()
-                    .increment_num_change_tip_receiver_errors(1);
-                error!(
-                    "bundle: {} error cranking tip programs: {:?}",
-                    locked_tip_crank_bundle.sanitized_bundle().bundle_id,
-                    e
-                );
-                BundleExecutionError::TipError(TipError::CrankTipError)
-            })?;
+    //         Self::update_qos_and_execute_record_commit_bundle(
+    //             committer,
+    //             recorder,
+    //             qos_service,
+    //             log_messages_bytes_limit,
+    //             max_bundle_retry_duration,
+    //             locked_tip_crank_bundle.sanitized_bundle(),
+    //             bank_start,
+    //             bundle_stage_leader_metrics,
+    //         )
+    //         .map_err(|e| {
+    //             bundle_stage_leader_metrics
+    //                 .bundle_stage_metrics_tracker()
+    //                 .increment_num_change_tip_receiver_errors(1);
+    //             error!(
+    //                 "bundle: {} error cranking tip programs: {:?}",
+    //                 locked_tip_crank_bundle.sanitized_bundle().slot,
+    //                 e
+    //             );
+    //             BundleExecutionError::TipError(TipError::CrankTipError)
+    //         })?;
 
-            bundle_stage_leader_metrics
-                .bundle_stage_metrics_tracker()
-                .increment_num_change_tip_receiver_ok(1);
-        }
+    //         bundle_stage_leader_metrics
+    //             .bundle_stage_metrics_tracker()
+    //             .increment_num_change_tip_receiver_ok(1);
+    //     }
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 
     /// Reserves space for the entire bundle up-front to ensure the entire bundle can execute.
     /// Rolls back the reserved space if there's not enough blockspace for all transactions in the bundle.
@@ -460,7 +468,7 @@ impl BundleConsumer {
     ) -> BundleExecutionResult<()> {
         debug!(
             "bundle: {} reserving blockspace for {} transactions",
-            sanitized_bundle.bundle_id,
+            sanitized_bundle.slot,
             sanitized_bundle.transactions.len()
         );
 
@@ -475,7 +483,7 @@ impl BundleConsumer {
 
         debug!(
             "bundle: {} executing, recording, and committing",
-            sanitized_bundle.bundle_id
+            sanitized_bundle.slot
         );
 
         let (result, process_transactions_us) = measure_us!(Self::execute_record_commit_bundle(
@@ -571,7 +579,7 @@ impl BundleConsumer {
 
         let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
 
-        debug!("bundle: {} executing", sanitized_bundle.bundle_id);
+        debug!("bundle: {} executing", sanitized_bundle.slot);
         let default_accounts = vec![None; sanitized_bundle.transactions.len()];
         let mut bundle_execution_results = load_and_execute_bundle(
             &bank_start.working_bank,
@@ -597,7 +605,7 @@ impl BundleConsumer {
 
         debug!(
             "bundle: {} executed, is_ok: {}",
-            sanitized_bundle.bundle_id,
+            sanitized_bundle.slot,
             bundle_execution_results.result().is_ok()
         );
 
@@ -617,7 +625,7 @@ impl BundleConsumer {
 
         debug!(
             "bundle: {} recording {} batches of {:?} transactions",
-            sanitized_bundle.bundle_id,
+            sanitized_bundle.slot,
             executed_batches.len(),
             executed_batches
                 .iter()
@@ -648,7 +656,7 @@ impl BundleConsumer {
 
         debug!(
             "bundle: {} record result: {}",
-            sanitized_bundle.bundle_id,
+            sanitized_bundle.slot,
             record_transactions_result.is_ok()
         );
 
@@ -689,7 +697,7 @@ impl BundleConsumer {
             .collect();
         debug!(
             "bundle: {} commit details: {:?}",
-            sanitized_bundle.bundle_id, commit_transaction_details
+            sanitized_bundle.slot, commit_transaction_details
         );
 
         ExecuteRecordCommitResult {
@@ -944,7 +952,7 @@ mod tests {
                             .map(|tx| Packet::from_data(None, tx).unwrap())
                             .collect(),
                     ),
-                    bundle_id,
+                    slot,
                 }
             })
             .collect()
@@ -1179,7 +1187,7 @@ mod tests {
                 ),
             )
             .unwrap()]),
-            bundle_id: "test_transfer".to_string(),
+            slot: 0,
         };
 
         let deserialized_bundle =
@@ -1281,124 +1289,125 @@ mod tests {
         poh_simulator.join().unwrap();
     }
 
-    #[test]
-    fn test_handle_tip_programs() {
-        solana_logger::setup();
-        let TestFixture {
-            genesis_config_info,
-            leader_keypair,
-            bank,
-            exit,
-            poh_recorder,
-            poh_simulator,
-            entry_receiver,
-            bank_forks: _bank_forks,
-        } = create_test_fixture(1_000_000);
-        let recorder = poh_recorder.read().unwrap().new_recorder();
+    // todo mevanoxx
+    // #[test]
+    // fn test_handle_tip_programs() {
+    //     solana_logger::setup();
+    //     let TestFixture {
+    //         genesis_config_info,
+    //         leader_keypair,
+    //         bank,
+    //         exit,
+    //         poh_recorder,
+    //         poh_simulator,
+    //         entry_receiver,
+    //         bank_forks: _bank_forks,
+    //     } = create_test_fixture(1_000_000);
+    //     let recorder = poh_recorder.read().unwrap().new_recorder();
 
-        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
-        let committer = Committer::new(
-            None,
-            replay_vote_sender,
-            Arc::new(PrioritizationFeeCache::new(0u64)),
-        );
+    //     let (replay_vote_sender, _replay_vote_receiver) = unbounded();
+    //     let committer = Committer::new(
+    //         None,
+    //         replay_vote_sender,
+    //         Arc::new(PrioritizationFeeCache::new(0u64)),
+    //     );
 
-        let block_builder_pubkey = Pubkey::new_unique();
-        let tip_manager = get_tip_manager(&genesis_config_info.voting_keypair.pubkey());
-        let block_builder_info = Arc::new(Mutex::new(BlockBuilderFeeInfo {
-            block_builder: block_builder_pubkey,
-            block_builder_commission: 10,
-        }));
+    //     let block_builder_pubkey = Pubkey::new_unique();
+    //     let tip_manager = get_tip_manager(&genesis_config_info.voting_keypair.pubkey());
+    //     let block_builder_info = Arc::new(Mutex::new(BlockBuilderFeeInfo {
+    //         block_builder: block_builder_pubkey,
+    //         block_builder_commission: 10,
+    //     }));
 
-        let cluster_info = Arc::new(ClusterInfo::new(
-            ContactInfo::new(leader_keypair.pubkey(), 0, 0),
-            Arc::new(leader_keypair),
-            SocketAddrSpace::new(true),
-        ));
+    //     let cluster_info = Arc::new(ClusterInfo::new(
+    //         ContactInfo::new(leader_keypair.pubkey(), 0, 0),
+    //         Arc::new(leader_keypair),
+    //         SocketAddrSpace::new(true),
+    //     ));
 
-        let bank_start = poh_recorder.read().unwrap().bank_start().unwrap();
+    //     let bank_start = poh_recorder.read().unwrap().bank_start().unwrap();
 
-        let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(1);
-        assert_matches!(
-            BundleConsumer::handle_tip_programs(
-                &BundleAccountLocker::default(),
-                &tip_manager,
-                &cluster_info,
-                &block_builder_info,
-                &committer,
-                &recorder,
-                &QosService::new(1),
-                &None,
-                Duration::from_secs(10),
-                &bank_start,
-                &mut bundle_stage_leader_metrics
-            ),
-            Ok(())
-        );
+    //     let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(1);
+    //     assert_matches!(
+    //         BundleConsumer::handle_tip_programs(
+    //             &BundleAccountLocker::default(),
+    //             &tip_manager,
+    //             &cluster_info,
+    //             &block_builder_info,
+    //             &committer,
+    //             &recorder,
+    //             &QosService::new(1),
+    //             &None,
+    //             Duration::from_secs(10),
+    //             &bank_start,
+    //             &mut bundle_stage_leader_metrics
+    //         ),
+    //         Ok(())
+    //     );
 
-        let mut transactions = Vec::new();
-        while let Ok(WorkingBankEntry {
-            bank: wbe_bank,
-            entries_ticks,
-        }) = entry_receiver.recv()
-        {
-            assert_eq!(bank.slot(), wbe_bank.slot());
-            transactions.extend(entries_ticks.into_iter().flat_map(|(e, _)| e.transactions));
-            if transactions.len() == 4 {
-                break;
-            }
-        }
+    //     let mut transactions = Vec::new();
+    //     while let Ok(WorkingBankEntry {
+    //         bank: wbe_bank,
+    //         entries_ticks,
+    //     }) = entry_receiver.recv()
+    //     {
+    //         assert_eq!(bank.slot(), wbe_bank.slot());
+    //         transactions.extend(entries_ticks.into_iter().flat_map(|(e, _)| e.transactions));
+    //         if transactions.len() == 4 {
+    //             break;
+    //         }
+    //     }
 
-        let keypair = cluster_info.keypair().clone();
-        // expect to see initialize tip payment program, tip distribution program, initialize tip distribution account, change tip receiver + change block builder
-        assert_eq!(
-            transactions[0],
-            tip_manager
-                .initialize_tip_payment_program_tx(&bank, &keypair)
-                .to_versioned_transaction()
-        );
-        assert_eq!(
-            transactions[1],
-            tip_manager
-                .initialize_tip_distribution_config_tx(&bank, &keypair)
-                .to_versioned_transaction()
-        );
-        assert_eq!(
-            transactions[2],
-            tip_manager
-                .initialize_tip_distribution_account_tx(&bank, &keypair)
-                .to_versioned_transaction()
-        );
-        // the first tip receiver + block builder are the initializer (keypair.pubkey()) as set by the
-        // TipPayment program during initialization
-        assert_eq!(
-            transactions[3],
-            tip_manager
-                .build_change_tip_receiver_and_block_builder_tx(
-                    &keypair.pubkey(),
-                    &derive_tip_distribution_account_address(
-                        &tip_manager.tip_distribution_program_id(),
-                        &genesis_config_info.validator_pubkey,
-                        bank_start.working_bank.epoch()
-                    )
-                    .0,
-                    &bank_start.working_bank,
-                    &keypair,
-                    &keypair.pubkey(),
-                    &block_builder_pubkey,
-                    10
-                )
-                .to_versioned_transaction()
-        );
+    //     let keypair = cluster_info.keypair().clone();
+    //     // expect to see initialize tip payment program, tip distribution program, initialize tip distribution account, change tip receiver + change block builder
+    //     assert_eq!(
+    //         transactions[0],
+    //         tip_manager
+    //             .initialize_tip_payment_program_tx(&bank, &keypair)
+    //             .to_versioned_transaction()
+    //     );
+    //     assert_eq!(
+    //         transactions[1],
+    //         tip_manager
+    //             .initialize_tip_distribution_config_tx(&bank, &keypair)
+    //             .to_versioned_transaction()
+    //     );
+    //     assert_eq!(
+    //         transactions[2],
+    //         tip_manager
+    //             .initialize_tip_distribution_account_tx(&bank, &keypair)
+    //             .to_versioned_transaction()
+    //     );
+    //     // the first tip receiver + block builder are the initializer (keypair.pubkey()) as set by the
+    //     // TipPayment program during initialization
+    //     assert_eq!(
+    //         transactions[3],
+    //         tip_manager
+    //             .build_change_tip_receiver_and_block_builder_tx(
+    //                 &keypair.pubkey(),
+    //                 &derive_tip_distribution_account_address(
+    //                     &tip_manager.tip_distribution_program_id(),
+    //                     &genesis_config_info.validator_pubkey,
+    //                     bank_start.working_bank.epoch()
+    //                 )
+    //                 .0,
+    //                 &bank_start.working_bank,
+    //                 &keypair,
+    //                 &keypair.pubkey(),
+    //                 &block_builder_pubkey,
+    //                 10
+    //             )
+    //             .to_versioned_transaction()
+    //     );
 
-        poh_recorder
-            .write()
-            .unwrap()
-            .is_exited
-            .store(true, Ordering::Relaxed);
-        exit.store(true, Ordering::Relaxed);
-        poh_simulator.join().unwrap();
-    }
+    //     poh_recorder
+    //         .write()
+    //         .unwrap()
+    //         .is_exited
+    //         .store(true, Ordering::Relaxed);
+    //     exit.store(true, Ordering::Relaxed);
+    //     poh_simulator.join().unwrap();
+    // }
 
     #[test]
     fn test_reserve_bundle_blockspace_success() {
@@ -1415,7 +1424,7 @@ mod tests {
         ));
         let sanitized_bundle = SanitizedBundle {
             transactions: vec![transfer_tx],
-            bundle_id: String::default(),
+            slot: 0,
         };
 
         let transfer_cost =
@@ -1453,7 +1462,7 @@ mod tests {
         ));
         let sanitized_bundle = SanitizedBundle {
             transactions: vec![transfer_tx1, transfer_tx2],
-            bundle_id: String::default(),
+            slot: 0,
         };
 
         // set block cost limit to 1 transfer transaction, try to process 2, should return an error

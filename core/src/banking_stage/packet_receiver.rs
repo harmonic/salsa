@@ -1,3 +1,4 @@
+#![allow(unused)]
 use {
     super::{
         immutable_deserialized_packet::ImmutableDeserializedPacket,

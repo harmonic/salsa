@@ -314,7 +314,7 @@ impl RelayerStage {
 
             let tpu_socket = SocketAddr::new(tpu_ip, tpu_addr.port as u16);
             let tpu_forward_socket = SocketAddr::new(tpu_forward_ip, tpu_forward_addr.port as u16);
-            (tpu_socket, tpu_forward_socket)
+            (tpu_socket, tpu_forward_socket, tpu_socket)
         };
 
         let packet_stream = timeout(

@@ -25,7 +25,7 @@ use {
 };
 
 type Result<T> = result::Result<T, ProxyError>;
-type HeartbeatEvent = (SocketAddr, SocketAddr);
+type HeartbeatEvent = (SocketAddr, SocketAddr, SocketAddr);
 
 #[derive(Error, Debug)]
 pub enum ProxyError {

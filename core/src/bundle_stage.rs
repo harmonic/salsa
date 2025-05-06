@@ -42,7 +42,8 @@ mod bundle_packet_receiver;
 pub(crate) mod bundle_stage_leader_metrics;
 mod committer;
 
-const MAX_BUNDLE_RETRY_DURATION: Duration = Duration::from_millis(40);
+/// mevanoxx: this is max execution time...
+const MAX_BUNDLE_RETRY_DURATION: Duration = Duration::from_millis(400);
 const SLOT_BOUNDARY_CHECK_PERIOD: Duration = Duration::from_millis(10);
 
 // Stats emitted periodically
@@ -246,7 +247,11 @@ impl BundleStage {
         let poh_recorder = poh_recorder.clone();
         let cluster_info = cluster_info.clone();
 
-        let mut bundle_receiver = BundleReceiver::new(BUNDLE_STAGE_ID, bundle_receiver, Some(5));
+        let mut bundle_receiver = BundleReceiver::new(
+            BUNDLE_STAGE_ID,
+            bundle_receiver,
+            None, /* mevanoxx: remove bundle limit */
+        );
 
         let committer = Committer::new(
             transaction_status_sender,
@@ -359,6 +364,32 @@ impl BundleStage {
             .leader_slot_metrics_tracker()
             .increment_make_decision_us(make_decision_time_us);
 
+        let decision = if let Some(bank_start) = decision.bank_start() {
+            let consumed_for_slot =
+                unprocessed_bundle_storage.consumed_for_slot(bank_start.working_bank.slot());
+
+            let Some(bundles) = unprocessed_bundle_storage.bundle_storage() else {
+                return;
+            };
+
+            // Check if we have a block for this slot
+            let have_block_for_this_slot = bundles
+                .unprocessed_bundle_storage
+                .iter()
+                .find(|b| b.slot() == bank_start.working_bank.slot())
+                .is_some();
+
+            if have_block_for_this_slot && !consumed_for_slot {
+                // mevanoxx: calling this may change state and block vanilla scheduler
+                // which is why this is gated conditionally
+                DecisionMaker::maybe_consume::<false /* vanilla */>(decision)
+            } else {
+                BufferedPacketsDecision::Hold
+            }
+        } else {
+            decision
+        };
+
         match decision {
             // BufferedPacketsDecision::Consume means this leader is scheduled to be running at the moment.
             // Execute, record, and commit as many bundles possible given time, compute, and other constraints.
@@ -370,6 +401,7 @@ impl BundleStage {
                 bundle_stage_leader_metrics
                     .apply_action(metrics_action, banking_stage_metrics_action);
 
+                debug!("mevanoxx: consume");
                 let (_, consume_buffered_packets_time_us) = measure_us!(consumer
                     .consume_buffered_bundles(
                         &bank_start,

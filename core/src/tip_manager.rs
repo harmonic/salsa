@@ -1,5 +1,5 @@
 use {
-    crate::proxy::block_engine_stage::BlockBuilderFeeInfo,
+    // crate::proxy::block_engine_stage::BlockBuilderFeeInfo,
     anchor_lang::{AccountDeserialize, InstructionData, ToAccountMetas},
     jito_tip_distribution::sdk::{
         derive_config_account_address, derive_tip_distribution_account_address,
@@ -15,7 +15,7 @@ use {
         TIP_ACCOUNT_SEED_5, TIP_ACCOUNT_SEED_6, TIP_ACCOUNT_SEED_7,
     },
     log::warn,
-    solana_bundle::{derive_bundle_id_from_sanitized_transactions, SanitizedBundle, TipError},
+    solana_bundle::TipError,
     solana_runtime::bank::Bank,
     solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
     solana_sdk::{
@@ -507,102 +507,5 @@ impl TipManager {
                 }))
             })
             .collect()
-    }
-
-    /// Return a bundle that is capable of calling the initialize instructions on the two tip payment programs
-    /// This is mainly helpful for local development and shouldn't run on testnet and mainnet, assuming the
-    /// correct TipManager configuration is set.
-    pub fn get_initialize_tip_programs_bundle(
-        &self,
-        bank: &Bank,
-        keypair: &Keypair,
-    ) -> Option<SanitizedBundle> {
-        let maybe_init_tip_payment_config_tx = if self.should_initialize_tip_payment_program(bank) {
-            debug!("should_initialize_tip_payment_program=true");
-            Some(self.initialize_tip_payment_program_tx(bank, keypair))
-        } else {
-            None
-        };
-
-        let maybe_init_tip_distro_config_tx =
-            if self.should_initialize_tip_distribution_config(bank) {
-                debug!("should_initialize_tip_distribution_config=true");
-                Some(self.initialize_tip_distribution_config_tx(bank, keypair))
-            } else {
-                None
-            };
-
-        let transactions = [
-            maybe_init_tip_payment_config_tx,
-            maybe_init_tip_distro_config_tx,
-        ]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<RuntimeTransaction<SanitizedTransaction>>>();
-
-        if transactions.is_empty() {
-            None
-        } else {
-            let bundle_id = derive_bundle_id_from_sanitized_transactions(&transactions);
-            Some(SanitizedBundle {
-                transactions,
-                bundle_id,
-            })
-        }
-    }
-
-    pub fn get_tip_programs_crank_bundle(
-        &self,
-        bank: &Bank,
-        keypair: &Keypair,
-        block_builder_fee_info: &BlockBuilderFeeInfo,
-    ) -> Result<Option<SanitizedBundle>> {
-        let maybe_init_tip_distro_account_tx = if self.should_init_tip_distribution_account(bank) {
-            debug!("should_init_tip_distribution_account=true");
-            Some(self.initialize_tip_distribution_account_tx(bank, keypair))
-        } else {
-            None
-        };
-        let tip_payment_config = self.get_tip_payment_config_account(bank)?;
-
-        let my_tip_receiver = self.get_my_tip_distribution_pda(bank.epoch());
-        let maybe_change_tip_receiver_tx = if tip_payment_config.tip_receiver != my_tip_receiver
-            || tip_payment_config.block_builder != block_builder_fee_info.block_builder
-            || tip_payment_config.block_builder_commission_pct
-                != block_builder_fee_info.block_builder_commission
-        {
-            debug!("change_tip_receiver=true");
-            Some(self.change_tip_receiver_and_block_builder_tx(
-                &my_tip_receiver,
-                bank,
-                keypair,
-                &block_builder_fee_info.block_builder,
-                block_builder_fee_info.block_builder_commission,
-            )?)
-        } else {
-            None
-        };
-        debug!(
-            "maybe_change_tip_receiver_tx: {:?}",
-            maybe_change_tip_receiver_tx
-        );
-
-        let transactions = [
-            maybe_init_tip_distro_account_tx,
-            maybe_change_tip_receiver_tx,
-        ]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<RuntimeTransaction<SanitizedTransaction>>>();
-
-        if transactions.is_empty() {
-            Ok(None)
-        } else {
-            let bundle_id = derive_bundle_id_from_sanitized_transactions(&transactions);
-            Ok(Some(SanitizedBundle {
-                transactions,
-                bundle_id,
-            }))
-        }
     }
 }

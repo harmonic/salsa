@@ -498,7 +498,7 @@ impl BlockEngineStage {
                             .map(proto_packet_to_packet)
                             .collect(),
                     ),
-                    bundle_id: bundle.uuid,
+                    slot: bundle.uuid.parse().ok()?,
                 })
             })
             .collect();

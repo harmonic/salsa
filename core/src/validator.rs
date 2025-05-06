@@ -428,6 +428,10 @@ impl ValidatorConfig {
             replay_transactions_threads: max_thread_count,
             tvu_shred_sigverify_threads: NonZeroUsize::new(get_thread_count())
                 .expect("thread count is non-zero"),
+            block_engine_config: Arc::new(Mutex::new(BlockEngineConfig {
+                block_engine_url: "http://localhost:18181".to_string(),
+                trust_packets: false,
+            })),
             ..Self::default()
         }
     }

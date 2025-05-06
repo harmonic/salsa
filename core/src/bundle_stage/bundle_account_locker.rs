@@ -267,11 +267,11 @@ mod tests {
 
         let mut packet_bundle0 = PacketBundle {
             batch: PacketBatch::new(vec![Packet::from_data(None, &tx0).unwrap()]),
-            bundle_id: tx0.signatures[0].to_string(),
+            slot: 0,
         };
         let mut packet_bundle1 = PacketBundle {
             batch: PacketBatch::new(vec![Packet::from_data(None, &tx1).unwrap()]),
-            bundle_id: tx1.signatures[0].to_string(),
+            slot: 0,
         };
 
         let mut transaction_errors = TransactionErrorMetrics::default();

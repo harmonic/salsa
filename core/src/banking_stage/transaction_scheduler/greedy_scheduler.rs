@@ -15,7 +15,9 @@ use {
         consumer::TARGET_NUM_TRANSACTIONS_PER_BATCH,
         read_write_account_set::ReadWriteAccountSet,
         scheduler_messages::{ConsumeWork, FinishedConsumeWork, TransactionBatchId},
-        transaction_scheduler::thread_aware_account_locks::MAX_THREADS,
+        transaction_scheduler::{
+            scheduler_controller::slot::consume_slot, thread_aware_account_locks::MAX_THREADS,
+        },
     },
     crossbeam_channel::{Receiver, Sender, TryRecvError},
     itertools::izip,
@@ -129,7 +131,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for GreedyScheduler<Tx> {
                 .check_locks(&transaction_state.transaction_ttl().transaction)
             {
                 self.working_account_set.clear();
-                num_sent += self.send_batches(&mut batches)?;
+                num_sent += self.send_batches(&mut batches, consume_slot())?;
             }
 
             // Now check if the transaction can actually be scheduled.
@@ -175,7 +177,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for GreedyScheduler<Tx> {
                     // If target batch size is reached, send all the batches
                     if batches.ids[thread_id].len() >= self.config.target_transactions_per_batch {
                         self.working_account_set.clear();
-                        num_sent += self.send_batches(&mut batches)?;
+                        num_sent += self.send_batches(&mut batches, consume_slot())?;
                     }
 
                     // if the thread is at target_cu_per_thread, remove it from the schedulable threads
@@ -194,7 +196,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for GreedyScheduler<Tx> {
         }
 
         self.working_account_set.clear();
-        num_sent += self.send_batches(&mut batches)?;
+        num_sent += self.send_batches(&mut batches, consume_slot())?;
         assert_eq!(
             num_scheduled, num_sent,
             "number of scheduled and sent transactions must match"
@@ -246,6 +248,7 @@ impl<Tx: TransactionWithMeta> GreedyScheduler<Tx> {
                         ids,
                         transactions,
                         max_ages,
+                        slot: _,
                     },
                 retryable_indexes,
             }) => {
@@ -306,9 +309,13 @@ impl<Tx: TransactionWithMeta> GreedyScheduler<Tx> {
 
     /// Send all batches of transactions to the worker threads.
     /// Returns the number of transactions sent.
-    fn send_batches(&mut self, batches: &mut Batches<Tx>) -> Result<usize, SchedulerError> {
+    fn send_batches(
+        &mut self,
+        batches: &mut Batches<Tx>,
+        slot: u64,
+    ) -> Result<usize, SchedulerError> {
         (0..self.consume_work_senders.len())
-            .map(|thread_index| self.send_batch(batches, thread_index))
+            .map(|thread_index| self.send_batch(batches, thread_index, slot))
             .sum()
     }
 
@@ -318,6 +325,7 @@ impl<Tx: TransactionWithMeta> GreedyScheduler<Tx> {
         &mut self,
         batches: &mut Batches<Tx>,
         thread_index: usize,
+        slot: u64,
     ) -> Result<usize, SchedulerError> {
         if batches.ids[thread_index].is_empty() {
             return Ok(0);
@@ -336,6 +344,7 @@ impl<Tx: TransactionWithMeta> GreedyScheduler<Tx> {
             ids,
             transactions,
             max_ages,
+            slot,
         };
         self.consume_work_senders[thread_index]
             .send(work)

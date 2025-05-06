@@ -74,6 +74,7 @@ impl BundlePacketDeserializer {
         let mut num_dropped_bundles: usize = 0;
 
         for bundle in bundles.iter_mut() {
+            debug!("mevanoxx: received bundle {bundle:?}");
             match Self::deserialize_bundle(bundle, max_packets_per_bundle, packet_filter) {
                 Ok(deserialized_bundle) => {
                     deserialized_bundles.push(deserialized_bundle);
@@ -187,7 +188,7 @@ mod tests {
                     ),
                 )
                 .unwrap()]),
-                bundle_id: String::default(),
+                slot: 0,
             })
             .collect();
 
@@ -237,7 +238,7 @@ mod tests {
         let packet_bundles: Vec<_> = (0..10)
             .map(|_| PacketBundle {
                 batch: PacketBatch::new(vec![]),
-                bundle_id: String::default(),
+                slot: 0,
             })
             .collect();
         sender.send(packet_bundles).unwrap();

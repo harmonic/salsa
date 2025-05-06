@@ -2,6 +2,7 @@
 //! to construct a software pipeline. The stage uses all available CPU cores and
 //! can do its processing in parallel with signature verification on the GPU.
 
+use latest_unprocessed_votes::LatestUnprocessedVotes;
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
 use {
@@ -10,7 +11,6 @@ use {
         consumer::Consumer,
         decision_maker::{BufferedPacketsDecision, DecisionMaker},
         forwarder::Forwarder,
-        latest_unprocessed_votes::{LatestUnprocessedVotes, VoteSource},
         leader_slot_metrics::LeaderSlotMetricsTracker,
         packet_receiver::PacketReceiver,
         qos_service::QosService,
@@ -99,7 +99,7 @@ pub const NUM_THREADS: u32 = 6;
 
 const TOTAL_BUFFERED_PACKETS: usize = 100_000;
 
-const NUM_VOTE_PROCESSING_THREADS: u32 = 2;
+const NUM_VOTE_PROCESSING_THREADS: u32 = 0;
 const MIN_THREADS_BANKING: u32 = 1;
 const MIN_TOTAL_THREADS: u32 = NUM_VOTE_PROCESSING_THREADS + MIN_THREADS_BANKING;
 
@@ -478,10 +478,10 @@ impl BankingStage {
         // Once an entry has been recorded, its blockhash is registered with the bank.
         let data_budget = Arc::new(DataBudget::default());
         // Keeps track of extraneous vote transactions for the vote threads
-        let latest_unprocessed_votes = {
-            let bank = bank_forks.read().unwrap().working_bank();
-            Arc::new(LatestUnprocessedVotes::new(&bank))
-        };
+        // let latest_unprocessed_votes = {
+        //     let bank = bank_forks.read().unwrap().working_bank();
+        //     Arc::new(LatestUnprocessedVotes::new(&bank))
+        // };
 
         let decision_maker = DecisionMaker::new(cluster_info.id(), poh_recorder.clone());
         let committer = Committer::new(
@@ -489,16 +489,17 @@ impl BankingStage {
             replay_vote_sender.clone(),
             prioritization_fee_cache.clone(),
         );
-        let transaction_recorder = poh_recorder.read().unwrap().new_recorder();
 
         // + 1 for the central scheduler thread
         let mut bank_thread_hdls = Vec::with_capacity(num_threads as usize + 1);
 
         // Spawn legacy voting threads first: 1 gossip, 1 tpu
-        for (id, packet_receiver, vote_source) in [
-            (0, gossip_vote_receiver, VoteSource::Gossip),
-            (1, tpu_vote_receiver, VoteSource::Tpu),
-        ] {
+        for (id, packet_receiver, vote_source) in [ /* none */] {
+            let transaction_recorder = poh_recorder.read().unwrap().new_recorder();
+            let latest_unprocessed_votes = {
+                let bank = bank_forks.read().unwrap().working_bank();
+                Arc::new(LatestUnprocessedVotes::new(&bank))
+            };
             bank_thread_hdls.push(Self::spawn_thread_local_multi_iterator_thread(
                 id,
                 packet_receiver,
@@ -535,8 +536,13 @@ impl BankingStage {
 
         match transaction_struct {
             TransactionStructure::Sdk => {
+                // mevanoxx: remove sdk
                 let receive_and_buffer = SanitizedTransactionReceiveAndBuffer::new(
-                    PacketDeserializer::new(non_vote_receiver),
+                    PacketDeserializer::new_external(
+                        non_vote_receiver,
+                        tpu_vote_receiver,
+                        gossip_vote_receiver,
+                    ),
                     bank_forks.clone(),
                     enable_forwarding,
                 );
@@ -562,6 +568,8 @@ impl BankingStage {
             TransactionStructure::View => {
                 let receive_and_buffer = TransactionViewReceiveAndBuffer {
                     receiver: non_vote_receiver,
+                    tpu_vote_receiver: Some(tpu_vote_receiver),
+                    gossip_vote_receiver: Some(gossip_vote_receiver),
                     bank_forks: bank_forks.clone(),
                 };
                 Self::spawn_scheduler_and_workers(
@@ -616,7 +624,7 @@ impl BankingStage {
         // Spawn the worker threads
         let mut worker_metrics = Vec::with_capacity(num_workers as usize);
         for (index, work_receiver) in work_receivers.into_iter().enumerate() {
-            let id = (index as u32).saturating_add(NUM_VOTE_PROCESSING_THREADS);
+            let id = index as u32;
             let consume_worker = ConsumeWorker::new(
                 id,
                 work_receiver,
@@ -644,7 +652,7 @@ impl BankingStage {
             )
         }
 
-        let forwarder = enable_forwarding.then(|| {
+        let forwarder = (enable_forwarding & !enable_forwarding).then(|| {
             Forwarder::new(
                 poh_recorder.clone(),
                 bank_forks.clone(),

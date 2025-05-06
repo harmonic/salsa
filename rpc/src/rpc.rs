@@ -3534,8 +3534,7 @@ pub mod utils {
             Ok(_) => RpcBundleSimulationSummary::Succeeded,
             Err(e) => {
                 let tx_signature = match e {
-                    LoadAndExecuteBundleError::TransactionError { signature, .. }
-                    | LoadAndExecuteBundleError::LockError { signature, .. } => {
+                    LoadAndExecuteBundleError::LockError { signature, .. } => {
                         Some(signature.to_string())
                     }
                     _ => None,
@@ -4353,7 +4352,7 @@ pub mod rpc_full {
                 .collect::<Result<Vec<RuntimeTransaction<SanitizedTransaction>>>>()?;
             let sanitized_bundle = SanitizedBundle {
                 transactions: runtime_txs,
-                bundle_id: bundle_id.unwrap_or("unknown".to_string()),
+                slot: bank.slot(),
             };
 
             if !config.skip_sig_verify {
@@ -4382,7 +4381,7 @@ pub mod rpc_full {
             // only return error if irrecoverable (timeout or tx malformed)
             // bundle execution failures w/ context are returned to client
             match bundle_execution_result.result() {
-                Ok(()) | Err(LoadAndExecuteBundleError::TransactionError { .. }) => {}
+                Ok(()) => {}
                 Err(LoadAndExecuteBundleError::ProcessingTimeExceeded(elapsed)) => {
                     let mut error = Error::new(ErrorCode::ServerError(10_000));
                     error.message = format!(

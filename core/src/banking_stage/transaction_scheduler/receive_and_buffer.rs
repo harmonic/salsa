@@ -298,6 +298,8 @@ impl SanitizedTransactionReceiveAndBuffer {
 
 pub(crate) struct TransactionViewReceiveAndBuffer {
     pub receiver: BankingPacketReceiver,
+    pub tpu_vote_receiver: Option<BankingPacketReceiver>,
+    pub gossip_vote_receiver: Option<BankingPacketReceiver>,
     pub bank_forks: Arc<RwLock<BankForks>>,
 }
 
@@ -305,6 +307,7 @@ impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
     type Transaction = RuntimeTransaction<ResolvedTransactionView<SharedBytes>>;
     type Container = TransactionViewStateContainer;
 
+    #[rustfmt::skip]
     fn receive_and_buffer_packets(
         &mut self,
         container: &mut Self::Container,
@@ -338,7 +341,12 @@ impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
             //       overhead for wakers? But then risk not waking up when message
             //       received - as long as sleep is somewhat short, this should be
             //       fine.
-            match self.receiver.recv_timeout(TIMEOUT) {
+            match self
+                .receiver
+                .recv_timeout(TIMEOUT / 4)
+                .or_else(|e| self.tpu_vote_receiver.as_ref().map(|r| r.recv_timeout(TIMEOUT / 4)).unwrap_or(Err(e)))
+                .or_else(|e| self.gossip_vote_receiver.as_ref().map(|r| r.recv_timeout(TIMEOUT / 4)).unwrap_or(Err(e)))
+            {
                 Ok(packet_batch_message) => {
                     received_message = true;
                     num_received += self.handle_packet_batch_message(
@@ -359,7 +367,15 @@ impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
         }
 
         while start.elapsed() < TIMEOUT {
-            match self.receiver.try_recv() {
+            match self
+                .receiver
+                .try_recv()
+                .or_else(|e| {
+                    self.tpu_vote_receiver.as_ref().map(|r| r.try_recv()).unwrap_or(Err(e))
+                })
+                .or_else(|e| {
+                    self.gossip_vote_receiver.as_ref().map(|r| r.try_recv()).unwrap_or(Err(e))
+                }) {
                 Ok(packet_batch_message) => {
                     received_message = true;
                     num_received += self.handle_packet_batch_message(
@@ -752,6 +768,8 @@ mod tests {
     ) {
         let receive_and_buffer = TransactionViewReceiveAndBuffer {
             receiver,
+            tpu_vote_receiver: None,
+            gossip_vote_receiver: None,
             bank_forks,
         };
         let container = TransactionViewStateContainer::with_capacity(TEST_CONTAINER_CAPACITY);
