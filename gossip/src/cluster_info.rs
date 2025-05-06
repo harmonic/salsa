@@ -442,7 +442,7 @@ impl ClusterInfo {
         self.my_contact_info
             .write()
             .unwrap()
-            .set_tpu_vote(contact_info::Protocol::QUIC, tpu_vote_addr)?;
+            .set_tpu_vote(contact_info::Protocol::UDP, tpu_vote_addr)?;
         self.refresh_my_gossip_contact_info();
         Ok(())
     }
