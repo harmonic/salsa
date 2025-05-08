@@ -1,4 +1,5 @@
 use {
+    solana_runtime::bank::Bank,
     solana_sdk::clock::Slot,
     std::sync::{Arc, RwLock},
 };
@@ -20,7 +21,7 @@ pub trait SlotStatusNotifierInterface {
     fn notify_completed(&self, slot: Slot);
 
     /// Notified when the slot has bank created.
-    fn notify_created_bank(&self, slot: Slot, parent: Slot);
+    fn notify_created_bank(&self, slot: Slot, parent: Slot, bank: Arc<Bank>);
 
     /// Notified when the slot is marked "Dead"
     fn notify_slot_dead(&self, slot: Slot, error: String);

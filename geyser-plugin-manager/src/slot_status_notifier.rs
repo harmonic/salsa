@@ -6,6 +6,7 @@ use {
     solana_measure::measure::Measure,
     solana_metrics::*,
     solana_rpc::slot_status_notifier::SlotStatusNotifierInterface,
+    solana_runtime::bank::Bank,
     std::sync::{Arc, RwLock},
 };
 
@@ -34,8 +35,12 @@ impl SlotStatusNotifierInterface for SlotStatusNotifierImpl {
         self.notify_slot_status(slot, None, SlotStatus::Completed);
     }
 
-    fn notify_created_bank(&self, slot: Slot, parent: Slot) {
-        self.notify_slot_status(slot, Some(parent), SlotStatus::CreatedBank);
+    fn notify_created_bank(&self, slot: Slot, parent: Slot, bank: Arc<Bank>) {
+        self.notify_slot_status(
+            slot,
+            Some(parent),
+            SlotStatus::CreatedBank(Arc::into_raw(bank).cast()),
+        );
     }
 
     fn notify_slot_dead(&self, slot: Slot, error: String) {
