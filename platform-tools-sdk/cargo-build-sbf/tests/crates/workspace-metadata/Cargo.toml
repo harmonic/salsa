@@ -1,6 +1,6 @@
 [package]
 name = "workspace-metadata"
-version = "2.2.12"
+version = "2.2.15"
 description = "Solana SBF test program with tools version in workspace metadata"
 authors = ["Anza Maintainers <maintainers@anza.xyz>"]
 repository = "https://github.com/anza-xyz/agave"
@@ -27,4 +27,4 @@ check-cfg = [
 [workspace]
 
 [workspace.metadata.solana]
-tools-version = "v1.47"
+tools-version = "v1.48"

@@ -8645,13 +8645,7 @@ impl AccountsDb {
             let storage_info = StorageSizeAndCountMap::default();
             let total_processed_slots_across_all_threads = AtomicU64::new(0);
             let outer_slots_len = slots.len();
-            let threads = if self.accounts_index.is_disk_index_enabled() {
-                // these write directly to disk, so the more threads, the better
-                num_cpus::get()
-            } else {
-                // seems to be a good heuristic given varying # cpus for in-mem disk index
-                8
-            };
+            let threads = num_cpus::get();
             let chunk_size = (outer_slots_len / (std::cmp::max(1, threads.saturating_sub(1)))) + 1; // approximately 400k slots in a snapshot
             let mut index_time = Measure::start("index");
             let insertion_time_us = AtomicU64::new(0);
@@ -9012,6 +9006,10 @@ impl AccountsDb {
     /// Startup processes can consume large amounts of memory while inserting accounts into the index as fast as possible.
     /// Calling this can slow down the insertion process to allow flushing to disk to keep pace.
     fn maybe_throttle_index_generation(&self) {
+        // Only throttle if we are generating on-disk index. Throttling is not needed for in-mem index.
+        if !self.accounts_index.is_disk_index_enabled() {
+            return;
+        }
         // This number is chosen to keep the initial ram usage sufficiently small
         // The process of generating the index is goverened entirely by how fast the disk index can be populated.
         // 10M accounts is sufficiently small that it will never have memory usage. It seems sufficiently large that it will provide sufficient performance.

@@ -11,8 +11,7 @@ use {
     solana_runtime::{bank::Bank, verify_precompiles::verify_precompiles},
     solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
     solana_sdk::{
-        clock::MAX_PROCESSING_AGE, pubkey::Pubkey, signature::Signature,
-        transaction::SanitizedTransaction,
+        clock::MAX_PROCESSING_AGE, hash::Hash, pubkey::Pubkey, transaction::SanitizedTransaction,
     },
     solana_svm::transaction_error_metrics::TransactionErrorMetrics,
     std::{
@@ -148,9 +147,9 @@ impl ImmutableDeserializedBundle {
             return Err(DeserializedBundleError::FailedToSerializeTransaction);
         }
 
-        let unique_signatures: HashSet<&Signature, RandomState> =
-            HashSet::from_iter(transactions.iter().map(|tx| tx.signature()));
-        if unique_signatures.len() != transactions.len() {
+        let unique_messages: HashSet<&Hash, RandomState> =
+            HashSet::from_iter(transactions.iter().map(|tx| tx.message_hash()));
+        if unique_messages.len() != transactions.len() {
             return Err(DeserializedBundleError::DuplicateTransaction);
         }
 

@@ -4,7 +4,7 @@ members = ["json-rpc/client", "json-rpc/server", "paytube"]
 resolver = "2"
 
 [workspace.package]
-version = "2.2.12"
+version = "2.2.15"
 authors = ["Anza Maintainers <maintainers@anza.xyz>"]
 repository = "https://github.com/anza-xyz/agave"
 homepage = "https://anza.xyz/"
@@ -44,9 +44,9 @@ solana-version = { path = "../../version" }
 solana-test-validator = { path = "../../test-validator" }
 solana-transaction-context = { path = "../../transaction-context" }
 solana-transaction-status = { path = "../../transaction-status" }
-spl-associated-token-account = "=6.0.0"
-spl-token = "=7.0.0"
-spl-token-2022 = "=7.0.0"
+spl-associated-token-account = "6.0.0"
+spl-token = "7.0.0"
+spl-token-2022 = "7.0.0"
 termcolor = "1.4.1"
 thiserror = "1.0.68"
 tokio = "1.29.1"
