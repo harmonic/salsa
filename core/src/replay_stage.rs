@@ -2221,11 +2221,10 @@ impl ReplayStage {
 
             rpc_subscriptions.notify_slot(tpu_bank.slot(), tpu_bank.parent_slot(), root_slot);
             if let Some(slot_status_notifier) = slot_status_notifier {
-                slot_status_notifier.read().unwrap().notify_created_bank(
-                    tpu_bank.slot(),
-                    tpu_bank.parent_slot(),
-                    tpu_bank,
-                );
+                slot_status_notifier
+                    .read()
+                    .unwrap()
+                    .notify_created_bank(tpu_bank.slot(), tpu_bank.parent_slot());
             }
 
             true
@@ -4181,11 +4180,10 @@ impl ReplayStage {
             let bank = forks.insert(bank);
             rpc_subscriptions.notify_slot(bank.slot(), bank.parent_slot(), forks.root());
             if let Some(slot_status_notifier) = slot_status_notifier {
-                slot_status_notifier.read().unwrap().notify_created_bank(
-                    bank.slot(),
-                    bank.parent_slot(),
-                    bank.clone_without_scheduler(),
-                );
+                slot_status_notifier
+                    .read()
+                    .unwrap()
+                    .notify_created_bank(bank.slot(), bank.parent_slot());
             }
         }
         generate_new_bank_forks_write_lock.stop();
