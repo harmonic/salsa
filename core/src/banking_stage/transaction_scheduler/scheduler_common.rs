@@ -165,6 +165,7 @@ impl<Tx> SchedulingCommon<Tx> {
         batches: &mut Batches<Tx>,
         thread_index: usize,
         target_transactions_per_batch: usize,
+        slot: u64
     ) -> Result<usize, SchedulerError> {
         if batches.ids[thread_index].is_empty() {
             return Ok(0);
@@ -183,6 +184,7 @@ impl<Tx> SchedulingCommon<Tx> {
             ids,
             transactions,
             max_ages,
+            slot
         };
         self.consume_work_senders[thread_index]
             .send(work)
@@ -197,10 +199,11 @@ impl<Tx> SchedulingCommon<Tx> {
         &mut self,
         batches: &mut Batches<Tx>,
         target_transactions_per_batch: usize,
+        slot: u64
     ) -> Result<usize, SchedulerError> {
         (0..self.consume_work_senders.len())
             .map(|thread_index| {
-                self.send_batch(batches, thread_index, target_transactions_per_batch)
+                self.send_batch(batches, thread_index, target_transactions_per_batch, slot)
             })
             .sum()
     }
@@ -221,6 +224,7 @@ impl<Tx: TransactionWithMeta> SchedulingCommon<Tx> {
                         ids,
                         transactions,
                         max_ages: _,
+                        ..
                     },
                 retryable_indexes,
             }) => {
@@ -434,7 +438,7 @@ mod tests {
         let mut batches = Batches::new(NUM_WORKERS, 10);
 
         pop_and_add_transaction(&mut container, &mut common, &mut batches, 0);
-        let num_scheduled = common.send_batch(&mut batches, 0, 10).unwrap();
+        let num_scheduled = common.send_batch(&mut batches, 0, 10, 0).unwrap();
         assert_eq!(num_scheduled, 1);
         assert_eq!(work_receivers[0].len(), 1);
         assert_eq!(
@@ -446,7 +450,7 @@ mod tests {
             &[DUMMY_COST, 0, 0, 0]
         );
 
-        let num_scheduled = common.send_batch(&mut batches, 1, 10).unwrap();
+        let num_scheduled = common.send_batch(&mut batches, 1, 10, 0).unwrap();
         assert_eq!(num_scheduled, 0);
         assert_eq!(work_receivers[1].len(), 0); // not actually sent since no transactions.
 
@@ -456,7 +460,7 @@ mod tests {
         pop_and_add_transaction(&mut container, &mut common, &mut batches, 0);
         pop_and_add_transaction(&mut container, &mut common, &mut batches, 2);
 
-        common.send_batches(&mut batches, 10).unwrap();
+        common.send_batches(&mut batches, 10, 0).unwrap();
         assert_eq!(work_receivers[0].len(), 1);
         assert_eq!(work_receivers[1].len(), 0);
         assert_eq!(work_receivers[2].len(), 1);
@@ -484,7 +488,7 @@ mod tests {
 
         // Send a batch. Return completed work.
         pop_and_add_transaction(&mut container, &mut common, &mut batches, 0);
-        let num_scheduled = common.send_batch(&mut batches, 0, 10).unwrap();
+        let num_scheduled = common.send_batch(&mut batches, 0, 10, 0).unwrap();
 
         let work = work_receivers[0].try_recv().unwrap();
         assert_eq!(work.ids.len(), num_scheduled);
@@ -506,7 +510,7 @@ mod tests {
         pop_and_add_transaction(&mut container, &mut common, &mut batches, 0);
         pop_and_add_transaction(&mut container, &mut common, &mut batches, 0);
         pop_and_add_transaction(&mut container, &mut common, &mut batches, 0);
-        let num_scheduled = common.send_batch(&mut batches, 0, 10).unwrap();
+        let num_scheduled = common.send_batch(&mut batches, 0, 10, 0).unwrap();
         let work = work_receivers[0].try_recv().unwrap();
         assert_eq!(work.ids.len(), num_scheduled);
         let retryable_indexes = vec![0, 1];
@@ -536,7 +540,7 @@ mod tests {
         add_transactions_to_container(&mut container, 2);
         pop_and_add_transaction(&mut container, &mut common, &mut batches, 0);
         pop_and_add_transaction(&mut container, &mut common, &mut batches, 0);
-        let num_scheduled = common.send_batch(&mut batches, 0, 10).unwrap();
+        let num_scheduled = common.send_batch(&mut batches, 0, 10, 0).unwrap();
         let work = work_receivers[0].try_recv().unwrap();
         assert_eq!(work.ids.len(), num_scheduled);
         let retryable_indexes = vec![1, 0];

@@ -16,7 +16,7 @@ use {
     },
     log::warn,
     solana_account::ReadableAccount,
-    solana_bundle::{derive_bundle_id_from_sanitized_transactions, SanitizedBundle, TipError},
+    solana_bundle::{SanitizedBundle, TipError},
     solana_clock::Epoch,
     solana_instruction::Instruction,
     solana_keypair::Keypair,
@@ -545,10 +545,9 @@ impl TipManager {
         if transactions.is_empty() {
             None
         } else {
-            let bundle_id = derive_bundle_id_from_sanitized_transactions(&transactions);
             Some(SanitizedBundle {
                 transactions,
-                bundle_id,
+                slot: bank.slot(),
             })
         }
     }
@@ -600,10 +599,9 @@ impl TipManager {
         if transactions.is_empty() {
             Ok(None)
         } else {
-            let bundle_id = derive_bundle_id_from_sanitized_transactions(&transactions);
             Ok(Some(SanitizedBundle {
                 transactions,
-                bundle_id,
+                slot: bank.slot(),
             }))
         }
     }

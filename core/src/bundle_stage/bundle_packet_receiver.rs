@@ -90,7 +90,7 @@ impl BundleReceiver {
             Duration::from_millis(0)
         } else {
             // BundleStage should pick up a working_bank as fast as possible
-            Duration::from_millis(100)
+            Duration::from_millis(1)
         }
     }
 

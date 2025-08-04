@@ -10,19 +10,13 @@ use {
             SchedulerCountMetrics, SchedulerLeaderDetectionMetrics, SchedulerTimingMetrics,
             SchedulingDetails,
         },
-    },
-    crate::banking_stage::{
+    }, crate::banking_stage::{
         consume_worker::ConsumeWorkerMetrics,
         consumer::Consumer,
         decision_maker::{BufferedPacketsDecision, DecisionMaker},
-        transaction_scheduler::transaction_state_container::StateContainer,
+        transaction_scheduler::{scheduler_controller::slot::set_consume_slot, transaction_state_container::StateContainer},
         TOTAL_BUFFERED_PACKETS,
-    },
-    solana_measure::measure_us,
-    solana_runtime::{bank::Bank, bank_forks::BankForks},
-    solana_clock::MAX_PROCESSING_AGE,
-    solana_svm::transaction_error_metrics::TransactionErrorMetrics,
-    std::{num::Saturating, sync::{Arc, RwLock}},
+    }, solana_clock::MAX_PROCESSING_AGE, solana_measure::measure_us, solana_runtime::{bank::Bank, bank_forks::BankForks}, solana_svm::transaction_error_metrics::TransactionErrorMetrics, std::{num::Saturating, sync::{Arc, RwLock}}
 };
 
 /// Controls packet and transaction flow into scheduler, and scheduling execution.
@@ -137,6 +131,8 @@ where
     ) -> Result<(), SchedulerError> {
         match decision {
             BufferedPacketsDecision::Consume(bank_start) => {
+                set_consume_slot(bank_start.working_bank.slot());
+
                 let (scheduling_summary, schedule_time_us) = measure_us!(self.scheduler.schedule(
                     &mut self.container,
                     |txs, results| {
@@ -311,6 +307,22 @@ where
             &mut self.count_metrics,
             decision,
         )
+    }
+}
+
+pub(crate) mod slot {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static CONSUME_SLOT: AtomicU64 = AtomicU64::new(0);
+
+    #[inline]
+    pub(crate) fn consume_slot() -> u64 {
+        CONSUME_SLOT.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub(crate) fn set_consume_slot(slot: u64) {
+        CONSUME_SLOT.store(slot, Ordering::Relaxed);
     }
 }
 
@@ -551,6 +563,7 @@ mod tests {
                     ids: vec![],
                     transactions: vec![],
                     max_ages: vec![],
+                    slot: 0,
                 },
                 retryable_indexes: vec![],
             })

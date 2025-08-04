@@ -65,17 +65,6 @@ pub enum LoadAndExecuteBundleError {
         transaction_error: TransactionError,
     },
 
-    #[error(
-        "A transaction in the bundle failed to execute: [signature={:?}, execution_result={:?}",
-        signature,
-        execution_result
-    )]
-    TransactionError {
-        signature: Signature,
-        // Box reduces the size between variants in the Error
-        execution_result: Box<Result<ProcessedTransaction>>,
-    },
-
     #[error("Invalid pre or post accounts")]
     InvalidPreOrPostAccounts,
 }
@@ -250,7 +239,7 @@ pub fn load_and_execute_bundle<'a>(
 
     while chunk_start != bundle.transactions.len() {
         if start_time.elapsed() > *max_processing_time {
-            trace!("bundle: {} took too long to execute", bundle.bundle_id);
+            trace!("bundle: {} took too long to execute", bundle.slot);
             return LoadAndExecuteBundleOutput {
                 bundle_transaction_results,
                 metrics,
@@ -275,7 +264,7 @@ pub fn load_and_execute_bundle<'a>(
 
         debug!(
             "bundle: {} batch num locks ok: {}",
-            bundle.bundle_id,
+            bundle.slot,
             batch.lock_results().iter().filter(|lr| lr.is_ok()).count()
         );
 
@@ -327,42 +316,12 @@ pub fn load_and_execute_bundle<'a>(
                 },
             ));
         debug!(
-            "bundle id: {} loaded_transactions: {:?}",
-            bundle.bundle_id, load_and_execute_transactions_output.processing_results
+            "bundle slot: {} loaded_transactions: {:?}",
+            bundle.slot, load_and_execute_transactions_output.processing_results
         );
         metrics
             .load_execute_us
             .add_assign(Saturating(load_execute_us));
-
-        // All transactions within a bundle are expected to be executable + not fail
-        // If there's any transactions that executed and failed or didn't execute due to
-        // unexpected failures (not locking related), bail out of bundle execution early.
-        if let Err((failing_tx, exec_result)) = check_bundle_execution_results(
-            load_and_execute_transactions_output
-                .processing_results
-                .as_slice(),
-            batch.sanitized_transactions(),
-        ) {
-            // TODO (LB): we should try to return partial results here for successful bundles in a parallel batch.
-            //  given a bundle that write locks the following accounts [[A], [B], [C]]
-            //  when B fails, we could return the execution results for A and C, but leave B out.
-            //  however, if we have bundle that write locks accounts [[A_1], [A_2], [B], [C]] and B fails
-            //  we'll get the results for A_1 but not [A_2], [B], [C] due to the way this loop executes.
-            debug!(
-                "bundle: {} execution error; signature: {} error: {:?}",
-                bundle.bundle_id,
-                failing_tx.signature(),
-                exec_result
-            );
-            return LoadAndExecuteBundleOutput {
-                bundle_transaction_results,
-                metrics,
-                result: Err(LoadAndExecuteBundleError::TransactionError {
-                    signature: *failing_tx.signature(),
-                    execution_result: Box::new(exec_result.clone()),
-                }),
-            };
-        }
 
         // If none of the transactions were executed, most likely an AccountInUse error
         // need to retry to ensure that all transactions in the bundle are executed.
@@ -374,7 +333,7 @@ pub fn load_and_execute_bundle<'a>(
             metrics.num_retries.add_assign(Saturating(1));
             debug!(
                 "bundle: {} no transaction executed, retrying",
-                bundle.bundle_id
+                bundle.slot
             );
             continue;
         }
@@ -468,7 +427,7 @@ mod tests {
     use {
         crate::{
             bundle_execution::{load_and_execute_bundle, LoadAndExecuteBundleError},
-            derive_bundle_id_from_sanitized_transactions, SanitizedBundle,
+            SanitizedBundle,
         },
         anchor_lang::solana_program::clock::MAX_PROCESSING_AGE,
         assert_matches::assert_matches,
@@ -522,11 +481,10 @@ mod tests {
             })
             .collect();
 
-        let bundle_id = derive_bundle_id_from_sanitized_transactions(&transactions);
 
         SanitizedBundle {
             transactions,
-            bundle_id,
+            slot: 0,
         }
     }
 
@@ -632,16 +590,6 @@ mod tests {
             | LoadAndExecuteBundleError::LockError { .. }
             | LoadAndExecuteBundleError::InvalidPreOrPostAccounts => {
                 unreachable!();
-            }
-            LoadAndExecuteBundleError::TransactionError {
-                signature,
-                execution_result,
-            } => {
-                assert_eq!(signature, *bundle.transactions[0].signature());
-                assert_eq!(
-                    execution_result.unwrap_err(),
-                    TransactionError::AccountNotFound
-                );
             }
         }
     }
@@ -872,17 +820,6 @@ mod tests {
             | LoadAndExecuteBundleError::LockError { .. }
             | LoadAndExecuteBundleError::InvalidPreOrPostAccounts => {
                 unreachable!();
-            }
-
-            LoadAndExecuteBundleError::TransactionError {
-                signature,
-                execution_result: tx_failure,
-            } => {
-                assert_eq!(signature, bundle.transactions[1].signature());
-                assert_eq!(
-                    tx_failure.flattened_result(),
-                    Err(TransactionError::AccountNotFound)
-                );
             }
         }
     }

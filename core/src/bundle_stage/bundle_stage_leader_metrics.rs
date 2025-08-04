@@ -234,13 +234,6 @@ impl BundleStageStatsMetricsTracker {
                         .add_assign(Saturating(1));
                 }
                 Err(BundleExecutionError::TransactionFailure(
-                    LoadAndExecuteBundleError::TransactionError { .. },
-                )) => {
-                    bundle_stage_metrics
-                        .execution_results_transaction_failures
-                        .add_assign(Saturating(1));
-                }
-                Err(BundleExecutionError::TransactionFailure(
                     LoadAndExecuteBundleError::LockError { .. },
                 ))
                 | Err(BundleExecutionError::LockError) => {
@@ -263,6 +256,9 @@ impl BundleStageStatsMetricsTracker {
                 )) => {
                     bundle_stage_metrics.bad_argument.add_assign(Saturating(1));
                 }
+                Err(BundleExecutionError::OldBundle) => {
+                    // TODO: charity
+                }
             }
         }
     }
@@ -283,6 +279,7 @@ impl BundleStageStatsMetricsTracker {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn increment_num_init_tip_account_errors(&mut self, count: u64) {
         if let Some(bundle_stage_metrics) = &mut self.bundle_stage_metrics {
             bundle_stage_metrics
@@ -291,6 +288,7 @@ impl BundleStageStatsMetricsTracker {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn increment_num_init_tip_account_ok(&mut self, count: u64) {
         if let Some(bundle_stage_metrics) = &mut self.bundle_stage_metrics {
             bundle_stage_metrics
@@ -299,6 +297,7 @@ impl BundleStageStatsMetricsTracker {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn increment_num_change_tip_receiver_errors(&mut self, count: u64) {
         if let Some(bundle_stage_metrics) = &mut self.bundle_stage_metrics {
             bundle_stage_metrics
@@ -307,6 +306,7 @@ impl BundleStageStatsMetricsTracker {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn increment_num_change_tip_receiver_ok(&mut self, count: u64) {
         if let Some(bundle_stage_metrics) = &mut self.bundle_stage_metrics {
             bundle_stage_metrics

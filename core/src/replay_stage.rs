@@ -37,7 +37,7 @@ use {
     solana_accounts_db::contains::Contains,
     solana_clock::{BankId, Slot, NUM_CONSECUTIVE_LEADER_SLOTS},
     solana_entry::entry::VerifyRecyclers,
-    solana_geyser_plugin_manager::block_metadata_notifier_interface::BlockMetadataNotifierArc,
+    solana_geyser_plugin_manager::{block_metadata_notifier_interface::BlockMetadataNotifierArc},
     solana_gossip::cluster_info::ClusterInfo,
     solana_hash::Hash,
     solana_keypair::Keypair,
@@ -2209,25 +2209,32 @@ impl ReplayStage {
                 false
             };
 
-            let tpu_bank = Self::new_bank_from_parent_with_notify(
+            let tpu_bank = Self::new_bank_from_parent(
                 parent.clone(),
                 poh_slot,
-                root_slot,
                 my_pubkey,
-                rpc_subscriptions,
-                slot_status_notifier,
                 NewBankOptions { vote_only_bank },
             );
             // make sure parent is frozen for finalized hashes via the above
             // new()-ing of its child bank
             banking_tracer.hash_event(parent.slot(), &parent.last_blockhash(), &parent.hash());
 
-            update_bank_forks_and_poh_recorder_for_new_tpu_bank(
+            let tpu_bank = update_bank_forks_and_poh_recorder_for_new_tpu_bank(
                 bank_forks,
                 poh_recorder,
                 tpu_bank,
                 track_transaction_indexes,
             );
+
+            rpc_subscriptions.notify_slot(tpu_bank.slot(), tpu_bank.parent_slot(), root_slot);
+
+            if let Some(slot_status_notifier) = slot_status_notifier {
+                slot_status_notifier
+                    .read()
+                    .unwrap()
+                    .notify_created_bank(tpu_bank.slot(), tpu_bank.parent_slot());
+            }
+
             true
         } else {
             error!("{} No next leader found", my_pubkey);
@@ -4198,13 +4205,10 @@ impl ReplayStage {
                     parent_slot,
                     forks.root()
                 );
-                let child_bank = Self::new_bank_from_parent_with_notify(
+                let child_bank = Self::new_bank_from_parent(
                     parent_bank.clone(),
                     child_slot,
-                    forks.root(),
                     &leader,
-                    rpc_subscriptions,
-                    slot_status_notifier,
                     NewBankOptions::default(),
                 );
                 let empty: Vec<Pubkey> = vec![];
@@ -4225,7 +4229,14 @@ impl ReplayStage {
             Measure::start("generate_new_bank_forks_write_lock");
         let mut forks = bank_forks.write().unwrap();
         for (_, bank) in new_banks {
-            forks.insert(bank);
+            let bank = forks.insert(bank);
+            rpc_subscriptions.notify_slot(bank.slot(), bank.parent_slot(), forks.root());
+            if let Some(slot_status_notifier) = slot_status_notifier {
+                slot_status_notifier
+                    .read()
+                    .unwrap()
+                    .notify_created_bank(bank.slot(), bank.parent_slot());
+            }
         }
         generate_new_bank_forks_write_lock.stop();
         replay_timing.generate_new_bank_forks_read_lock_us +=
@@ -4237,6 +4248,7 @@ impl ReplayStage {
             generate_new_bank_forks_write_lock.as_us();
     }
 
+    #[allow(dead_code)]
     fn new_bank_from_parent_with_notify(
         parent: Arc<Bank>,
         slot: u64,
@@ -4253,6 +4265,15 @@ impl ReplayStage {
                 .unwrap()
                 .notify_created_bank(slot, parent.slot());
         }
+        Bank::new_from_parent_with_options(parent, leader, slot, new_bank_options)
+    }
+    
+    fn new_bank_from_parent(
+        parent: Arc<Bank>,
+        slot: u64,
+        leader: &Pubkey,
+        new_bank_options: NewBankOptions,
+    ) -> Bank {
         Bank::new_from_parent_with_options(parent, leader, slot, new_bank_options)
     }
 

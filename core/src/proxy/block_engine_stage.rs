@@ -500,7 +500,7 @@ impl BlockEngineStage {
                             .map(proto_packet_to_packet)
                             .collect::<Vec<BytesPacket>>(),
                     ),
-                    bundle_id: bundle.uuid,
+                    slot: 0,
                 })
             })
             .collect();

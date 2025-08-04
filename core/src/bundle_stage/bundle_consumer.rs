@@ -240,11 +240,11 @@ impl BundleConsumer {
 
     #[allow(clippy::too_many_arguments)]
     fn process_bundle(
-        bundle_account_locker: &BundleAccountLocker,
+        _bundle_account_locker: &BundleAccountLocker,
         tip_manager: &TipManager,
         last_tip_updated_slot: &mut Slot,
-        cluster_info: &Arc<ClusterInfo>,
-        block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
+        _cluster_info: &Arc<ClusterInfo>,
+        _block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         committer: &Committer,
         recorder: &TransactionRecorder,
         qos_service: &QosService,
@@ -268,25 +268,25 @@ impl BundleConsumer {
             )
         {
             let start = Instant::now();
-            let result = Self::handle_tip_programs(
-                bundle_account_locker,
-                tip_manager,
-                cluster_info,
-                block_builder_fee_info,
-                committer,
-                recorder,
-                qos_service,
-                log_messages_bytes_limit,
-                max_bundle_retry_duration,
-                bank_start,
-                bundle_stage_leader_metrics,
-            );
+            // let result = Self::handle_tip_programs(
+            //     bundle_account_locker,
+            //     tip_manager,
+            //     cluster_info,
+            //     block_builder_fee_info,
+            //     committer,
+            //     recorder,
+            //     qos_service,
+            //     log_messages_bytes_limit,
+            //     max_bundle_retry_duration,
+            //     bank_start,
+            //     bundle_stage_leader_metrics,
+            // );
 
             bundle_stage_leader_metrics
                 .bundle_stage_metrics_tracker()
                 .increment_change_tip_receiver_elapsed_us(start.elapsed().as_micros() as u64);
 
-            result?;
+            // result?;
 
             *last_tip_updated_slot = bank_start.working_bank.slot();
         }
@@ -307,6 +307,7 @@ impl BundleConsumer {
 
     /// The validator needs to manage state on two programs related to tips
     #[allow(clippy::too_many_arguments)]
+    #[allow(unused)]
     fn handle_tip_programs(
         bundle_account_locker: &BundleAccountLocker,
         tip_manager: &TipManager,
@@ -332,7 +333,7 @@ impl BundleConsumer {
             debug!(
                 "initializing tip programs with {} transactions, bundle id: {}",
                 bundle.transactions.len(),
-                bundle.bundle_id
+                bundle.slot
             );
 
             let locked_init_tip_programs_bundle = bundle_account_locker
@@ -355,7 +356,7 @@ impl BundleConsumer {
                     .increment_num_init_tip_account_errors(1);
                 error!(
                     "bundle: {} error initializing tip programs: {:?}",
-                    locked_init_tip_programs_bundle.sanitized_bundle().bundle_id,
+                    locked_init_tip_programs_bundle.sanitized_bundle().slot,
                     e
                 );
                 BundleExecutionError::TipError(TipError::InitializeProgramsError)
@@ -383,7 +384,7 @@ impl BundleConsumer {
         if let Some(bundle) = tip_crank_bundle {
             info!(
                 "bundle id: {} cranking tip programs with {} transactions",
-                bundle.bundle_id,
+                bundle.slot,
                 bundle.transactions.len()
             );
 
@@ -407,7 +408,7 @@ impl BundleConsumer {
                     .increment_num_change_tip_receiver_errors(1);
                 error!(
                     "bundle: {} error cranking tip programs: {:?}",
-                    locked_tip_crank_bundle.sanitized_bundle().bundle_id,
+                    locked_tip_crank_bundle.sanitized_bundle().slot,
                     e
                 );
                 BundleExecutionError::TipError(TipError::CrankTipError)
@@ -461,7 +462,7 @@ impl BundleConsumer {
     ) -> BundleExecutionResult<()> {
         debug!(
             "bundle: {} reserving blockspace for {} transactions",
-            sanitized_bundle.bundle_id,
+            sanitized_bundle.slot,
             sanitized_bundle.transactions.len()
         );
 
@@ -476,7 +477,7 @@ impl BundleConsumer {
 
         debug!(
             "bundle: {} executing, recording, and committing",
-            sanitized_bundle.bundle_id
+            sanitized_bundle.slot
         );
 
         let (result, process_transactions_us) = measure_us!(Self::execute_record_commit_bundle(
@@ -574,7 +575,7 @@ impl BundleConsumer {
 
         let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
 
-        debug!("bundle: {} executing", sanitized_bundle.bundle_id);
+        debug!("bundle: {} executing", sanitized_bundle.slot);
         let default_accounts = vec![None; sanitized_bundle.transactions.len()];
         let bundle_execution_results = load_and_execute_bundle(
             &bank_start.working_bank,
@@ -599,7 +600,7 @@ impl BundleConsumer {
 
         debug!(
             "bundle: {} executed, is_ok: {}",
-            sanitized_bundle.bundle_id,
+            sanitized_bundle.slot,
             bundle_execution_results.result.is_ok()
         );
 
@@ -623,7 +624,7 @@ impl BundleConsumer {
 
         debug!(
             "bundle: {} recording {} batches of {:?} transactions",
-            sanitized_bundle.bundle_id,
+            sanitized_bundle.slot,
             executed_batches.len(),
             executed_batches
                 .iter()
@@ -675,7 +676,7 @@ impl BundleConsumer {
 
         debug!(
             "bundle: {} record result: {}",
-            sanitized_bundle.bundle_id,
+            sanitized_bundle.slot,
             record_transactions_result.is_ok()
         );
 
@@ -716,7 +717,7 @@ impl BundleConsumer {
             .collect();
         debug!(
             "bundle: {} commit details: {:?}",
-            sanitized_bundle.bundle_id, commit_transaction_details
+            sanitized_bundle.slot, commit_transaction_details
         );
 
         ExecuteRecordCommitResult {
@@ -1440,7 +1441,7 @@ mod tests {
         ));
         let sanitized_bundle = SanitizedBundle {
             transactions: vec![transfer_tx],
-            bundle_id: String::default(),
+            slot: 0,
         };
 
         let transfer_cost =
@@ -1478,7 +1479,7 @@ mod tests {
         ));
         let sanitized_bundle = SanitizedBundle {
             transactions: vec![transfer_tx1, transfer_tx2],
-            bundle_id: String::default(),
+            slot: 0,
         };
 
         // set block cost limit to 1 transfer transaction, try to process 2, should return an error
