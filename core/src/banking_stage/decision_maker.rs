@@ -1,15 +1,11 @@
 use {
-    solana_clock::{
+    crate::scheduler_synchronization, solana_clock::{
         DEFAULT_TICKS_PER_SLOT, FORWARD_TRANSACTIONS_TO_LEADER_AT_SLOT_OFFSET,
         HOLD_TRANSACTIONS_SLOT_OFFSET,
-    },
-    solana_poh::poh_recorder::{BankStart, PohRecorder},
-    solana_pubkey::Pubkey,
-    solana_unified_scheduler_pool::{BankingStageMonitor, BankingStageStatus},
-    std::{
+    }, solana_poh::poh_recorder::{BankStart, PohRecorder}, solana_pubkey::Pubkey, solana_unified_scheduler_pool::{BankingStageMonitor, BankingStageStatus}, std::{
         sync::{Arc, RwLock},
         time::{Duration, Instant},
-    },
+    }
 };
 
 #[derive(Debug, Clone)]
@@ -115,6 +111,57 @@ impl DecisionMaker {
         }
     }
 
+    pub(crate) fn maybe_consume<const VANILLA: bool>(
+        decision: BufferedPacketsDecision,
+    ) -> BufferedPacketsDecision {
+        let BufferedPacketsDecision::Consume(bank_start) = decision else {
+            return decision;
+        };
+
+        let current_tick_height = bank_start.working_bank.tick_height();
+        let max_tick_height = bank_start.working_bank.max_tick_height();
+        let bank_ticks_per_slot = bank_start.working_bank.ticks_per_slot();
+        let start_tick = max_tick_height - bank_ticks_per_slot;
+        let ticks_info_slot = current_tick_height - start_tick;
+        let delegation_period_length = bank_ticks_per_slot * 3 / 4;
+        let in_delegation_period = ticks_info_slot < delegation_period_length;
+
+        let current_slot = bank_start.working_bank.slot();
+
+        // Check if we have a cached decision
+        CACHED_DECISION.with_borrow_mut(|cached_decision| {
+            // Use cached decision if there is one for this slot
+            if let Some((cached_slot, cached_decision)) = cached_decision {
+                if current_slot.eq(cached_slot) {
+                    return cached_decision
+                        // Consume if cached_decision = true
+                        .then_some(BufferedPacketsDecision::Consume(bank_start))
+                        // Hold if cached_decision = false
+                        .unwrap_or(BufferedPacketsDecision::Hold);
+                }
+            }
+
+            // No cached decision. Try to update cached decision
+            let should_schedule: fn(u64, bool) -> Option<bool> = if VANILLA {
+                scheduler_synchronization::vanilla_should_schedule
+            } else {
+                scheduler_synchronization::block_should_schedule
+            };
+
+            match should_schedule(current_slot, in_delegation_period) {
+                Some(decision) => {
+                    *cached_decision = Some((current_slot, decision));
+                    decision
+                        // Consume if cached_decision = true
+                        .then_some(BufferedPacketsDecision::Consume(bank_start))
+                        // Hold if cached_decision = false
+                        .unwrap_or(BufferedPacketsDecision::Hold)
+                }
+                None => return BufferedPacketsDecision::Hold,
+            }
+        })
+    }
+
     fn bank_start(poh_recorder: &PohRecorder) -> Option<BankStart> {
         poh_recorder
             .bank_start()
@@ -134,6 +181,10 @@ impl DecisionMaker {
     fn leader_pubkey(poh_recorder: &PohRecorder) -> Option<Pubkey> {
         poh_recorder.leader_after_n_slots(FORWARD_TRANSACTIONS_TO_LEADER_AT_SLOT_OFFSET)
     }
+}
+
+thread_local! {
+    static CACHED_DECISION: std::cell::RefCell<Option<(u64, bool)>> = std::cell::RefCell::new(None);
 }
 
 impl BankingStageMonitor for DecisionMaker {

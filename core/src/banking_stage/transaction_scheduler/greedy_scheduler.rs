@@ -1,5 +1,7 @@
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
+use crate::banking_stage::transaction_scheduler::scheduler_controller::{slot::consume_slot};
+
 use {
     super::{
         scheduler::{PreLockFilterAction, Scheduler, SchedulingSummary},
@@ -129,7 +131,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for GreedyScheduler<Tx> {
                 self.working_account_set.clear();
                 num_sent += self
                     .common
-                    .send_batches(&mut batches, self.config.target_transactions_per_batch)?;
+                    .send_batches(&mut batches, self.config.target_transactions_per_batch, consume_slot())?;
             }
 
             // Now check if the transaction can actually be scheduled.
@@ -177,6 +179,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for GreedyScheduler<Tx> {
                         num_sent += self.common.send_batches(
                             &mut batches,
                             self.config.target_transactions_per_batch,
+                            consume_slot(),
                         )?;
                     }
 
@@ -197,7 +200,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for GreedyScheduler<Tx> {
 
         self.working_account_set.clear();
         // Use zero here to avoid allocating since we are done with `Batches`.
-        num_sent += self.common.send_batches(&mut batches, 0)?;
+        num_sent += self.common.send_batches(&mut batches, 0, consume_slot())?;
         let Saturating(num_scheduled) = num_scheduled;
         assert_eq!(
             num_scheduled, num_sent,

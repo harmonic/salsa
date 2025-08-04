@@ -62,8 +62,8 @@ pub enum DeserializedBundleError {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ImmutableDeserializedBundle {
-    bundle_id: String,
     packets: Vec<ImmutableDeserializedPacket>,
+    slot: u64,
 }
 
 impl ImmutableDeserializedBundle {
@@ -104,7 +104,7 @@ impl ImmutableDeserializedBundle {
         }
 
         Ok(Self {
-            bundle_id: bundle.bundle_id.clone(),
+            slot: bundle.slot,
             packets: immutable_packets,
         })
     }
@@ -114,8 +114,8 @@ impl ImmutableDeserializedBundle {
         self.packets.len()
     }
 
-    pub fn bundle_id(&self) -> &str {
-        &self.bundle_id
+    pub fn slot(&self) -> u64 {
+        self.slot
     }
 
     /// A bundle has the following requirements:
@@ -182,7 +182,7 @@ impl ImmutableDeserializedBundle {
 
         Ok(SanitizedBundle {
             transactions,
-            bundle_id: self.bundle_id.clone(),
+            slot: self.slot
         })
     }
 }
@@ -232,7 +232,7 @@ mod tests {
                     BytesPacket::from_data(None, &tx0).unwrap(),
                     BytesPacket::from_data(None, &tx1).unwrap(),
                 ]),
-                bundle_id: String::default(),
+                slot: 0,
             },
             None,
             &Ok,
@@ -260,7 +260,7 @@ mod tests {
             ImmutableDeserializedBundle::new(
                 &mut PacketBundle {
                     batch: PacketBatch::from(vec![]),
-                    bundle_id: String::default(),
+                    slot: 0,
                 },
                 None,
                 &Ok
@@ -287,7 +287,7 @@ mod tests {
                             })
                             .collect::<Vec<_>>(),
                     ),
-                    bundle_id: String::default(),
+                    slot: 0,
                 },
                 Some(5),
                 &Ok
@@ -309,7 +309,7 @@ mod tests {
             ImmutableDeserializedBundle::new(
                 &mut PacketBundle {
                     batch: PacketBatch::from(vec![packet]),
-                    bundle_id: String::default(),
+                    slot: 0,
                 },
                 Some(5),
                 &Ok
@@ -331,7 +331,7 @@ mod tests {
             ImmutableDeserializedBundle::new(
                 &mut PacketBundle {
                     batch: PacketBatch::from(vec![BytesPacket::from_data(None, tx0).unwrap()]),
-                    bundle_id: String::default(),
+                    slot: 0,
                 },
                 None,
                 &Ok
@@ -364,7 +364,7 @@ mod tests {
         let bundle = ImmutableDeserializedBundle::new(
             &mut PacketBundle {
                 batch: PacketBatch::from(vec![BytesPacket::from_data(None, tx0).unwrap()]),
-                bundle_id: String::default(),
+                slot: 0,
             },
             None,
             &Ok,
@@ -401,7 +401,7 @@ mod tests {
                     BytesPacket::from_data(None, &tx0).unwrap(),
                     BytesPacket::from_data(None, &tx0).unwrap(),
                 ]),
-                bundle_id: String::default(),
+                slot: 0,
             },
             None,
             &Ok,
@@ -431,7 +431,7 @@ mod tests {
         let bundle = ImmutableDeserializedBundle::new(
             &mut PacketBundle {
                 batch: PacketBatch::from(vec![BytesPacket::from_data(None, tx0).unwrap()]),
-                bundle_id: String::default(),
+                slot: 0,
             },
             None,
             &Ok,
@@ -467,7 +467,7 @@ mod tests {
         let bundle = ImmutableDeserializedBundle::new(
             &mut PacketBundle {
                 batch: PacketBatch::from(vec![BytesPacket::from_data(None, tx0).unwrap()]),
-                bundle_id: String::default(),
+                slot: 0,
             },
             None,
             &Ok,
@@ -497,7 +497,7 @@ mod tests {
         let bundle = ImmutableDeserializedBundle::new(
             &mut PacketBundle {
                 batch: PacketBatch::from(vec![BytesPacket::from_data(None, tx0).unwrap()]),
-                bundle_id: String::default(),
+                slot: 0,
             },
             None,
             &Ok,

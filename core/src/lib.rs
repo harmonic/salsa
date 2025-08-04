@@ -112,3 +112,154 @@ pub fn proto_packet_to_packet(p: jito_protos::proto::packet::Packet) -> BytesPac
     }
     packet
 }
+
+
+pub(crate) mod scheduler_synchronization {
+    //! mevanoxx TODO: maybe move this
+    //!
+    //! Synchronize whole block and vanilla schedulers.
+    //!
+    //! Every slot, there are two stages: delegation and fallback.
+    //! During delegation stage, the block scheduler await a whole block.
+    //! If a whole block is received by the end of the stage,
+
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Module private state. Shared with block & vanilla schedulers.
+    /// Initialized to sentinel value of u64::MAX.
+    static LAST_SLOT_SCHEDULED: AtomicU64 = AtomicU64::new(SENTINEL);
+    const SENTINEL: u64 = u64::MAX;
+
+    /// If vanilla should schedule, the internal private atomic is
+    /// updated so that the block scheduler does not schedule.
+    ///
+    /// This fn is not idempotent so nonnull return value should
+    /// be cached.
+    ///
+    /// None => no but decision not final (ie not yet at least)
+    /// Some(true) => yes and decision for this slot is final
+    /// Some(false) => no and decision for this slot is final
+    pub(crate) fn vanilla_should_schedule(
+        current_slot: u64,
+        in_delegation_period: bool,
+    ) -> Option<bool> {
+        if in_delegation_period {
+            return None;
+        }
+
+        let did_update_atomic = LAST_SLOT_SCHEDULED
+            .fetch_update(
+                Ordering::Release,
+                Ordering::Acquire,
+                |last_slot_scheduled| {
+                    match last_slot_scheduled.cmp(&current_slot) {
+                        // No longer in delegation period and last slot scheduled was in the past => update
+                        std::cmp::Ordering::Less => Some(current_slot),
+                        // Something has been scheduled for this slot => no update
+                        std::cmp::Ordering::Equal => None,
+
+                        // Edge case at slot boundary or sentinel value
+                        std::cmp::Ordering::Greater => {
+                            // If sentinel value, similar to Less but for startup case
+                            let is_sentinel_value = last_slot_scheduled == SENTINEL;
+                            if is_sentinel_value {
+                                return Some(current_slot);
+                            }
+
+                            // Otherwise, some weird edge case (don't schedule)
+                            None
+                        }
+                    }
+                },
+            )
+            .is_ok();
+        if did_update_atomic {
+            info!("mevanoxx: vanilla updated slot to {current_slot}");
+        }
+
+        Some(did_update_atomic)
+    }
+
+    /// If block should schedule, the internal private atomic is
+    /// updated so that the vanilla scheduler does not schedule.
+    ///
+    /// This fn is not idempotent so nonnull return value should
+    /// be cached.
+    ///
+    /// None => no but decision not final (ie not yet at least)
+    /// Some(true) => yes and decision for this slot is final
+    /// Some(false) => no and decision for this slot is final
+    pub(crate) fn block_should_schedule(
+        current_slot: u64,
+        in_delegation_period: bool,
+    ) -> Option<bool> {
+        if !in_delegation_period {
+            return None;
+        }
+
+        let did_update_atomic = LAST_SLOT_SCHEDULED
+            .fetch_update(
+                Ordering::Release,
+                Ordering::Acquire,
+                |last_slot_scheduled| {
+                    match last_slot_scheduled.cmp(&current_slot) {
+                        // In delegation period and last slot scheduled was in the past => update
+                        std::cmp::Ordering::Less => Some(current_slot),
+                        // Something has been scheduled for this slot => no update.
+                        // We shouldn't ever hit this branch so lets log it...
+                        std::cmp::Ordering::Equal => {
+                            info!("mevanoxx: unexpectedly hit Equal branch");
+                            None
+                        }
+
+                        // Edge case at slot boundary or sentinel value
+                        std::cmp::Ordering::Greater => {
+                            // If sentinel value, similar to Less but for startup case
+                            let is_sentinel_value = last_slot_scheduled == SENTINEL;
+                            if is_sentinel_value {
+                                return Some(current_slot);
+                            }
+
+                            // Otherwise, some weird edge case (don't schedule)
+                            None
+                        }
+                    }
+                },
+            )
+            .is_ok();
+        if did_update_atomic {
+            info!("mevanoxx: block updated slot to {current_slot}");
+        }
+
+        Some(did_update_atomic)
+    }
+
+    /// If block failed, we should revert and give vanilla a chance
+    /// updated so that the vanilla scheduler does not schedule.
+    pub(crate) fn block_failed(current_slot: u64) -> Option<bool> {
+        let did_update_atomic = LAST_SLOT_SCHEDULED
+            .fetch_update(
+                Ordering::Release,
+                Ordering::Acquire,
+                |last_slot_scheduled| {
+                    match last_slot_scheduled.cmp(&current_slot) {
+                        // Still in same slot => revert
+                        //
+                        // doesn't have to be actual last slot, just one that is less than (or sentinel)
+                        std::cmp::Ordering::Equal => Some(current_slot.wrapping_sub(1)),
+
+                        // New slot => don't revert (this includes sentinel case, which is unreachable)
+                        std::cmp::Ordering::Greater => None,
+
+                        // Invalid state revert
+                        std::cmp::Ordering::Less => unreachable!("never revert for past slot"),
+                    }
+                },
+            )
+            .is_ok();
+        if did_update_atomic {
+            info!("mevanoxx: block reverted in slot {current_slot}");
+        }
+        Some(did_update_atomic)
+    }
+}

@@ -61,18 +61,13 @@ pub enum BundleExecutionError {
 
     #[error("Tip payment error {0}")]
     TipError(#[from] TipError),
+
+    #[error("Old bundle")]
+    OldBundle,
 }
 
 #[derive(Debug)]
 pub struct SanitizedBundle {
     pub transactions: Vec<RuntimeTransaction<SanitizedTransaction>>,
-    pub bundle_id: String,
-}
-
-pub fn derive_bundle_id_from_sanitized_transactions(
-    transactions: &[RuntimeTransaction<SanitizedTransaction>],
-) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(transactions.iter().map(|tx| tx.signature()).join(","));
-    format!("{:x}", hasher.finalize())
+    pub slot: u64,
 }

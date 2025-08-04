@@ -1,5 +1,7 @@
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
+use crate::banking_stage::transaction_scheduler::scheduler_controller::slot::consume_slot;
+
 use {
     super::{
         scheduler::{PreLockFilterAction, Scheduler, SchedulingSummary},
@@ -268,6 +270,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
                                 &mut batches,
                                 thread_id,
                                 self.config.target_transactions_per_batch,
+                                consume_slot()
                             )?;
                         }
 
@@ -293,7 +296,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
             // Send all non-empty batches
             num_sent += self
                 .common
-                .send_batches(&mut batches, self.config.target_transactions_per_batch)?;
+                .send_batches(&mut batches, self.config.target_transactions_per_batch, consume_slot())?;
 
             // Refresh window budget and do chunked pops
             window_budget += unblock_this_batch.len();
@@ -308,7 +311,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
         // Send batches for any remaining transactions
         num_sent += self
             .common
-            .send_batches(&mut batches, self.config.target_transactions_per_batch)?;
+            .send_batches(&mut batches, self.config.target_transactions_per_batch, consume_slot())?;
 
         // Push unschedulable ids back into the container
         container.push_ids_into_queue(unschedulable_ids.into_iter());
