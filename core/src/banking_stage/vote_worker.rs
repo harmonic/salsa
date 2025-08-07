@@ -229,8 +229,8 @@ impl VoteWorker {
         let mut reached_end_of_slot = false;
         let mut sanitized_transactions = Vec::with_capacity(UNPROCESSED_BUFFER_STEP_SIZE);
         let mut error_counters: TransactionErrorMetrics = TransactionErrorMetrics::default();
-        info!("Processing {} vote packets, slot: {}, tick: {}", all_vote_packets.len(),
-            bank_start.working_bank.slot(), bank_start.working_bank.tick_height());
+        info!("Processing {} vote packets, slot: {}, tick: {}, outstanding: {}", all_vote_packets.len(),
+            bank_start.working_bank.slot(), bank_start.working_bank.tick_height(), self.storage.len());
 
         let mut vote_packets =
             ArrayVec::<Arc<ImmutableDeserializedPacket>, UNPROCESSED_BUFFER_STEP_SIZE>::new();
