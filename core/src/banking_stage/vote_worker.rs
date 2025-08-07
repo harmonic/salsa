@@ -402,7 +402,7 @@ impl VoteWorker {
         transactions: &[impl TransactionWithMeta],
         reservation_cb: &impl Fn(&Bank) -> u64,
     ) -> ProcessTransactionsSummary {
-        const MAX_TICK_FOR_VOTING: u64 = 32;
+        const MAX_TICK_FOR_VOTING: u64 = 48;
 
         let bank_slot_tick_start = bank.max_tick_height().saturating_sub(bank.ticks_per_slot());
         let bank_slot_tick_height = bank.tick_height().saturating_sub(bank_slot_tick_start);
