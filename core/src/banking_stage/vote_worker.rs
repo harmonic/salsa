@@ -407,12 +407,19 @@ impl VoteWorker {
         let bank_slot_tick_start = bank.max_tick_height().saturating_sub(bank.ticks_per_slot());
         let bank_slot_tick_height = bank.tick_height().saturating_sub(bank_slot_tick_start);
 
+        info!("process_transaction: slot: {} height: {} block_start: {}, tx_count: {}",
+            bank.slot(),
+            bank.tick_height(),
+            bank_slot_tick_start,
+            transactions.len(),
+        );
+
         if bank_slot_tick_height > MAX_TICK_FOR_VOTING {
             info!(
                 "process transactions: max tick height reached slot: {} height: {} block_start: {}, tx_count: {}",
                 bank.slot(),
-                bank.tick_height(),
                 bank_slot_tick_start,
+                bank_slot_tick_height,
                 transactions.len(),
             );
             return ProcessTransactionsSummary {
