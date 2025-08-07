@@ -229,8 +229,13 @@ impl VoteWorker {
         let mut reached_end_of_slot = false;
         let mut sanitized_transactions = Vec::with_capacity(UNPROCESSED_BUFFER_STEP_SIZE);
         let mut error_counters: TransactionErrorMetrics = TransactionErrorMetrics::default();
-        info!("Processing {} vote packets, slot: {}, tick: {}, outstanding: {}", all_vote_packets.len(),
-            bank_start.working_bank.slot(), bank_start.working_bank.tick_height(), self.storage.len());
+        info!(
+            "Processing {} vote packets, slot: {}, tick: {}, outstanding: {}",
+            all_vote_packets.len(),
+            bank_start.working_bank.slot(),
+            bank_start.working_bank.tick_height(),
+            self.storage.len()
+        );
 
         let mut vote_packets =
             ArrayVec::<Arc<ImmutableDeserializedPacket>, UNPROCESSED_BUFFER_STEP_SIZE>::new();
@@ -269,12 +274,13 @@ impl VoteWorker {
             } else {
                 self.storage.reinsert_packets(vote_packets.drain(..));
             }
-
-            info!("Done processing slot: {}, tick: {}, outstanding: {}",
-                bank_start.working_bank.slot(),
-                bank_start.working_bank.tick_height(),
-                self.storage.len());
         }
+        info!(
+            "Done processing slot: {}, tick: {}, outstanding: {}",
+            bank_start.working_bank.slot(),
+            bank_start.working_bank.tick_height(),
+            self.storage.len()
+        );
 
         reached_end_of_slot
     }
@@ -415,7 +421,8 @@ impl VoteWorker {
         let bank_slot_tick_start = bank.max_tick_height().saturating_sub(bank.ticks_per_slot());
         let bank_slot_tick_height = bank.tick_height().saturating_sub(bank_slot_tick_start);
 
-        info!("process_transaction: slot: {} height: {} block_start: {}, tx_count: {}",
+        info!(
+            "process_transaction: slot: {} height: {} block_start: {}, tx_count: {}",
             bank.slot(),
             bank_slot_tick_height,
             bank_slot_tick_start,
@@ -432,12 +439,13 @@ impl VoteWorker {
             );
             return ProcessTransactionsSummary {
                 reached_max_poh_height: true,
-                retryable_transaction_indexes: transactions.iter()
+                retryable_transaction_indexes: transactions
+                    .iter()
                     .enumerate()
                     .map(|(index, _)| index)
                     .collect(),
                 ..Default::default()
-            }
+            };
         }
 
         let process_transaction_batch_output =
