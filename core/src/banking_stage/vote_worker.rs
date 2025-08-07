@@ -404,7 +404,10 @@ impl VoteWorker {
         reservation_cb: &impl Fn(&Bank) -> u64,
     ) -> ProcessTransactionsSummary {
 
-        if bank.tick_height() >= Self::MAX_TICK_FOR_VOTING {
+        let bank_slot_tick_start = bank.max_tick_height().saturating_sub(bank.ticks_per_slot());
+        let bank_slot_tick_height = bank.tick_height().saturating_sub(bank_slot_tick_start);
+
+        if bank_slot_tick_height >= Self::MAX_TICK_FOR_VOTING {
             info!(
                 "process transactions: max tick height reached slot: {} height: {}",
                 bank.slot(),
