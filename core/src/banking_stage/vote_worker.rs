@@ -409,7 +409,7 @@ impl VoteWorker {
 
         info!("process_transaction: slot: {} height: {} block_start: {}, tx_count: {}",
             bank.slot(),
-            bank.tick_height(),
+            bank_slot_tick_height,
             bank_slot_tick_start,
             transactions.len(),
         );
