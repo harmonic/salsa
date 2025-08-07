@@ -424,6 +424,10 @@ impl VoteWorker {
             );
             return ProcessTransactionsSummary {
                 reached_max_poh_height: true,
+                retryable_transaction_indexes: transactions.iter()
+                    .enumerate()
+                    .map(|(index, _)| index)
+                    .collect(),
                 ..Default::default()
             }
         }
