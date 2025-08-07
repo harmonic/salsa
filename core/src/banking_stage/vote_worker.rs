@@ -269,6 +269,11 @@ impl VoteWorker {
             } else {
                 self.storage.reinsert_packets(vote_packets.drain(..));
             }
+
+            info!("Done processing slot: {}, tick: {}, outstanding: {}",
+                bank_start.working_bank.slot(),
+                bank_start.working_bank.tick_height(),
+                self.storage.len());
         }
 
         reached_end_of_slot
