@@ -409,10 +409,11 @@ impl VoteWorker {
 
         if bank_slot_tick_height > MAX_TICK_FOR_VOTING {
             info!(
-                "process transactions: max tick height reached slot: {} height: {} block_start: {}",
+                "process transactions: max tick height reached slot: {} height: {} block_start: {}, tx_count: {}",
                 bank.slot(),
                 bank.tick_height(),
                 bank_slot_tick_start,
+                transactions.len(),
             );
             return ProcessTransactionsSummary {
                 reached_max_poh_height: true,
