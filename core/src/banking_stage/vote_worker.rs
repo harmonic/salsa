@@ -55,6 +55,7 @@ pub struct VoteWorker {
 }
 
 impl VoteWorker {
+    const MAX_TICK_FOR_VOTING: u64 = 40;
     pub fn new(
         decision_maker: DecisionMaker,
         tpu_receiver: PacketReceiver,
@@ -402,6 +403,19 @@ impl VoteWorker {
         transactions: &[impl TransactionWithMeta],
         reservation_cb: &impl Fn(&Bank) -> u64,
     ) -> ProcessTransactionsSummary {
+
+        if bank.tick_height() >= Self::MAX_TICK_FOR_VOTING {
+            info!(
+                "process transactions: max tick height reached slot: {} height: {}",
+                bank.slot(),
+                bank.tick_height()
+            );
+            return ProcessTransactionsSummary {
+                reached_max_poh_height: true,
+                ..Default::default()
+            }
+        }
+
         let process_transaction_batch_output =
             self.consumer
                 .process_and_record_transactions(bank, transactions, reservation_cb);

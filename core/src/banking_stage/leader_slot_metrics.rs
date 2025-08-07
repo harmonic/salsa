@@ -20,6 +20,7 @@ use {
 ///    will be dropped from the transactions queue and not counted in `Self::retryable_transaction_indexes`
 /// 3) Were processed and committed, captured by `transaction_counts` below.
 /// 4) Were processed and failed commit, captured by `transaction_counts` below.
+#[derive(Debug, Default)]
 pub(crate) struct ProcessTransactionsSummary {
     /// Returns true if we hit the end of the block/max PoH height for the block
     /// before processing all the transactions in the batch.
