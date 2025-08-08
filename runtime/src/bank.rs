@@ -6174,6 +6174,11 @@ impl Bank {
         verified_accounts && verified_bank
     }
 
+    pub fn slot_tick_height(&self) -> u64 {
+        let slot_start_tick_height = self.max_tick_height.saturating_sub(self.ticks_per_slot);
+        self.tick_height.load(Ordering::Relaxed).saturating_sub(slot_start_tick_height)
+    }
+
     /// Return the number of hashes per tick
     pub fn hashes_per_tick(&self) -> &Option<u64> {
         &self.hashes_per_tick

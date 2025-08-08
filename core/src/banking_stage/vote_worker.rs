@@ -20,7 +20,7 @@ use {
     solana_clock::FORWARD_TRANSACTIONS_TO_LEADER_AT_SLOT_OFFSET,
     solana_measure::{measure::Measure, measure_us},
     solana_poh::poh_recorder::{BankStart, PohRecorderError},
-    solana_runtime::{bank::Bank, bank_forks::BankForks},
+    solana_runtime::{bank::{self, Bank}, bank_forks::BankForks},
     solana_runtime_transaction::{
         runtime_transaction::RuntimeTransaction, transaction_with_meta::TransactionWithMeta,
     },
@@ -31,8 +31,7 @@ use {
     solana_transaction::sanitized::SanitizedTransaction,
     solana_transaction_error::TransactionError,
     std::{
-        sync::{atomic::Ordering, Arc, RwLock},
-        time::Instant,
+        char::MAX, sync::{atomic::Ordering, Arc, RwLock}, time::Instant
     },
 };
 
@@ -123,10 +122,17 @@ impl VoteWorker {
         slot_metrics_tracker: &mut LeaderSlotMetricsTracker,
         reservation_cb: &impl Fn(&Bank) -> u64,
     ) {
-        let (decision, make_decision_us) =
+        let (mut decision, make_decision_us) =
             measure_us!(self.decision_maker.make_consume_or_forward_decision());
         let metrics_action = slot_metrics_tracker.check_leader_slot_boundary(decision.bank_start());
         slot_metrics_tracker.increment_make_decision_us(make_decision_us);
+
+        if let BufferedPacketsDecision::Consume(bank_start) = &decision {
+            const MAX_TICK_FOR_VOTING: u64 = 48;
+            if bank_start.working_bank.slot_tick_height() > MAX_TICK_FOR_VOTING {
+                decision = BufferedPacketsDecision::ForwardAndHold;
+            };
+        }
 
         match decision {
             BufferedPacketsDecision::Consume(bank_start) => {
