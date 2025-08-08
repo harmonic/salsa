@@ -20,7 +20,7 @@ use {
     solana_clock::FORWARD_TRANSACTIONS_TO_LEADER_AT_SLOT_OFFSET,
     solana_measure::{measure::Measure, measure_us},
     solana_poh::poh_recorder::{BankStart, PohRecorderError},
-    solana_runtime::{bank::{self, Bank}, bank_forks::BankForks},
+    solana_runtime::{bank::{Bank}, bank_forks::BankForks},
     solana_runtime_transaction::{
         runtime_transaction::RuntimeTransaction, transaction_with_meta::TransactionWithMeta,
     },
@@ -31,7 +31,7 @@ use {
     solana_transaction::sanitized::SanitizedTransaction,
     solana_transaction_error::TransactionError,
     std::{
-        char::MAX, sync::{atomic::Ordering, Arc, RwLock}, time::Instant
+        sync::{atomic::Ordering, Arc, RwLock}, time::Instant
     },
 };
 
