@@ -129,7 +129,9 @@ impl VoteWorker {
 
         if let BufferedPacketsDecision::Consume(bank_start) = &decision {
             const MAX_TICK_FOR_VOTING: u64 = 48;
-            if bank_start.working_bank.slot_tick_height() > MAX_TICK_FOR_VOTING {
+            let slot_tick_height = bank_start.working_bank.slot_tick_height();
+            if slot_tick_height >= MAX_TICK_FOR_VOTING {
+                info!("Slot tick height {} exceeded max tick for voting {}", slot_tick_height, MAX_TICK_FOR_VOTING);
                 decision = BufferedPacketsDecision::ForwardAndHold;
             };
         }
@@ -239,7 +241,7 @@ impl VoteWorker {
             "Processing {} vote packets, slot: {}, tick: {}, outstanding: {}",
             all_vote_packets.len(),
             bank_start.working_bank.slot(),
-            bank_start.working_bank.tick_height(),
+            bank_start.working_bank.slots_per_year(),
             self.storage.len()
         );
 
@@ -284,7 +286,7 @@ impl VoteWorker {
         info!(
             "Done processing slot: {}, tick: {}, outstanding: {}",
             bank_start.working_bank.slot(),
-            bank_start.working_bank.tick_height(),
+            bank_start.working_bank.slot_tick_height(),
             self.storage.len()
         );
 
