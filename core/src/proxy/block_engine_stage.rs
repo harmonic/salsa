@@ -315,6 +315,8 @@ impl BlockEngineStage {
         // .map_err(|e| ProxyError::MethodError(e.to_string()))?
         // .into_inner();
 
+        debug!("subscribing to block engine bundles");
+
         let subscribe_bundles_stream = timeout(
             *connection_timeout,
             client.subscribe_bundles(block_engine::SubscribeBundlesRequest {}),
@@ -323,6 +325,8 @@ impl BlockEngineStage {
         .map_err(|_| ProxyError::MethodTimeout("subscribe_bundles".to_string()))?
         .map_err(|e| ProxyError::MethodError(e.to_string()))?
         .into_inner();
+
+        debug!("Succesfully subscribed to block engine bundles");
 
         let block_builder_info = timeout(
             *connection_timeout,
