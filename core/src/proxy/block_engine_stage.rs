@@ -306,14 +306,14 @@ impl BlockEngineStage {
         keypair: Arc<Keypair>,
         cluster_info: &Arc<ClusterInfo>,
     ) -> crate::proxy::Result<()> {
-        let subscribe_packets_stream = timeout(
-            *connection_timeout,
-            client.subscribe_packets(block_engine::SubscribePacketsRequest {}),
-        )
-        .await
-        .map_err(|_| ProxyError::MethodTimeout("block_engine_subscribe_packets".to_string()))?
-        .map_err(|e| ProxyError::MethodError(e.to_string()))?
-        .into_inner();
+        // let subscribe_packets_stream = timeout(
+        //     *connection_timeout,
+        //     client.subscribe_packets(block_engine::SubscribePacketsRequest {}),
+        // )
+        // .await
+        // .map_err(|_| ProxyError::MethodTimeout("block_engine_subscribe_packets".to_string()))?
+        // .map_err(|e| ProxyError::MethodError(e.to_string()))?
+        // .into_inner();
 
         let subscribe_bundles_stream = timeout(
             *connection_timeout,
@@ -348,7 +348,7 @@ impl BlockEngineStage {
 
         Self::consume_bundle_and_packet_stream(
             client,
-            (subscribe_bundles_stream, subscribe_packets_stream),
+            (subscribe_bundles_stream, ),
             bundle_tx,
             packet_tx,
             local_config,
@@ -369,15 +369,15 @@ impl BlockEngineStage {
     #[allow(clippy::too_many_arguments)]
     async fn consume_bundle_and_packet_stream(
         mut client: BlockEngineValidatorClient<InterceptedService<Channel, AuthInterceptor>>,
-        (mut bundle_stream, mut packet_stream): (
+        (mut bundle_stream, ): (
             Streaming<block_engine::SubscribeBundlesResponse>,
-            Streaming<block_engine::SubscribePacketsResponse>,
+            // Streaming<block_engine::SubscribePacketsResponse>,
         ),
         bundle_tx: &Sender<Vec<PacketBundle>>,
-        packet_tx: &Sender<PacketBatch>,
+        _packet_tx: &Sender<PacketBatch>,
         local_config: &BlockEngineConfig, // local copy of config with current connections
         global_config: &Arc<Mutex<BlockEngineConfig>>, // guarded reference for detecting run-time updates
-        banking_packet_sender: &BankingPacketSender,
+        _banking_packet_sender: &BankingPacketSender,
         exit: &Arc<AtomicBool>,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         mut auth_client: AuthServiceClient<Channel>,
@@ -401,10 +401,10 @@ impl BlockEngineStage {
 
         while !exit.load(Ordering::Relaxed) {
             tokio::select! {
-                maybe_msg = packet_stream.message() => {
-                    let resp = maybe_msg?.ok_or(ProxyError::GrpcStreamDisconnected)?;
-                    Self::handle_block_engine_packets(resp, packet_tx, banking_packet_sender, local_config.trust_packets, &mut block_engine_stats)?;
-                }
+                // maybe_msg = packet_stream.message() => {
+                //     let resp = maybe_msg?.ok_or(ProxyError::GrpcStreamDisconnected)?;
+                //     Self::handle_block_engine_packets(resp, packet_tx, banking_packet_sender, local_config.trust_packets, &mut block_engine_stats)?;
+                // }
                 maybe_bundles = bundle_stream.message() => {
                     Self::handle_block_engine_maybe_bundles(maybe_bundles, bundle_tx, &mut block_engine_stats)?;
                 }
@@ -520,6 +520,7 @@ impl BlockEngineStage {
             .map_err(|_| ProxyError::PacketForwardError)
     }
 
+    #[allow(dead_code)]
     fn handle_block_engine_packets(
         resp: block_engine::SubscribePacketsResponse,
         packet_tx: &Sender<PacketBatch>,
