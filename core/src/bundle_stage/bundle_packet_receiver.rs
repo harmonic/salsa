@@ -208,7 +208,7 @@ mod tests {
                             .map(|tx| BytesPacket::from_data(None, tx).unwrap())
                             .collect::<Vec<_>>(),
                     ),
-                    bundle_id,
+                    slot: 0
                 }
             })
             .collect()
