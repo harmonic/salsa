@@ -19,7 +19,7 @@ use {
         auth::{auth_service_client::AuthServiceClient, Token},
         block_engine::{
             self, block_engine_validator_client::BlockEngineValidatorClient,
-            BlockBuilderFeeInfoRequest,
+            BlockBuilderFeeInfoRequest, SubmitLeaderWindowInfoRequest,
         },
     },
     solana_gossip::cluster_info::ClusterInfo,
@@ -35,7 +35,7 @@ use {
             Arc, Mutex,
         },
         thread::{self, Builder, JoinHandle},
-        time::Duration,
+        time::{Duration, SystemTime},
     },
     tokio::{
         task,
@@ -102,6 +102,7 @@ impl BlockEngineStage {
         banking_packet_sender: BankingPacketSender,
         exit: Arc<AtomicBool>,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
+        leader_window_receiver: tokio::sync::mpsc::Receiver<(SystemTime, u64)>,
     ) -> Self {
         let block_builder_fee_info = block_builder_fee_info.clone();
 
@@ -120,6 +121,7 @@ impl BlockEngineStage {
                     banking_packet_sender,
                     exit,
                     block_builder_fee_info,
+                    leader_window_receiver
                 ));
             })
             .unwrap();
@@ -145,6 +147,7 @@ impl BlockEngineStage {
         banking_packet_sender: BankingPacketSender,
         exit: Arc<AtomicBool>,
         block_builder_fee_info: Arc<Mutex<BlockBuilderFeeInfo>>,
+        mut leader_window_receiver: tokio::sync::mpsc::Receiver<(SystemTime, u64)>,
     ) {
         const CONNECTION_TIMEOUT: Duration = Duration::from_secs(CONNECTION_TIMEOUT_S);
         const CONNECTION_BACKOFF: Duration = Duration::from_secs(CONNECTION_BACKOFF_S);
@@ -171,6 +174,7 @@ impl BlockEngineStage {
                 &exit,
                 &block_builder_fee_info,
                 &CONNECTION_TIMEOUT,
+                &mut leader_window_receiver,
             )
             .await
             {
@@ -204,6 +208,7 @@ impl BlockEngineStage {
         exit: &Arc<AtomicBool>,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         connection_timeout: &Duration,
+        leader_window_receiver: &mut tokio::sync::mpsc::Receiver<(SystemTime, u64)>,
     ) -> crate::proxy::Result<()> {
         // Get a copy of configs here in case they have changed at runtime
         let keypair = cluster_info.keypair().clone();
@@ -285,6 +290,7 @@ impl BlockEngineStage {
             connection_timeout,
             keypair,
             cluster_info,
+            leader_window_receiver,
         )
         .await
     }
@@ -305,6 +311,7 @@ impl BlockEngineStage {
         connection_timeout: &Duration,
         keypair: Arc<Keypair>,
         cluster_info: &Arc<ClusterInfo>,
+        leader_window_receiver: &mut tokio::sync::mpsc::Receiver<(SystemTime, u64)>,
     ) -> crate::proxy::Result<()> {
         // let subscribe_packets_stream = timeout(
         //     *connection_timeout,
@@ -352,7 +359,7 @@ impl BlockEngineStage {
 
         Self::consume_bundle_and_packet_stream(
             client,
-            (subscribe_bundles_stream, ),
+            (subscribe_bundles_stream,),
             bundle_tx,
             packet_tx,
             local_config,
@@ -366,6 +373,7 @@ impl BlockEngineStage {
             keypair,
             cluster_info,
             connection_timeout,
+            leader_window_receiver,
         )
         .await
     }
@@ -373,7 +381,7 @@ impl BlockEngineStage {
     #[allow(clippy::too_many_arguments)]
     async fn consume_bundle_and_packet_stream(
         mut client: BlockEngineValidatorClient<InterceptedService<Channel, AuthInterceptor>>,
-        (mut bundle_stream, ): (
+        (mut bundle_stream,): (
             Streaming<block_engine::SubscribeBundlesResponse>,
             // Streaming<block_engine::SubscribePacketsResponse>,
         ),
@@ -390,6 +398,7 @@ impl BlockEngineStage {
         keypair: Arc<Keypair>,
         cluster_info: &Arc<ClusterInfo>,
         connection_timeout: &Duration,
+        leader_window_receiver: &mut tokio::sync::mpsc::Receiver<(SystemTime, u64)>,
     ) -> crate::proxy::Result<()> {
         const METRICS_TICK: Duration = Duration::from_secs(1);
         const MAINTENANCE_TICK: Duration = Duration::from_secs(10 * 60);
@@ -411,6 +420,10 @@ impl BlockEngineStage {
                 // }
                 maybe_bundles = bundle_stream.message() => {
                     Self::handle_block_engine_maybe_bundles(maybe_bundles, bundle_tx, &mut block_engine_stats)?;
+                }
+                maybe_leader_window_notification = leader_window_receiver.recv() => {
+                    // TODO: Maybe figure out how to do this async
+                    Self::handle_leader_window_notification(maybe_leader_window_notification, &mut client).await?;
                 }
                 _ = metrics_and_auth_tick.tick() => {
                     block_engine_stats.report();
@@ -485,6 +498,25 @@ impl BlockEngineStage {
         Ok(())
     }
 
+    async fn handle_leader_window_notification(
+        notification: Option<(SystemTime, u64)>,
+        client: &mut BlockEngineValidatorClient<InterceptedService<Channel, AuthInterceptor>>,
+    ) -> crate::proxy::Result<()> {
+        if let Some((time, slot)) = notification {
+            if let Err(e) = client
+                .submit_leader_window_info(SubmitLeaderWindowInfoRequest {
+                    start_timestamp: Some(prost_types::Timestamp::from(time)),
+                    slot,
+                })
+                .await
+            {
+                warn!("failed to notify leader window to block engine: {}", e);
+            }
+        }
+
+        Ok(())
+    }
+
     fn handle_block_engine_maybe_bundles(
         maybe_bundles_response: Result<Option<block_engine::SubscribeBundlesResponse>, Status>,
         bundle_sender: &Sender<Vec<PacketBundle>>,
@@ -524,47 +556,47 @@ impl BlockEngineStage {
             .map_err(|_| ProxyError::PacketForwardError)
     }
 
-    #[allow(dead_code)]
-    fn handle_block_engine_packets(
-        resp: block_engine::SubscribePacketsResponse,
-        packet_tx: &Sender<PacketBatch>,
-        banking_packet_sender: &BankingPacketSender,
-        trust_packets: bool,
-        block_engine_stats: &mut BlockEngineStageStats,
-    ) -> crate::proxy::Result<()> {
-        if let Some(batch) = resp.batch {
-            if batch.packets.is_empty() {
-                block_engine_stats.num_empty_packets.add_assign(1);
-                return Ok(());
-            }
+    // #[allow(dead_code)]
+    // fn handle_block_engine_packets(
+    //     resp: block_engine::SubscribePacketsResponse,
+    //     packet_tx: &Sender<PacketBatch>,
+    //     banking_packet_sender: &BankingPacketSender,
+    //     trust_packets: bool,
+    //     block_engine_stats: &mut BlockEngineStageStats,
+    // ) -> crate::proxy::Result<()> {
+    //     if let Some(batch) = resp.batch {
+    //         if batch.packets.is_empty() {
+    //             block_engine_stats.num_empty_packets.add_assign(1);
+    //             return Ok(());
+    //         }
 
-            let packet_batch = PacketBatch::from(
-                batch
-                    .packets
-                    .into_iter()
-                    .map(proto_packet_to_packet)
-                    .collect::<Vec<BytesPacket>>(),
-            );
+    //         let packet_batch = PacketBatch::from(
+    //             batch
+    //                 .packets
+    //                 .into_iter()
+    //                 .map(proto_packet_to_packet)
+    //                 .collect::<Vec<BytesPacket>>(),
+    //         );
 
-            block_engine_stats
-                .num_packets
-                .add_assign(packet_batch.len() as u64);
+    //         block_engine_stats
+    //             .num_packets
+    //             .add_assign(packet_batch.len() as u64);
 
-            if trust_packets {
-                banking_packet_sender
-                    .send(Arc::new(vec![packet_batch]))
-                    .map_err(|_| ProxyError::PacketForwardError)?;
-            } else {
-                packet_tx
-                    .send(packet_batch)
-                    .map_err(|_| ProxyError::PacketForwardError)?;
-            }
-        } else {
-            block_engine_stats.num_empty_packets.add_assign(1);
-        }
+    //         if trust_packets {
+    //             banking_packet_sender
+    //                 .send(Arc::new(vec![packet_batch]))
+    //                 .map_err(|_| ProxyError::PacketForwardError)?;
+    //         } else {
+    //             packet_tx
+    //                 .send(packet_batch)
+    //                 .map_err(|_| ProxyError::PacketForwardError)?;
+    //         }
+    //     } else {
+    //         block_engine_stats.num_empty_packets.add_assign(1);
+    //     }
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 
     pub fn is_valid_block_engine_config(config: &BlockEngineConfig) -> bool {
         if config.block_engine_url.is_empty() {

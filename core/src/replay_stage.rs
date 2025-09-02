@@ -37,7 +37,7 @@ use {
     solana_accounts_db::contains::Contains,
     solana_clock::{BankId, Slot, NUM_CONSECUTIVE_LEADER_SLOTS},
     solana_entry::entry::VerifyRecyclers,
-    solana_geyser_plugin_manager::{block_metadata_notifier_interface::BlockMetadataNotifierArc},
+    solana_geyser_plugin_manager::block_metadata_notifier_interface::BlockMetadataNotifierArc,
     solana_gossip::cluster_info::ClusterInfo,
     solana_hash::Hash,
     solana_keypair::Keypair,
@@ -85,7 +85,7 @@ use {
             Arc, RwLock,
         },
         thread::{self, Builder, JoinHandle},
-        time::{Duration, Instant},
+        time::{Duration, Instant, SystemTime},
     },
 };
 
@@ -291,6 +291,7 @@ pub struct ReplaySenders {
     pub drop_bank_sender: Sender<Vec<BankWithScheduler>>,
     pub block_metadata_notifier: Option<BlockMetadataNotifierArc>,
     pub dumped_slots_sender: Sender<Vec<(u64, Hash)>>,
+    pub leader_window_sender: tokio::sync::mpsc::Sender<(SystemTime, u64)>,
 }
 
 pub struct ReplayReceivers {
@@ -591,6 +592,7 @@ impl ReplayStage {
             drop_bank_sender,
             block_metadata_notifier,
             dumped_slots_sender,
+            leader_window_sender
         } = senders;
 
         let ReplayReceivers {
@@ -1169,6 +1171,7 @@ impl ReplayStage {
                         &banking_tracer,
                         has_new_vote_been_rooted,
                         transaction_status_sender.is_some(),
+                        leader_window_sender.clone()
                     );
 
                     let poh_bank = poh_recorder.read().unwrap().bank();
@@ -2092,6 +2095,7 @@ impl ReplayStage {
         banking_tracer: &Arc<BankingTracer>,
         has_new_vote_been_rooted: bool,
         track_transaction_indexes: bool,
+        leader_window_sender: tokio::sync::mpsc::Sender<(SystemTime, u64)>,
     ) -> bool {
         // all the individual calls to poh_recorder.read() are designed to
         // increase granularity, decrease contention
@@ -2226,7 +2230,12 @@ impl ReplayStage {
                 track_transaction_indexes,
             );
 
-            rpc_subscriptions.notify_slot(tpu_bank.slot(), tpu_bank.parent_slot(), root_slot);
+            let slot = tpu_bank.slot();
+            rpc_subscriptions.notify_slot(slot, tpu_bank.parent_slot(), root_slot);
+
+            if let Err(e) = leader_window_sender.blocking_send((SystemTime::now(), slot)) {
+                error!("Failed to send leader window notification: {}", e);
+            }
 
             if let Some(slot_status_notifier) = slot_status_notifier {
                 slot_status_notifier
@@ -8673,6 +8682,7 @@ pub(crate) mod tests {
         // this test to use true to avoid skipping the leader slot
         let has_new_vote_been_rooted = true;
         let track_transaction_indexes = false;
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
         assert!(!ReplayStage::maybe_start_leader(
             my_pubkey,
@@ -8687,6 +8697,7 @@ pub(crate) mod tests {
             &banking_tracer,
             has_new_vote_been_rooted,
             track_transaction_indexes,
+            tx
         ));
     }
 
@@ -9334,6 +9345,7 @@ pub(crate) mod tests {
             poh_recorder.read().unwrap().reached_leader_slot(&my_pubkey),
             PohLeaderStatus::NotReached
         );
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         assert!(!ReplayStage::maybe_start_leader(
             &my_pubkey,
             &bank_forks,
@@ -9347,6 +9359,7 @@ pub(crate) mod tests {
             &banking_tracer,
             has_new_vote_been_rooted,
             track_transaction_indexes,
+            tx
         ));
 
         // Register another slots worth of ticks  with PoH recorder
@@ -9361,6 +9374,7 @@ pub(crate) mod tests {
 
         // We should now start leader for dummy_slot + 1
         let good_slot = dummy_slot + 1;
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         assert!(ReplayStage::maybe_start_leader(
             &my_pubkey,
             &bank_forks,
@@ -9374,6 +9388,7 @@ pub(crate) mod tests {
             &banking_tracer,
             has_new_vote_been_rooted,
             track_transaction_indexes,
+            tx
         ));
         // Get the new working bank, which is also the new leader bank/slot
         let working_bank = bank_forks.read().unwrap().working_bank();
