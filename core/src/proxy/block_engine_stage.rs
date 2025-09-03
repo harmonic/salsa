@@ -546,6 +546,9 @@ impl BlockEngineStage {
                 })
             })
             .collect();
+        
+        info!("Received {} bundles", bundles.len());
+
         block_engine_stats
             .num_bundles
             .add_assign(bundles.len() as u64);
