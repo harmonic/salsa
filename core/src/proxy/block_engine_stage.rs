@@ -533,6 +533,11 @@ impl BlockEngineStage {
             .bundles
             .into_iter()
             .filter_map(|bundle| {
+                let Ok(slot) = u64::from_str(&bundle.uuid) else {
+                    warn!("invalid bundle slot: {}", bundle.uuid);
+                    return None;
+                };
+
                 Some(PacketBundle {
                     batch: PacketBatch::from(
                         bundle
@@ -542,7 +547,7 @@ impl BlockEngineStage {
                             .map(proto_packet_to_packet)
                             .collect::<Vec<BytesPacket>>(),
                     ),
-                    slot: 0,
+                    slot,
                 })
             })
             .collect();
