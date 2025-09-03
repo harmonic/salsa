@@ -2233,7 +2233,9 @@ impl ReplayStage {
             let slot = tpu_bank.slot();
             rpc_subscriptions.notify_slot(slot, tpu_bank.parent_slot(), root_slot);
 
-            if let Err(e) = leader_window_sender.blocking_send((SystemTime::now(), slot)) {
+            let window_start_time = SystemTime::now();
+            info!("Sending leader window notification ({:?}, {})", window_start_time, slot);
+            if let Err(e) = leader_window_sender.blocking_send((window_start_time, slot)) {
                 error!("Failed to send leader window notification: {}", e);
             }
 

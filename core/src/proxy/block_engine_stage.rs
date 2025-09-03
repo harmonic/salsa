@@ -121,7 +121,7 @@ impl BlockEngineStage {
                     banking_packet_sender,
                     exit,
                     block_builder_fee_info,
-                    leader_window_receiver
+                    leader_window_receiver,
                 ));
             })
             .unwrap();
@@ -502,7 +502,10 @@ impl BlockEngineStage {
         notification: Option<(SystemTime, u64)>,
         client: &mut BlockEngineValidatorClient<InterceptedService<Channel, AuthInterceptor>>,
     ) -> crate::proxy::Result<()> {
+        info!("Received leader window notification");
         if let Some((time, slot)) = notification {
+            info!("Handling leader window notification ({:?}, {})", time, slot);
+
             if let Err(e) = client
                 .submit_leader_window_info(SubmitLeaderWindowInfoRequest {
                     start_timestamp: Some(prost_types::Timestamp::from(time)),
@@ -511,6 +514,9 @@ impl BlockEngineStage {
                 .await
             {
                 warn!("failed to notify leader window to block engine: {}", e);
+                // TODO: Should respond with an error, and abort waiting for an external block
+            } else {
+                info!("Successfully notified leader window to block engine");
             }
         }
 
