@@ -538,6 +538,12 @@ impl BlockEngineStage {
                     return None;
                 };
 
+                info!(
+                    "Received bundle {} slot, {} packets",
+                    slot,
+                    bundle.bundle.as_ref().map_or(0, |b| b.packets.len())
+                );
+
                 Some(PacketBundle {
                     batch: PacketBatch::from(
                         bundle
@@ -551,7 +557,7 @@ impl BlockEngineStage {
                 })
             })
             .collect();
-        
+
         info!("Received {} bundles", bundles.len());
 
         block_engine_stats

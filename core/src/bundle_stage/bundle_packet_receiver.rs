@@ -133,9 +133,9 @@ impl BundleReceiver {
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
         bundle_stage_stats: &mut BundleStageLoopMetrics,
     ) {
+        info!("Inserting {} unprocessed bundles into storage", deserialized_bundles.len());
         if !deserialized_bundles.is_empty() {
             // bundles get pushed onto the back of the unprocessed bundle queue
-            info!("Inserting {} unprocessed bundles into storage", deserialized_bundles.len());
             let insert_bundles_summary =
                 bundle_storage.insert_unprocessed_bundles(deserialized_bundles);
 
