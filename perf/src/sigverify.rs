@@ -106,6 +106,7 @@ pub fn init() {
 pub fn verify_packet(packet: &mut PacketRefMut, reject_non_vote: bool) -> bool {
     // If this packet was already marked as discard, drop it
     if packet.meta().discard() {
+        error!("Received packet marked for discard");
         return false;
     }
 
@@ -115,28 +116,35 @@ pub fn verify_packet(packet: &mut PacketRefMut, reject_non_vote: bool) -> bool {
     let msg_start = packet_offsets.msg_start as usize;
 
     if packet_offsets.sig_len == 0 {
+        error!("Received packet with zero signatures");
         return false;
     }
 
     if packet.meta().size <= msg_start {
+        error!("Received packet with invalid message start");
         return false;
     }
 
     for _ in 0..packet_offsets.sig_len {
         let pubkey_end = pubkey_start.saturating_add(size_of::<Pubkey>());
         let Some(sig_end) = sig_start.checked_add(size_of::<Signature>()) else {
+            error!("Received packet with invalid signature end");
             return false;
         };
         let Some(Ok(signature)) = packet.data(sig_start..sig_end).map(Signature::try_from) else {
+            error!("Received packet with invalid signature bytes");
             return false;
         };
         let Some(pubkey) = packet.data(pubkey_start..pubkey_end) else {
+            error!("Received packet with invalid pubkey");
             return false;
         };
         let Some(message) = packet.data(msg_start..) else {
+            error!("Received packet with invalid message");
             return false;
         };
         if !signature.verify(pubkey, message) {
+            error!("Received packet with invalid signature");
             return false;
         }
         pubkey_start = pubkey_end;
