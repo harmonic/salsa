@@ -16,16 +16,24 @@ use {
         packet_bundle::PacketBundle,
         proxy::block_engine_stage::BlockBuilderFeeInfo,
         tip_manager::TipManager,
-    }, crossbeam_channel::{Receiver, RecvTimeoutError}, solana_gossip::cluster_info::ClusterInfo, solana_ledger::blockstore_processor::TransactionStatusSender, solana_measure::measure_us, solana_poh::{poh_recorder::PohRecorder, transaction_recorder::TransactionRecorder}, solana_runtime::{
+    },
+    crossbeam_channel::{Receiver, RecvTimeoutError},
+    solana_gossip::cluster_info::ClusterInfo,
+    solana_ledger::blockstore_processor::TransactionStatusSender,
+    solana_measure::measure_us,
+    solana_poh::{poh_recorder::PohRecorder, transaction_recorder::TransactionRecorder},
+    solana_runtime::{
         prioritization_fee_cache::PrioritizationFeeCache, vote_sender_types::ReplayVoteSender,
-    }, solana_time_utils::AtomicInterval, std::{
+    },
+    solana_time_utils::AtomicInterval,
+    std::{
         sync::{
             atomic::{AtomicBool, AtomicU64, Ordering},
             Arc, Mutex, RwLock,
         },
         thread::{self, Builder, JoinHandle},
         time::{Duration, Instant},
-    }
+    },
 };
 
 pub mod bundle_account_locker;
@@ -362,11 +370,14 @@ impl BundleStage {
             // let consumed_for_slot =
             //     unprocessed_bundle_storage.consumed_for_slot(bank_start.working_bank.slot());
 
-            let consumed_for_slot = bundle_storage.consumed_for_slot(bank_start.working_bank.slot());
+            let consumed_for_slot =
+                bundle_storage.consumed_for_slot(bank_start.working_bank.slot());
 
             // let Some(bundles) = unprocessed_bundle_storage.bundle_storage() else {
             //     return;
             // };
+
+            info!("Unprocessed bundle storage len: {}", bundle_storage.unprocessed_bundles_len());
 
             // Check if we have a block for this slot
             let have_block_for_this_slot = bundle_storage
@@ -378,8 +389,16 @@ impl BundleStage {
             if have_block_for_this_slot && !consumed_for_slot {
                 // mevanoxx: calling this may change state and block vanilla scheduler
                 // which is why this is gated conditionally
+                info!(
+                    "Bundle processor decision: MaybeConsume: {}",
+                    bank_start.working_bank.slot()
+                );
                 DecisionMaker::maybe_consume::<false /* vanilla */>(decision)
             } else {
+                info!(
+                    "Bundle processor decision: Hold: {}",
+                    bank_start.working_bank.slot()
+                );
                 BufferedPacketsDecision::Hold
             }
         } else {
