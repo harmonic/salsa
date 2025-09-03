@@ -111,7 +111,7 @@ impl BundleReceiver {
         bundle_stage_stats.increment_num_packets_received(packet_count as u64);
         bundle_stage_stats.increment_num_bundles_dropped(num_dropped_bundles.0 as u64);
 
-        debug!(
+        info!(
             "@{:?} bundles: {} txs: {} id: {}",
             timestamp(),
             bundle_count,
@@ -135,6 +135,7 @@ impl BundleReceiver {
     ) {
         if !deserialized_bundles.is_empty() {
             // bundles get pushed onto the back of the unprocessed bundle queue
+            info!("Inserting {} unprocessed bundles into storage", deserialized_bundles.len());
             let insert_bundles_summary =
                 bundle_storage.insert_unprocessed_bundles(deserialized_bundles);
 
