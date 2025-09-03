@@ -59,6 +59,8 @@ impl BundlePacketDeserializer {
         let (bundle_count, _packet_count, mut bundles) =
             self.receive_until(recv_timeout, capacity)?;
 
+        info!("Received {} bundles to process", bundle_count);
+
         Ok(Self::deserialize_and_collect_bundles(
             bundle_count,
             &mut bundles,

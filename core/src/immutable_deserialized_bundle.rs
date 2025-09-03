@@ -74,18 +74,22 @@ impl ImmutableDeserializedBundle {
             ImmutableDeserializedPacket,
         ) -> Result<ImmutableDeserializedPacket, PacketFilterFailure>,
     ) -> Result<Self, DeserializedBundleError> {
+        info!("Received bundle with {} packets to process", bundle.batch.len());
         // Checks: non-zero, less than some length, marked for discard, signature verification failed, failed to sanitize to
         // ImmutableDeserializedPacket
         if bundle.batch.is_empty() {
+            error!("Received empty bundle");
             return Err(DeserializedBundleError::EmptyBatch);
         }
         if max_len
             .map(|max_len| bundle.batch.len() > max_len)
             .unwrap_or(false)
         {
+            error!("Received bundle with too many packets: {}", bundle.batch.len());
             return Err(DeserializedBundleError::TooManyPackets);
         }
         if bundle.batch.iter().any(|p| p.meta().discard()) {
+            error!("Received bundle marked for discard");
             return Err(DeserializedBundleError::MarkedDiscard);
         }
         if bundle
@@ -93,6 +97,7 @@ impl ImmutableDeserializedBundle {
             .iter_mut()
             .any(|mut p| !verify_packet(&mut p, false))
         {
+            error!("Received bundle with invalid packet");
             return Err(DeserializedBundleError::SignatureVerificationFailure);
         }
 
@@ -102,6 +107,8 @@ impl ImmutableDeserializedBundle {
             let immutable_packet = packet_filter(immutable_packet)?;
             immutable_packets.push(immutable_packet);
         }
+
+        info!("Successfully deserialized bundle with {} packets", immutable_packets.len());
 
         Ok(Self {
             slot: bundle.slot,
