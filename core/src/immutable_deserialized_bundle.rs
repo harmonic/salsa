@@ -74,7 +74,10 @@ impl ImmutableDeserializedBundle {
             ImmutableDeserializedPacket,
         ) -> Result<ImmutableDeserializedPacket, PacketFilterFailure>,
     ) -> Result<Self, DeserializedBundleError> {
-        info!("Received bundle with {} packets to process", bundle.batch.len());
+        info!(
+            "Received bundle with {} packets to process",
+            bundle.batch.len()
+        );
         // Checks: non-zero, less than some length, marked for discard, signature verification failed, failed to sanitize to
         // ImmutableDeserializedPacket
         if bundle.batch.is_empty() {
@@ -85,18 +88,21 @@ impl ImmutableDeserializedBundle {
             .map(|max_len| bundle.batch.len() > max_len)
             .unwrap_or(false)
         {
-            error!("Received bundle with too many packets: {}", bundle.batch.len());
+            error!(
+                "Received bundle with too many packets: {}",
+                bundle.batch.len()
+            );
             return Err(DeserializedBundleError::TooManyPackets);
         }
         if bundle.batch.iter().any(|p| p.meta().discard()) {
             error!("Received bundle marked for discard");
             return Err(DeserializedBundleError::MarkedDiscard);
         }
-        if bundle
-            .batch
-            .iter_mut()
-            .any(|mut p| !verify_packet(&mut p, false))
-        {
+        if bundle.batch.iter_mut().enumerate().any(|(i, mut p)| {
+            let invalid_packet = !verify_packet(&mut p, false);
+            error!("Received bundle with invalid packet at index {}", i);
+            invalid_packet
+        }) {
             error!("Received bundle with invalid packet");
             return Err(DeserializedBundleError::SignatureVerificationFailure);
         }
@@ -108,7 +114,10 @@ impl ImmutableDeserializedBundle {
             immutable_packets.push(immutable_packet);
         }
 
-        info!("Successfully deserialized bundle with {} packets", immutable_packets.len());
+        info!(
+            "Successfully deserialized bundle with {} packets",
+            immutable_packets.len()
+        );
 
         Ok(Self {
             slot: bundle.slot,
@@ -189,7 +198,7 @@ impl ImmutableDeserializedBundle {
 
         Ok(SanitizedBundle {
             transactions,
-            slot: self.slot
+            slot: self.slot,
         })
     }
 }
