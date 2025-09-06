@@ -406,7 +406,9 @@ impl BundleStage {
             decision
         };
 
-        info!("Bundle processor final decision: {:?}", decision);
+        if !matches!(decision, BufferedPacketsDecision::Forward) {
+            info!("Bundle processor final decision: {:?}", decision);
+        }
 
         match decision {
             // BufferedPacketsDecision::Consume means this leader is scheduled to be running at the moment.
