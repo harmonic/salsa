@@ -390,8 +390,9 @@ impl BundleStage {
                 // mevanoxx: calling this may change state and block vanilla scheduler
                 // which is why this is gated conditionally
                 info!(
-                    "Bundle processor decision: MaybeConsume: {}",
-                    bank_start.working_bank.slot()
+                    "Bundle processor decision: MaybeConsume: {}, current decision: {:?}",
+                    bank_start.working_bank.slot(),
+                    decision
                 );
                 DecisionMaker::maybe_consume::<false /* vanilla */>(decision)
             } else {
@@ -404,6 +405,8 @@ impl BundleStage {
         } else {
             decision
         };
+
+        info!("Bundle processor final decision: {:?}", decision);
 
         match decision {
             // BufferedPacketsDecision::Consume means this leader is scheduled to be running at the moment.

@@ -98,11 +98,11 @@ impl ImmutableDeserializedBundle {
             error!("Received bundle marked for discard");
             return Err(DeserializedBundleError::MarkedDiscard);
         }
-        if bundle.batch.iter_mut().enumerate().any(|(i, mut p)| {
-            let invalid_packet = !verify_packet(&mut p, false);
-            error!("Received bundle with invalid packet at index {}", i);
-            invalid_packet
-        }) {
+        if bundle
+            .batch
+            .iter_mut()
+            .any(|mut p| !verify_packet(&mut p, false))
+        {
             error!("Received bundle with invalid packet");
             return Err(DeserializedBundleError::SignatureVerificationFailure);
         }
