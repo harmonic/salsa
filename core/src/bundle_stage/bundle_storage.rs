@@ -222,25 +222,25 @@ impl BundleStorage {
             .for_each(
                 |((deserialized_bundle, sanitized_bundle), result)| match result {
                     Ok(_) => {
-                        debug!("bundle={} executed ok", sanitized_bundle.slot);
+                        warn!("bundle={} executed ok", sanitized_bundle.slot);
                         bundle_success = true;
                         // yippee
                     }
                     Err(BundleExecutionError::PohRecordError(e)) => {
                         // buffer the bundle to the front of the queue to be attempted next slot
-                        debug!("bundle={} poh record error: {e:?}", sanitized_bundle.slot);
+                        warn!("bundle={} poh record error: {e:?}", sanitized_bundle.slot);
                         // rebuffered_bundles.push(deserialized_bundle);
                         is_slot_over = true;
                     }
                     Err(BundleExecutionError::BankProcessingTimeLimitReached) => {
                         // buffer the bundle to the front of the queue to be attempted next slot
-                        debug!("bundle={} bank processing done", sanitized_bundle.slot);
+                        warn!("bundle={} bank processing done", sanitized_bundle.slot);
                         // rebuffered_bundles.push(deserialized_bundle);
                         is_slot_over = true;
                     }
                     Err(BundleExecutionError::ExceedsCostModel) => {
                         // cost model buffered bundles contain most recent bundles at the front of the queue
-                        debug!(
+                        warn!(
                             "bundle={} exceeds cost model, rebuffering",
                             sanitized_bundle.slot
                         );
@@ -251,24 +251,24 @@ impl BundleStorage {
                     )) => {
                         // these are treated the same as exceeds cost model and are rebuferred to be completed
                         // at the beginning of the next slot
-                        debug!(
+                        warn!(
                             "bundle={} processing time exceeded, rebuffering",
                             sanitized_bundle.slot
                         );
                         self.push_back_cost_model_buffered_bundles(vec![deserialized_bundle]);
                     }
                     Err(BundleExecutionError::TransactionFailure(e)) => {
-                        debug!("bundle={} execution error: {:?}", sanitized_bundle.slot, e);
+                        warn!("bundle={} execution error: {:?}", sanitized_bundle.slot, e);
                         // do nothing
                     }
                     Err(BundleExecutionError::TipError(e)) => {
-                        debug!("bundle={} tip error: {}", sanitized_bundle.slot, e);
+                        warn!("bundle={} tip error: {}", sanitized_bundle.slot, e);
                         // Tip errors are _typically_ due to misconfiguration (except for poh record error, bank processing error, exceeds cost model)
                         // in order to prevent buffering too many bundles, we'll just drop the bundle
                     }
                     Err(BundleExecutionError::LockError) => {
                         // lock errors are irrecoverable due to malformed transactions
-                        debug!("bundle={} lock error", sanitized_bundle.slot);
+                        warn!("bundle={} lock error", sanitized_bundle.slot);
                     }
                     Err(BundleExecutionError::OldBundle) => {
                         info!(
