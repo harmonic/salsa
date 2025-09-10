@@ -111,6 +111,12 @@ impl DecisionMaker {
         }
     }
 
+    /// mevanoxx:
+    ///
+    /// vanilla: consume if we are in fallback period with no external signal.
+    ///          there are no other preconditions
+    /// block: consume if we are in delegation period.
+    ///        preconditions: there is a bundle (for this slot) to consume
     pub(crate) fn maybe_consume<const VANILLA: bool>(
         decision: BufferedPacketsDecision,
     ) -> BufferedPacketsDecision {
@@ -123,7 +129,7 @@ impl DecisionMaker {
         let bank_ticks_per_slot = bank_start.working_bank.ticks_per_slot();
         let start_tick = max_tick_height - bank_ticks_per_slot;
         let ticks_info_slot = current_tick_height - start_tick;
-        let delegation_period_length = bank_ticks_per_slot * 3 / 4;
+        let delegation_period_length = bank_ticks_per_slot * 15 / 16;
         let in_delegation_period = ticks_info_slot < delegation_period_length;
 
         let current_slot = bank_start.working_bank.slot();
