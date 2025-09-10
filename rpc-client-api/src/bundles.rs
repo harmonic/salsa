@@ -7,7 +7,6 @@ use {
     solana_clock::Slot,
     solana_commitment_config::{CommitmentConfig, CommitmentLevel},
     solana_signature::Signature,
-    solana_svm::transaction_processing_result::ProcessedTransaction,
     solana_transaction_error::TransactionError,
     solana_transaction_status_client_types::{UiTransactionEncoding, UiTransactionReturnData},
     thiserror::Error,
@@ -93,7 +92,9 @@ impl From<BundleExecutionError> for RpcBundleExecutionError {
             BundleExecutionError::LockError => Self::BundleLockError,
             BundleExecutionError::PohRecordError(e) => Self::PohRecordError(e.to_string()),
             BundleExecutionError::TipError(e) => Self::TipError(e.to_string()),
-            BundleExecutionError::OldBundle => unreachable!("Old bundles should not be processed in RPC"),
+            BundleExecutionError::OldBundle => {
+                unreachable!("Old bundles should not be processed in RPC")
+            }
         }
     }
 }
