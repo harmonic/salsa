@@ -639,8 +639,12 @@ impl BundleConsumer {
             .iter()
             .map(|txs| hash_transactions(txs))
             .collect());
-        let (starting_index, poh_record_us) =
-            measure_us!(recorder.record(bank_start.working_bank.slot(), hashes, executed_batches));
+        let (starting_index, poh_record_us) = measure_us!(recorder.record(
+            bank_start.working_bank.slot(),
+            hashes,
+            executed_batches,
+            true
+        ));
 
         let RecordTransactionsSummary {
             record_transactions_timings,
