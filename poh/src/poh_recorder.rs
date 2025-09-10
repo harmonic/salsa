@@ -82,19 +82,23 @@ pub struct Record {
     pub transaction_batches: Vec<Vec<VersionedTransaction>>,
     pub slot: Slot,
     pub sender: RecordResultSender,
+    pub remote: bool,
 }
+
 impl Record {
     pub fn new(
         mixins: Vec<Hash>,
         transaction_batches: Vec<Vec<VersionedTransaction>>,
         slot: Slot,
         sender: RecordResultSender,
+        remote: bool,
     ) -> Self {
         Self {
             mixins,
             transaction_batches,
             slot,
             sender,
+            remote,
         }
     }
 }

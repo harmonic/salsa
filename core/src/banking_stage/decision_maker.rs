@@ -123,7 +123,7 @@ impl DecisionMaker {
         let bank_ticks_per_slot = bank_start.working_bank.ticks_per_slot();
         let start_tick = max_tick_height - bank_ticks_per_slot;
         let ticks_info_slot = current_tick_height - start_tick;
-        let delegation_period_length = bank_ticks_per_slot * 3 / 4;
+        let delegation_period_length = bank_ticks_per_slot * 15 / 16;
         let in_delegation_period = ticks_info_slot < delegation_period_length;
 
         let current_slot = bank_start.working_bank.slot();

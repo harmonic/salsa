@@ -109,6 +109,7 @@ impl TransactionRecorder {
         bank_slot: Slot,
         mixins: Vec<Hash>,
         transaction_batches: Vec<Vec<VersionedTransaction>>,
+        remote: bool,
     ) -> Result<Option<usize>> {
         // create a new channel so that there is only 1 sender and when it goes out of scope, the receiver fails
         let (result_sender, result_receiver) = bounded(1);
@@ -117,6 +118,7 @@ impl TransactionRecorder {
             transaction_batches,
             bank_slot,
             result_sender,
+            remote,
         ));
         if res.is_err() {
             // If the channel is dropped, then the validator is shutting down so return that we are hitting
