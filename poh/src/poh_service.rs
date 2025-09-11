@@ -30,12 +30,22 @@ pub static RESERVE_HASHES: AtomicUsize = AtomicUsize::new(UNSET);
 const UNSET: usize = usize::MAX;
 
 #[inline(always)]
+#[track_caller]
 pub fn set_reserve_hashes(hashes: usize) -> usize {
+    info!(
+        "setting reserve hashes from {}",
+        std::panic::Location::caller()
+    );
     RESERVE_HASHES.swap(hashes, Ordering::Release)
 }
 
 #[inline(always)]
+#[track_caller]
 pub fn reset_reserve_hashes() -> usize {
+    info!(
+        "resetting reserve hashes from {}",
+        std::panic::Location::caller()
+    );
     RESERVE_HASHES.swap(UNSET, Ordering::Release)
 }
 
@@ -357,7 +367,8 @@ impl PohService {
                     // 2. record
                     //
                     // and do not hash
-                    if reserve_hashes().is_some() {
+                    if let Some(num) = reserve_hashes() {
+                        info!("CAVEY DEBUG: {num} hashes remain");
                         continue;
                     }
 
