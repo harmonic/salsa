@@ -344,6 +344,23 @@ impl PohService {
                 lock_time.stop();
                 timing.total_lock_time_ns += lock_time.as_ns();
                 loop {
+                    // check to see if a record request has been sent
+                    if let Ok(record) = record_receiver.try_recv() {
+                        // remember the record we just received as the next record to occur
+                        *next_record = Some(record);
+                        break;
+                    }
+
+                    // if there are reserve hashes, loop:
+                    //
+                    // 1. recv_record
+                    // 2. record
+                    //
+                    // and do not hash
+                    if reserve_hashes().is_some() {
+                        continue;
+                    }
+
                     timing.num_hashes += hashes_per_batch;
                     let mut hash_time = Measure::start("hash");
                     let should_tick = poh_l.hash(hashes_per_batch);
@@ -353,19 +370,6 @@ impl PohService {
                     if should_tick {
                         // nothing else can be done. tick required.
                         return true;
-                    }
-                    // check to see if a record request has been sent
-                    if let Ok(record) = record_receiver.try_recv() {
-                        // remember the record we just received as the next record to occur
-                        *next_record = Some(record);
-                        break;
-                    }
-
-                    // this has to be done after checking for record
-                    let total_remaining_hashes = poh.lock().unwrap().total_remaining_hashes();
-                    let reserve_hashes = reserve_hashes();
-                    if reserve_hashes.is_some_and(|h| h >= total_remaining_hashes) {
-                        break;
                     }
 
                     // check to see if we need to wait to catch up to ideal
