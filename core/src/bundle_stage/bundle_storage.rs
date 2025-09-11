@@ -7,6 +7,7 @@ use {
         bundle_execution::LoadAndExecuteBundleError, BundleExecutionError, SanitizedBundle,
     },
     solana_clock::Slot,
+    solana_poh::poh_service::reset_reserve_hashes,
     solana_pubkey::Pubkey,
     solana_runtime::bank::Bank,
     solana_svm::transaction_error_metrics::TransactionErrorMetrics,
@@ -202,8 +203,9 @@ impl BundleStorage {
 
         let have_block = sanitized_bundles.len() == 1;
         if !have_block {
-            debug!("no bundles to process for slot {}", slot);
+            info!("no block to process for slot {}", slot);
             scheduler_synchronization::block_failed(slot);
+            reset_reserve_hashes();
             return true;
         }
 
@@ -280,6 +282,7 @@ impl BundleStorage {
             );
 
         if !bundle_success {
+            info!("block failed {}", slot);
             scheduler_synchronization::block_failed(slot);
         }
 
@@ -313,7 +316,7 @@ impl BundleStorage {
         sanitized_bundles.extend(self.unprocessed_bundle_storage.drain(..).filter_map(
             |packet_bundle| {
                 let r = packet_bundle.build_sanitized_bundle(
-                &bank,
+                    &bank,
                     blacklisted_accounts,
                     &mut error_metrics,
                 );
@@ -323,7 +326,7 @@ impl BundleStorage {
                 match r {
                     Ok(sanitized_bundle) => Some((packet_bundle, sanitized_bundle)),
                     Err(e) => {
-                        debug!(
+                        info!(
                             "bundle slot: {} error sanitizing: {}",
                             packet_bundle.slot(),
                             e

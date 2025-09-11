@@ -27,6 +27,7 @@ use {
     solana_measure::measure_us,
     solana_poh::{
         poh_recorder::BankStart,
+        poh_service::reset_reserve_hashes,
         transaction_recorder::{
             RecordTransactionsSummary, RecordTransactionsTimings, TransactionRecorder,
         },
@@ -240,11 +241,11 @@ impl BundleConsumer {
 
     #[allow(clippy::too_many_arguments)]
     fn process_bundle(
-        _bundle_account_locker: &BundleAccountLocker,
+        bundle_account_locker: &BundleAccountLocker,
         tip_manager: &TipManager,
         last_tip_updated_slot: &mut Slot,
-        _cluster_info: &Arc<ClusterInfo>,
-        _block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
+        cluster_info: &Arc<ClusterInfo>,
+        block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         committer: &Committer,
         recorder: &TransactionRecorder,
         qos_service: &QosService,
@@ -268,25 +269,25 @@ impl BundleConsumer {
             )
         {
             let start = Instant::now();
-            // let result = Self::handle_tip_programs(
-            //     bundle_account_locker,
-            //     tip_manager,
-            //     cluster_info,
-            //     block_builder_fee_info,
-            //     committer,
-            //     recorder,
-            //     qos_service,
-            //     log_messages_bytes_limit,
-            //     max_bundle_retry_duration,
-            //     bank_start,
-            //     bundle_stage_leader_metrics,
-            // );
+            let result = Self::handle_tip_programs(
+                bundle_account_locker,
+                tip_manager,
+                cluster_info,
+                block_builder_fee_info,
+                committer,
+                recorder,
+                qos_service,
+                log_messages_bytes_limit,
+                max_bundle_retry_duration,
+                bank_start,
+                bundle_stage_leader_metrics,
+            );
 
             bundle_stage_leader_metrics
                 .bundle_stage_metrics_tracker()
                 .increment_change_tip_receiver_elapsed_us(start.elapsed().as_micros() as u64);
 
-            // result?;
+            result?;
 
             *last_tip_updated_slot = bank_start.working_bank.slot();
         }
@@ -300,6 +301,7 @@ impl BundleConsumer {
             locked_bundle.sanitized_bundle(),
             bank_start,
             bundle_stage_leader_metrics,
+            true,
         )?;
 
         Ok(())
@@ -307,7 +309,6 @@ impl BundleConsumer {
 
     /// The validator needs to manage state on two programs related to tips
     #[allow(clippy::too_many_arguments)]
-    #[allow(unused)]
     fn handle_tip_programs(
         bundle_account_locker: &BundleAccountLocker,
         tip_manager: &TipManager,
@@ -349,6 +350,7 @@ impl BundleConsumer {
                 locked_init_tip_programs_bundle.sanitized_bundle(),
                 bank_start,
                 bundle_stage_leader_metrics,
+                false,
             )
             .map_err(|e| {
                 bundle_stage_leader_metrics
@@ -401,6 +403,7 @@ impl BundleConsumer {
                 locked_tip_crank_bundle.sanitized_bundle(),
                 bank_start,
                 bundle_stage_leader_metrics,
+                false,
             )
             .map_err(|e| {
                 bundle_stage_leader_metrics
@@ -459,6 +462,7 @@ impl BundleConsumer {
         sanitized_bundle: &SanitizedBundle,
         bank_start: &BankStart,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
+        should_reset_reserve_hash: bool,
     ) -> BundleExecutionResult<()> {
         debug!(
             "bundle: {} reserving blockspace for {} transactions",
@@ -487,6 +491,7 @@ impl BundleConsumer {
             max_bundle_retry_duration,
             sanitized_bundle,
             bank_start,
+            should_reset_reserve_hash
         ));
 
         bundle_stage_leader_metrics
@@ -570,6 +575,7 @@ impl BundleConsumer {
         max_bundle_retry_duration: Duration,
         sanitized_bundle: &SanitizedBundle,
         bank_start: &BankStart,
+        should_reset_reserve_hash: bool,
     ) -> ExecuteRecordCommitResult {
         let transaction_status_sender_enabled = committer.transaction_status_sender_enabled();
 
@@ -606,6 +612,9 @@ impl BundleConsumer {
 
         // don't commit bundle if failure executing any part of the bundle
         if let Err(e) = bundle_execution_results.result {
+            if should_reset_reserve_hash {
+                reset_reserve_hashes();
+            }
             return ExecuteRecordCommitResult {
                 commit_transaction_details: vec![],
                 result: Err(e.clone().into()),
@@ -645,6 +654,9 @@ impl BundleConsumer {
             executed_batches,
             true
         ));
+        if should_reset_reserve_hash {
+            reset_reserve_hashes();
+        }
 
         let RecordTransactionsSummary {
             record_transactions_timings,
