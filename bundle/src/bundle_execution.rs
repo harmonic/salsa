@@ -21,7 +21,7 @@ use {
     },
     solana_timings::ExecuteTimings,
     solana_transaction::{sanitized::SanitizedTransaction, versioned::VersionedTransaction},
-    solana_transaction_error::{TransactionError, TransactionResult as Result},
+    solana_transaction_error::TransactionError,
     std::{
         cmp::{max, min},
         num::Saturating,
@@ -331,10 +331,7 @@ pub fn load_and_execute_bundle<'a>(
             .any(|r| r.is_ok())
         {
             metrics.num_retries.add_assign(Saturating(1));
-            debug!(
-                "bundle: {} no transaction executed, retrying",
-                bundle.slot
-            );
+            debug!("bundle: {} no transaction executed, retrying", bundle.slot);
             continue;
         }
 
@@ -480,7 +477,6 @@ mod tests {
                 .unwrap()
             })
             .collect();
-
 
         SanitizedBundle {
             transactions,

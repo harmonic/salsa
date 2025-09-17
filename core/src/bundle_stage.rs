@@ -21,7 +21,10 @@ use {
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::blockstore_processor::TransactionStatusSender,
     solana_measure::measure_us,
-    solana_poh::{poh_recorder::PohRecorder, transaction_recorder::TransactionRecorder},
+    solana_poh::{
+        poh_recorder::PohRecorder, poh_service::set_reserve_hashes,
+        transaction_recorder::TransactionRecorder,
+    },
     solana_runtime::{
         prioritization_fee_cache::PrioritizationFeeCache, vote_sender_types::ReplayVoteSender,
     },
@@ -366,6 +369,7 @@ impl BundleStage {
             .leader_slot_metrics_tracker()
             .increment_make_decision_us(make_decision_time_us);
 
+        let mut this_slot_block_len = None;
         let decision = if let Some(bank_start) = decision.bank_start() {
             // let consumed_for_slot =
             //     unprocessed_bundle_storage.consumed_for_slot(bank_start.working_bank.slot());
@@ -377,16 +381,19 @@ impl BundleStage {
             //     return;
             // };
 
-            info!("Unprocessed bundle storage len: {}", bundle_storage.unprocessed_bundles_len());
+            info!(
+                "Unprocessed bundle storage len: {}",
+                bundle_storage.unprocessed_bundles_len()
+            );
 
             // Check if we have a block for this slot
-            let have_block_for_this_slot = bundle_storage
+            this_slot_block_len = bundle_storage
                 .unprocessed_bundle_storage
                 .iter()
                 .find(|b| b.slot() == bank_start.working_bank.slot())
-                .is_some();
+                .map(|b| b.len());
 
-            if have_block_for_this_slot && !consumed_for_slot {
+            if this_slot_block_len.is_some() && !consumed_for_slot {
                 // mevanoxx: calling this may change state and block vanilla scheduler
                 // which is why this is gated conditionally
                 info!(
@@ -421,6 +428,7 @@ impl BundleStage {
                 bundle_stage_leader_metrics
                     .apply_action(metrics_action, banking_stage_metrics_action);
 
+                set_reserve_hashes(this_slot_block_len.unwrap());
                 let (_, consume_buffered_packets_time_us) = measure_us!(consumer
                     .consume_buffered_bundles(
                         &bank_start,

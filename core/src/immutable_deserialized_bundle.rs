@@ -6,6 +6,7 @@ use {
         },
         packet_bundle::PacketBundle,
     },
+    rayon::prelude::*,
     solana_bundle::SanitizedBundle,
     solana_clock::MAX_PROCESSING_AGE,
     solana_perf::sigverify::verify_packet,
@@ -100,7 +101,7 @@ impl ImmutableDeserializedBundle {
         }
         if bundle
             .batch
-            .iter_mut()
+            .par_iter_mut()
             .any(|mut p| !verify_packet(&mut p, false))
         {
             error!("Received bundle with invalid packet");

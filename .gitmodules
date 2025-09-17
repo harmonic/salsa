@@ -6,4 +6,4 @@
 	url = https://github.com/jito-foundation/jito-programs.git
 [submodule "jito-protos/protos"]
 	path = jito-protos/protos
-	url = https://github.com/jito-labs/mev-protos.git
+	url = ssh://git@github.com/meijilabs/protos
