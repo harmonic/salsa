@@ -413,7 +413,7 @@ impl BundleStage {
             decision
         };
 
-        if !matches!(decision, BufferedPacketsDecision::Forward) {
+        if !matches!(decision, BufferedPacketsDecision::Forward | BufferedPacketsDecision::ForwardAndHold) {
             info!("Bundle processor final decision: {:?}", decision);
         }
 
