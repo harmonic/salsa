@@ -143,7 +143,9 @@ pub(crate) mod scheduler_synchronization {
         current_slot: u64,
         in_delegation_period: bool,
     ) -> Option<bool> {
+        info!("mevanoxx: vanilla_should_schedule {current_slot} {in_delegation_period}");
         if in_delegation_period {
+            info!("mevanoxx: vanilla in delegation period");
             return None;
         }
 
@@ -152,7 +154,8 @@ pub(crate) mod scheduler_synchronization {
                 Ordering::Release,
                 Ordering::Acquire,
                 |last_slot_scheduled| {
-                    match last_slot_scheduled.cmp(&current_slot) {
+                    info!("mevanoxx: vanilla fetch_update {last_slot_scheduled}");
+                    let update = match last_slot_scheduled.cmp(&current_slot) {
                         // No longer in delegation period and last slot scheduled was in the past => update
                         std::cmp::Ordering::Less => Some(current_slot),
                         // Something has been scheduled for this slot => no update
@@ -169,10 +172,15 @@ pub(crate) mod scheduler_synchronization {
                             // Otherwise, some weird edge case (don't schedule)
                             None
                         }
-                    }
+                    };
+
+                    info!("mevanoxx: vanilla fetch_update update {update:?}");
+                    update
                 },
             )
             .is_ok();
+        info!("mevanoxx: vanilla did_update_atomic {did_update_atomic}");
+
         if did_update_atomic {
             info!("mevanoxx: vanilla updated slot to {current_slot}");
         }
@@ -193,7 +201,9 @@ pub(crate) mod scheduler_synchronization {
         current_slot: u64,
         in_delegation_period: bool,
     ) -> Option<bool> {
+        info!("mevanoxx: block_should_schedule {current_slot} {in_delegation_period}");
         if !in_delegation_period {
+            info!("mevanoxx: block not in delegation period");
             return None;
         }
 
@@ -202,7 +212,8 @@ pub(crate) mod scheduler_synchronization {
                 Ordering::Release,
                 Ordering::Acquire,
                 |last_slot_scheduled| {
-                    match last_slot_scheduled.cmp(&current_slot) {
+                    info!("mevanoxx: block fetch_update {last_slot_scheduled}");
+                    let update = match last_slot_scheduled.cmp(&current_slot) {
                         // In delegation period and last slot scheduled was in the past => update
                         std::cmp::Ordering::Less => Some(current_slot),
                         // Something has been scheduled for this slot => no update.
@@ -223,10 +234,17 @@ pub(crate) mod scheduler_synchronization {
                             // Otherwise, some weird edge case (don't schedule)
                             None
                         }
-                    }
+                    };
+
+                    info!("mevanoxx: block fetch_update update {update:?}");
+
+                    update
                 },
             )
             .is_ok();
+
+        info!("mevanoxx: block did_update_atomic {did_update_atomic}");
+
         if did_update_atomic {
             info!("mevanoxx: block updated slot to {current_slot}");
         }
@@ -237,12 +255,16 @@ pub(crate) mod scheduler_synchronization {
     /// If block failed, we should revert and give vanilla a chance
     /// updated so that the vanilla scheduler does not schedule.
     pub(crate) fn block_failed(current_slot: u64) -> Option<bool> {
+        info!("mevanoxx: block_failed {current_slot}");
+
         let did_update_atomic = LAST_SLOT_SCHEDULED
             .fetch_update(
                 Ordering::Release,
                 Ordering::Acquire,
                 |last_slot_scheduled| {
-                    match last_slot_scheduled.cmp(&current_slot) {
+                    info!("mevanoxx: block_failed fetch_update {last_slot_scheduled}");
+
+                    let update = match last_slot_scheduled.cmp(&current_slot) {
                         // Still in same slot => revert
                         //
                         // doesn't have to be actual last slot, just one that is less than (or sentinel)
@@ -253,10 +275,17 @@ pub(crate) mod scheduler_synchronization {
 
                         // Invalid state revert
                         std::cmp::Ordering::Less => unreachable!("never revert for past slot"),
-                    }
+                    };
+
+                    info!("mevanoxx: block_failed fetch_update update {update:?}");
+
+                    update
                 },
             )
             .is_ok();
+
+        info!("mevanoxx: block_failed did_update_atomic {did_update_atomic}");
+
         if did_update_atomic {
             info!("mevanoxx: block reverted in slot {current_slot}");
         }

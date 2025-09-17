@@ -120,6 +120,7 @@ impl DecisionMaker {
     pub(crate) fn maybe_consume<const VANILLA: bool>(
         decision: BufferedPacketsDecision,
     ) -> BufferedPacketsDecision {
+        info!("mevanoxx: maybe_consume VANILLA {VANILLA:?} decision {decision:?}");
         let BufferedPacketsDecision::Consume(bank_start) = decision else {
             return decision;
         };
@@ -132,12 +133,15 @@ impl DecisionMaker {
         let delegation_period_length = bank_ticks_per_slot * 15 / 16;
         let in_delegation_period = ticks_info_slot < delegation_period_length;
 
+        info!("mevanoxx: maybe_consume current_tick_height {current_tick_height} max_tick_height {max_tick_height} bank_ticks_per_slot {bank_ticks_per_slot} start_tick {start_tick} ticks_info_slot {ticks_info_slot} delegation_period_length {delegation_period_length} in_delegation_period {in_delegation_period}");
+
         let current_slot = bank_start.working_bank.slot();
 
         // Check if we have a cached decision
         CACHED_DECISION.with_borrow_mut(|cached_decision| {
             // Use cached decision if there is one for this slot
             if let Some((cached_slot, cached_decision)) = cached_decision {
+                info!("mevanoxx: maybe_consume cached_decision {cached_decision:?} cached_slot {cached_slot:?} current_slot {current_slot}");
                 if current_slot.eq(cached_slot) {
                     return cached_decision
                         // Consume if cached_decision = true
@@ -156,6 +160,7 @@ impl DecisionMaker {
 
             match should_schedule(current_slot, in_delegation_period) {
                 Some(decision) => {
+                    info!("mevanoxx: maybe_consume updating cached_decision {decision:?} for slot {current_slot}");
                     *cached_decision = Some((current_slot, decision));
                     decision
                         // Consume if cached_decision = true
