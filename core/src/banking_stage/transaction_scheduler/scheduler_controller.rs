@@ -129,6 +129,8 @@ where
         &mut self,
         decision: &BufferedPacketsDecision,
     ) -> Result<(), SchedulerError> {
+        let decision = DecisionMaker::maybe_consume::<true /* vanilla */>(decision.clone());
+
         match decision {
             BufferedPacketsDecision::Consume(bank_start) => {
                 set_consume_slot(bank_start.working_bank.slot());
