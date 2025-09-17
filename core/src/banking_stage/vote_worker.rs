@@ -237,7 +237,7 @@ impl VoteWorker {
         let mut reached_end_of_slot = false;
         let mut sanitized_transactions = Vec::with_capacity(UNPROCESSED_BUFFER_STEP_SIZE);
         let mut error_counters: TransactionErrorMetrics = TransactionErrorMetrics::default();
-        info!(
+        debug!(
             "Processing {} vote packets, slot: {}, tick: {}, outstanding: {}",
             all_vote_packets.len(),
             bank_start.working_bank.slot(),
@@ -283,7 +283,7 @@ impl VoteWorker {
                 self.storage.reinsert_packets(vote_packets.drain(..));
             }
         }
-        info!(
+        debug!(
             "Done processing slot: {}, tick: {}, outstanding: {}",
             bank_start.working_bank.slot(),
             bank_start.working_bank.slot_tick_height(),
@@ -429,7 +429,7 @@ impl VoteWorker {
         let bank_slot_tick_start = bank.max_tick_height().saturating_sub(bank.ticks_per_slot());
         let bank_slot_tick_height = bank.tick_height().saturating_sub(bank_slot_tick_start);
 
-        info!(
+        debug!(
             "process_transaction: slot: {} height: {} block_start: {}, tx_count: {}",
             bank.slot(),
             bank_slot_tick_height,
@@ -438,7 +438,7 @@ impl VoteWorker {
         );
 
         if bank_slot_tick_height > MAX_TICK_FOR_VOTING {
-            info!(
+            debug!(
                 "process transactions: max tick height reached slot: {} height: {} block_start: {}, tx_count: {}",
                 bank.slot(),
                 bank_slot_tick_start,
@@ -486,7 +486,7 @@ impl VoteWorker {
             should_bank_still_be_processing_txs,
         ) {
             (Err(PohRecorderError::MaxHeightReached), _) | (_, false) => {
-                info!(
+                debug!(
                     "process transactions: max height reached slot: {} height: {}",
                     bank.slot(),
                     bank.tick_height()
