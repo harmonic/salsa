@@ -1453,6 +1453,14 @@ impl Bank {
             new.distribute_partitioned_epoch_rewards();
         });
 
+        // cavey unset limits. if we are proposer again this is set when we set_tpu_bank
+        let mut cost_tracker = new.cost_tracker.write().unwrap();
+        if cost_tracker.original_vote_cost_limit > 0 {
+            cost_tracker.vote_cost_limit = cost_tracker.original_vote_cost_limit;
+            cost_tracker.original_vote_cost_limit = 0;
+        }
+        drop(cost_tracker);
+
         let (_, cache_preparation_time_us) =
             measure_us!(new.prepare_program_cache_for_upcoming_feature_set());
 
@@ -6176,7 +6184,9 @@ impl Bank {
 
     pub fn slot_tick_height(&self) -> u64 {
         let slot_start_tick_height = self.max_tick_height.saturating_sub(self.ticks_per_slot);
-        self.tick_height.load(Ordering::Relaxed).saturating_sub(slot_start_tick_height)
+        self.tick_height
+            .load(Ordering::Relaxed)
+            .saturating_sub(slot_start_tick_height)
     }
 
     /// Return the number of hashes per tick
@@ -7005,7 +7015,9 @@ impl Bank {
 
     pub fn cavey_set_proposer_limits(&self) {
         // limit votes to 4M cost units
-        self.cost_tracker.write().unwrap().vote_cost_limit = 4_000_000;
+        let mut cost_tracker = self.cost_tracker.write().unwrap();
+        cost_tracker.original_vote_cost_limit = cost_tracker.vote_cost_limit;
+        cost_tracker.vote_cost_limit = 4_000_000;
     }
 }
 

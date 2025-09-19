@@ -377,15 +377,6 @@ impl BundleStage {
             let consumed_for_slot =
                 bundle_storage.consumed_for_slot(bank_start.working_bank.slot());
 
-            // let Some(bundles) = unprocessed_bundle_storage.bundle_storage() else {
-            //     return;
-            // };
-
-            info!(
-                "Unprocessed bundle storage len: {}",
-                bundle_storage.unprocessed_bundles_len()
-            );
-
             // Check if we have a block for this slot
             this_slot_block_len = bundle_storage
                 .unprocessed_bundle_storage
@@ -398,19 +389,11 @@ impl BundleStage {
                 // which is why this is gated conditionally
                 DecisionMaker::maybe_consume::<false /* vanilla */>(decision)
             } else {
-                info!(
-                    "Bundle processor decision: Hold: {}",
-                    bank_start.working_bank.slot()
-                );
                 BufferedPacketsDecision::Hold
             }
         } else {
             decision
         };
-
-        if !matches!(decision, BufferedPacketsDecision::Forward | BufferedPacketsDecision::ForwardAndHold) {
-            info!("Bundle processor final decision: {:?}", decision);
-        }
 
         match decision {
             // BufferedPacketsDecision::Consume means this leader is scheduled to be running at the moment.
