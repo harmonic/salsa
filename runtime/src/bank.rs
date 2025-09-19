@@ -7002,6 +7002,11 @@ impl Bank {
     pub fn set_accounts_lt_hash_for_snapshot_minimizer(&self, accounts_lt_hash: AccountsLtHash) {
         *self.accounts_lt_hash.lock().unwrap() = accounts_lt_hash;
     }
+
+    pub fn cavey_set_proposer_limits(&self) {
+        // limit votes to 4M cost units
+        self.cost_tracker.write().unwrap().vote_cost_limit = 4_000_000;
+    }
 }
 
 impl InvokeContextCallback for Bank {

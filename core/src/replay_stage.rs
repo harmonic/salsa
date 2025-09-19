@@ -2219,6 +2219,7 @@ impl ReplayStage {
                 my_pubkey,
                 NewBankOptions { vote_only_bank },
             );
+            tpu_bank.cavey_set_proposer_limits();
             // make sure parent is frozen for finalized hashes via the above
             // new()-ing of its child bank
             banking_tracer.hash_event(parent.slot(), &parent.last_blockhash(), &parent.hash());

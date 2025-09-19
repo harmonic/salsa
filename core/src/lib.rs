@@ -113,7 +113,6 @@ pub fn proto_packet_to_packet(p: jito_protos::proto::packet::Packet) -> BytesPac
     packet
 }
 
-
 pub(crate) mod scheduler_synchronization {
     //! mevanoxx TODO: maybe move this
     //!
@@ -143,9 +142,7 @@ pub(crate) mod scheduler_synchronization {
         current_slot: u64,
         in_delegation_period: bool,
     ) -> Option<bool> {
-        info!("mevanoxx: vanilla_should_schedule {current_slot} {in_delegation_period}");
         if in_delegation_period {
-            info!("mevanoxx: vanilla in delegation period");
             return None;
         }
 
@@ -154,7 +151,6 @@ pub(crate) mod scheduler_synchronization {
                 Ordering::Release,
                 Ordering::Acquire,
                 |last_slot_scheduled| {
-                    info!("mevanoxx: vanilla fetch_update {last_slot_scheduled}");
                     let update = match last_slot_scheduled.cmp(&current_slot) {
                         // No longer in delegation period and last slot scheduled was in the past => update
                         std::cmp::Ordering::Less => Some(current_slot),
@@ -174,12 +170,10 @@ pub(crate) mod scheduler_synchronization {
                         }
                     };
 
-                    info!("mevanoxx: vanilla fetch_update update {update:?}");
                     update
                 },
             )
             .is_ok();
-        info!("mevanoxx: vanilla did_update_atomic {did_update_atomic}");
 
         if did_update_atomic {
             info!("mevanoxx: vanilla updated slot to {current_slot}");
@@ -201,9 +195,7 @@ pub(crate) mod scheduler_synchronization {
         current_slot: u64,
         in_delegation_period: bool,
     ) -> Option<bool> {
-        info!("mevanoxx: block_should_schedule {current_slot} {in_delegation_period}");
         if !in_delegation_period {
-            info!("mevanoxx: block not in delegation period");
             return None;
         }
 
@@ -212,7 +204,6 @@ pub(crate) mod scheduler_synchronization {
                 Ordering::Release,
                 Ordering::Acquire,
                 |last_slot_scheduled| {
-                    info!("mevanoxx: block fetch_update {last_slot_scheduled}");
                     let update = match last_slot_scheduled.cmp(&current_slot) {
                         // In delegation period and last slot scheduled was in the past => update
                         std::cmp::Ordering::Less => Some(current_slot),
@@ -235,8 +226,6 @@ pub(crate) mod scheduler_synchronization {
                             None
                         }
                     };
-
-                    info!("mevanoxx: block fetch_update update {update:?}");
 
                     update
                 },
