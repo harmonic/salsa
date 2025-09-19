@@ -131,7 +131,6 @@ impl VoteWorker {
             const MAX_TICK_FOR_VOTING: u64 = 48;
             let slot_tick_height = bank_start.working_bank.slot_tick_height();
             if slot_tick_height >= MAX_TICK_FOR_VOTING {
-                info!("Slot {} tick height {} exceeded max tick for voting {}", bank_start.working_bank.slot(), slot_tick_height, MAX_TICK_FOR_VOTING);
                 decision = BufferedPacketsDecision::Hold;
             };
         }

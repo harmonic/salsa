@@ -396,11 +396,6 @@ impl BundleStage {
             if this_slot_block_len.is_some() && !consumed_for_slot {
                 // mevanoxx: calling this may change state and block vanilla scheduler
                 // which is why this is gated conditionally
-                info!(
-                    "Bundle processor decision: MaybeConsume: {}, current decision: {:?}",
-                    bank_start.working_bank.slot(),
-                    decision
-                );
                 DecisionMaker::maybe_consume::<false /* vanilla */>(decision)
             } else {
                 info!(
@@ -428,7 +423,7 @@ impl BundleStage {
                 bundle_stage_leader_metrics
                     .apply_action(metrics_action, banking_stage_metrics_action);
 
-                set_reserve_hashes(this_slot_block_len.unwrap());
+                set_reserve_hashes(this_slot_block_len.expect("only consumes if some"));
                 let (_, consume_buffered_packets_time_us) = measure_us!(consumer
                     .consume_buffered_bundles(
                         &bank_start,

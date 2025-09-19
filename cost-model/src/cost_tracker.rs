@@ -62,7 +62,8 @@ pub struct UpdatedCosts {
 pub struct CostTracker {
     account_cost_limit: u64,
     block_cost_limit: u64,
-    vote_cost_limit: u64,
+    // cavey was here
+    pub vote_cost_limit: u64,
     cost_by_writable_accounts: HashMap<Pubkey, u64, ahash::RandomState>,
     block_cost: u64,
     vote_cost: u64,
