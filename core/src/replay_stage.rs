@@ -592,7 +592,7 @@ impl ReplayStage {
             drop_bank_sender,
             block_metadata_notifier,
             dumped_slots_sender,
-            leader_window_sender
+            leader_window_sender,
         } = senders;
 
         let ReplayReceivers {
@@ -1171,7 +1171,7 @@ impl ReplayStage {
                         &banking_tracer,
                         has_new_vote_been_rooted,
                         transaction_status_sender.is_some(),
-                        leader_window_sender.clone()
+                        leader_window_sender.clone(),
                     );
 
                     let poh_bank = poh_recorder.read().unwrap().bank();
@@ -2235,7 +2235,10 @@ impl ReplayStage {
             rpc_subscriptions.notify_slot(slot, tpu_bank.parent_slot(), root_slot);
 
             let window_start_time = SystemTime::now();
-            info!("Sending leader window notification ({:?}, {})", window_start_time, slot);
+            info!(
+                "Sending leader window notification ({:?}, {})",
+                window_start_time, slot
+            );
             if let Err(e) = leader_window_sender.blocking_send((window_start_time, slot)) {
                 error!("Failed to send leader window notification: {}", e);
             }
@@ -4279,7 +4282,7 @@ impl ReplayStage {
         }
         Bank::new_from_parent_with_options(parent, leader, slot, new_bank_options)
     }
-    
+
     fn new_bank_from_parent(
         parent: Arc<Bank>,
         slot: u64,
