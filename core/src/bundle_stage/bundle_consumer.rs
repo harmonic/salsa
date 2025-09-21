@@ -262,12 +262,9 @@ impl BundleConsumer {
             return Err(BundleExecutionError::BankProcessingTimeLimitReached);
         }
 
-        if bank_start.working_bank.slot() != *last_tip_updated_slot
-            && Self::bundle_touches_tip_pdas(
-                locked_bundle.sanitized_bundle(),
-                &tip_manager.get_tip_accounts(),
-            )
-        {
+        let new_slot = bank_start.working_bank.slot() != *last_tip_updated_slot;
+        let touches_tip_pdas = true;
+        if new_slot && touches_tip_pdas {
             let start = Instant::now();
             let result = Self::handle_tip_programs(
                 bundle_account_locker,
@@ -652,7 +649,7 @@ impl BundleConsumer {
             bank_start.working_bank.slot(),
             hashes,
             executed_batches,
-            true
+            should_reset_reserve_hash,
         ));
         if should_reset_reserve_hash {
             reset_reserve_hashes();
@@ -746,6 +743,7 @@ impl BundleConsumer {
     }
 
     /// Returns true if any of the transactions in a bundle mention one of the tip PDAs
+    #[allow(dead_code)]
     fn bundle_touches_tip_pdas(bundle: &SanitizedBundle, tip_pdas: &HashSet<Pubkey>) -> bool {
         bundle.transactions.iter().any(|tx| {
             tx.message()
