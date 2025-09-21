@@ -610,6 +610,11 @@ impl BundleConsumer {
         // don't commit bundle if failure executing any part of the bundle
         if let Err(e) = bundle_execution_results.result {
             if should_reset_reserve_hash {
+                bank_start
+                    .working_bank
+                    .write_cost_tracker()
+                    .unwrap()
+                    .restore_nonvote_cost_limits();
                 reset_reserve_hashes();
             }
             return ExecuteRecordCommitResult {
@@ -652,6 +657,11 @@ impl BundleConsumer {
             should_reset_reserve_hash,
         ));
         if should_reset_reserve_hash {
+            bank_start
+                .working_bank
+                .write_cost_tracker()
+                .unwrap()
+                .restore_nonvote_cost_limits();
             reset_reserve_hashes();
         }
 

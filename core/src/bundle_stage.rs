@@ -46,7 +46,7 @@ mod bundle_packet_receiver;
 pub(crate) mod bundle_stage_leader_metrics;
 mod bundle_storage;
 mod committer;
-const MAX_BUNDLE_RETRY_DURATION: Duration = Duration::from_millis(400);
+const MAX_BUNDLE_RETRY_DURATION: Duration = Duration::from_millis(1000);
 const SLOT_BOUNDARY_CHECK_PERIOD: Duration = Duration::from_millis(10);
 
 // Stats emitted periodically
@@ -407,6 +407,11 @@ impl BundleStage {
                     .apply_action(metrics_action, banking_stage_metrics_action);
 
                 set_reserve_hashes(this_slot_block_len.expect("only consumes if some"));
+                bank_start
+                    .working_bank
+                    .write_cost_tracker()
+                    .unwrap()
+                    .save_nonvote_cost_limits();
                 let (_, consume_buffered_packets_time_us) = measure_us!(consumer
                     .consume_buffered_bundles(
                         &bank_start,

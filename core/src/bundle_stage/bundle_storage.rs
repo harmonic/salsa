@@ -192,7 +192,7 @@ impl BundleStorage {
         self.attempted_slot = Some(slot);
 
         let mut sanitized_bundles = self.drain_and_sanitize_bundles(
-            bank,
+            bank.clone(),
             bundle_stage_leader_metrics,
             blacklisted_accounts,
         );
@@ -204,6 +204,9 @@ impl BundleStorage {
         let have_block = sanitized_bundles.len() == 1;
         if !have_block {
             info!("no block to process for slot {}", slot);
+            bank.write_cost_tracker()
+                .unwrap()
+                .restore_nonvote_cost_limits();
             scheduler_synchronization::block_failed(slot);
             reset_reserve_hashes();
             return true;
@@ -283,6 +286,9 @@ impl BundleStorage {
 
         if !bundle_success {
             info!("block failed {}", slot);
+            bank.write_cost_tracker()
+                .unwrap()
+                .restore_nonvote_cost_limits();
             scheduler_synchronization::block_failed(slot);
         }
 
