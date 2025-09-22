@@ -1,5 +1,5 @@
 use {
-    crate::{scheduler::Scheduler, SanitizedBundle},
+    crate::{scheduler::Scheduler, timer::Timer, SanitizedBundle},
     itertools::izip,
     log::*,
     que::{
@@ -33,7 +33,7 @@ use {
         ops::{AddAssign, Range},
         result,
         sync::mpsc,
-        time::{Duration, Instant},
+        time::Duration,
     },
     thiserror::Error,
 };
@@ -249,7 +249,7 @@ pub fn load_and_execute_bundle<'a>(
     }
 
     let mut chunk_start = 0;
-    let start_time = Instant::now();
+    let start_time = Timer::new();
 
     let mut bundle_transaction_results = vec![];
     let mut metrics = BundleExecutionMetrics::default();
@@ -305,15 +305,15 @@ fn load_and_execute_chunk<'a>(
     pre_execution_accounts: &[Option<Vec<Pubkey>>],
     post_execution_accounts: &[Option<Vec<Pubkey>>],
     metrics: &mut BundleExecutionMetrics,
-    start_time: &Instant,
+    start_time: &Timer,
     chunk_start: &mut usize,
     chunk_end: usize,
 ) -> result::Result<BundleTransactionsOutput<'a>, LoadAndExecuteBundleError> {
     loop {
-        if start_time.elapsed() > *max_processing_time {
+        if start_time.elapsed_ms() > max_processing_time.as_millis() as u64 {
             trace!("bundle: {} took too long to execute", bundle.slot);
             return Err(LoadAndExecuteBundleError::ProcessingTimeExceeded(
-                start_time.elapsed(),
+                Duration::from_millis(start_time.elapsed_ms()),
             ));
         }
 
@@ -513,7 +513,7 @@ pub fn parallel_load_and_execute_bundle<'a>(
     let mut bundle_transaction_results = Vec::new();
     let mut metrics = BundleExecutionMetrics::default();
 
-    let start_time = Instant::now();
+    let start_time = Timer::new();
     let num_channels = thread_pool.current_num_threads();
     thread_pool.in_place_scope(|scope| {
         // Bound these channels to 1 item to ensure we don't end up with a deep
@@ -528,7 +528,7 @@ pub fn parallel_load_and_execute_bundle<'a>(
         let (finish_tx, finish_rx) = mpsc::channel();
 
         // spawn transaction execution threads
-        for _ in 0..num_channels {
+        for index in 0..num_channels {
             let finish_tx = finish_tx.clone();
             let (tx, mut rx) = lossless_pair::<Range<usize>, 1>();
             start_channels.push(tx);
@@ -539,6 +539,7 @@ pub fn parallel_load_and_execute_bundle<'a>(
                         let mut chunk_start = range.start;
                         let chunk_end = range.end;
                         let mut metrics = BundleExecutionMetrics::default();
+                        let start = start_time.elapsed_ms();
 
                         match load_and_execute_chunk(
                             bank,
@@ -557,8 +558,14 @@ pub fn parallel_load_and_execute_bundle<'a>(
                             chunk_end,
                         ) {
                             Ok(bundle_transaction_output) => {
-                                let _ =
-                                    finish_tx.send(Ok((range, bundle_transaction_output, metrics)));
+                                let _ = finish_tx.send(Ok((
+                                    index,
+                                    range,
+                                    bundle_transaction_output,
+                                    metrics,
+                                    start,
+                                    start_time.elapsed_ms(),
+                                )));
                             }
                             Err(e) => {
                                 let _ = finish_tx.send(Err(e));
@@ -571,6 +578,10 @@ pub fn parallel_load_and_execute_bundle<'a>(
 
         // Schedule transactions one at a time
         let mut next_channel = 0;
+        let mut max_queue_depth = 0;
+        let mut queue_depth: usize = 0;
+        let mut per_thread_transaction_count = vec![0; num_channels];
+        let mut per_thread_execution_times = vec![Vec::new(); num_channels];
         scheduler.init(&bundle.transactions);
         while !scheduler.finished {
             // Schedule another transaction to execute
@@ -584,15 +595,28 @@ pub fn parallel_load_and_execute_bundle<'a>(
                 start_channels[next_channel].sync();
                 next_channel += 1;
                 next_channel %= num_channels;
+                // Update statistics
+                per_thread_transaction_count[next_channel] += range.len();
+                queue_depth += 1;
+                max_queue_depth = max(max_queue_depth, queue_depth);
             }
 
             // Finish any transactions that are queued up as done
             if let Ok(result) = finish_rx.try_recv() {
+                queue_depth -= 1;
                 match result {
-                    Ok((range, bundle_transaction_output, transaction_metrics)) => {
+                    Ok((
+                        index,
+                        range,
+                        bundle_transaction_output,
+                        transaction_metrics,
+                        start,
+                        end,
+                    )) => {
                         bundle_transaction_results.push(bundle_transaction_output);
                         metrics.accumulate(&transaction_metrics);
-                        scheduler.finish(range, &bundle.transactions);
+                        scheduler.finish(range.clone(), &bundle.transactions);
+                        per_thread_execution_times[index].push((range, start, end));
                     }
                     Err(e) => {
                         // Send exit heartbeat signal to the threads
@@ -611,10 +635,15 @@ pub fn parallel_load_and_execute_bundle<'a>(
         start_channels.into_iter().for_each(|tx| tx.beat());
 
         info!(
-            "bundle: {} transactions executed in {} ms",
+            "{} transactions executed in {} ms",
             bundle.transactions.len(),
-            start_time.elapsed().as_millis()
+            start_time.elapsed_ms()
         );
+        info!(
+            "max queued transactions: {}, transactions processed per thread: {:?}",
+            max_queue_depth, per_thread_transaction_count
+        );
+        info!("runtimes per thread: {:?}", per_thread_execution_times);
         LoadAndExecuteBundleOutput {
             bundle_transaction_results,
             metrics,
