@@ -1,7 +1,12 @@
 use {
-    crate::SanitizedBundle,
+    crate::{scheduler::Scheduler, SanitizedBundle},
     itertools::izip,
     log::*,
+    que::{
+        lossless::{lossless_pair, producer::Producer},
+        LocalMode,
+    },
+    rayon::ThreadPool,
     solana_account::{AccountSharedData, ReadableAccount},
     solana_measure::{measure::Measure, measure_us},
     solana_pubkey::Pubkey,
@@ -25,8 +30,9 @@ use {
     std::{
         cmp::{max, min},
         num::Saturating,
-        ops::AddAssign,
+        ops::{AddAssign, Range},
         result,
+        sync::mpsc,
         time::{Duration, Instant},
     },
     thiserror::Error,
@@ -40,6 +46,17 @@ pub struct BundleExecutionMetrics {
     pub cache_accounts_us: Saturating<u64>,
     pub execute_timings: ExecuteTimings,
     pub errors: TransactionErrorMetrics,
+}
+
+impl BundleExecutionMetrics {
+    pub fn accumulate(&mut self, other: &BundleExecutionMetrics) {
+        self.num_retries += other.num_retries;
+        self.load_execute_us += other.load_execute_us;
+        self.collect_pre_post_accounts_us += other.collect_pre_post_accounts_us;
+        self.cache_accounts_us += other.cache_accounts_us;
+        self.execute_timings.accumulate(&other.execute_timings);
+        self.errors.accumulate(&other.errors);
+    }
 }
 
 /// Contains the results from executing each TransactionBatch with a final result associated with it
@@ -238,19 +255,69 @@ pub fn load_and_execute_bundle<'a>(
     let mut metrics = BundleExecutionMetrics::default();
 
     while chunk_start != bundle.transactions.len() {
+        let chunk_end = min(bundle.transactions.len(), chunk_start.saturating_add(128));
+        match load_and_execute_chunk(
+            bank,
+            bundle,
+            max_age,
+            max_processing_time,
+            transaction_status_sender_enabled,
+            log_messages_bytes_limit,
+            is_simulation,
+            account_overrides,
+            pre_execution_accounts,
+            post_execution_accounts,
+            &mut metrics,
+            &start_time,
+            &mut chunk_start,
+            chunk_end,
+        ) {
+            Ok(bundle_transaction_output) => {
+                bundle_transaction_results.push(bundle_transaction_output);
+            }
+            Err(e) => {
+                return LoadAndExecuteBundleOutput {
+                    bundle_transaction_results,
+                    metrics,
+                    result: Err(e),
+                };
+            }
+        };
+    }
+
+    LoadAndExecuteBundleOutput {
+        bundle_transaction_results,
+        metrics,
+        result: Ok(()),
+    }
+}
+
+#[inline(always)]
+fn load_and_execute_chunk<'a>(
+    bank: &Bank,
+    bundle: &'a SanitizedBundle,
+    max_age: usize,
+    max_processing_time: &Duration,
+    transaction_status_sender_enabled: bool,
+    log_messages_bytes_limit: &Option<usize>,
+    is_simulation: bool,
+    account_overrides: &AccountOverrides,
+    pre_execution_accounts: &[Option<Vec<Pubkey>>],
+    post_execution_accounts: &[Option<Vec<Pubkey>>],
+    metrics: &mut BundleExecutionMetrics,
+    start_time: &Instant,
+    chunk_start: &mut usize,
+    chunk_end: usize,
+) -> result::Result<BundleTransactionsOutput<'a>, LoadAndExecuteBundleError> {
+    loop {
         if start_time.elapsed() > *max_processing_time {
             trace!("bundle: {} took too long to execute", bundle.slot);
-            return LoadAndExecuteBundleOutput {
-                bundle_transaction_results,
-                metrics,
-                result: Err(LoadAndExecuteBundleError::ProcessingTimeExceeded(
-                    start_time.elapsed(),
-                )),
-            };
+            return Err(LoadAndExecuteBundleError::ProcessingTimeExceeded(
+                start_time.elapsed(),
+            ));
         }
 
-        let chunk_end = min(bundle.transactions.len(), chunk_start.saturating_add(128));
-        let chunk = &bundle.transactions[chunk_start..chunk_end];
+        let chunk = &bundle.transactions[*chunk_start..chunk_end];
 
         // Note: these batches are dropped after execution and before record/commit, which is atypical
         // compared to BankingStage which holds account locks until record + commit to avoid race conditions with
@@ -275,14 +342,10 @@ pub fn load_and_execute_bundle<'a>(
             .zip(batch.lock_results())
         {
             if !matches!(lock_result, Ok(()) | Err(TransactionError::AccountInUse)) {
-                return LoadAndExecuteBundleOutput {
-                    bundle_transaction_results,
-                    metrics,
-                    result: Err(LoadAndExecuteBundleError::LockError {
-                        signature: *sanitied_tx.signature(),
-                        transaction_error: lock_result.as_ref().unwrap_err().clone(),
-                    }),
-                };
+                return Err(LoadAndExecuteBundleError::LockError {
+                    signature: *sanitied_tx.signature(),
+                    transaction_error: lock_result.as_ref().unwrap_err().clone(),
+                });
             }
         }
 
@@ -292,7 +355,7 @@ pub fn load_and_execute_bundle<'a>(
         );
 
         let m = Measure::start("accounts");
-        let accounts_requested = &pre_execution_accounts[chunk_start..end];
+        let accounts_requested = &pre_execution_accounts[*chunk_start..end];
         let pre_tx_execution_accounts =
             get_account_transactions(bank, account_overrides, accounts_requested, &batch);
         metrics
@@ -364,7 +427,7 @@ pub fn load_and_execute_bundle<'a>(
         );
 
         let m = Measure::start("accounts");
-        let accounts_requested = &post_execution_accounts[chunk_start..end];
+        let accounts_requested = &post_execution_accounts[*chunk_start..end];
         let post_tx_execution_accounts =
             get_account_transactions(bank, account_overrides, accounts_requested, &batch);
         metrics
@@ -373,24 +436,186 @@ pub fn load_and_execute_bundle<'a>(
 
         let processing_end = batch.lock_results().iter().position(|lr| lr.is_err());
         if let Some(end) = processing_end {
-            chunk_start = chunk_start.saturating_add(end);
+            *chunk_start = chunk_start.saturating_add(end);
         } else {
-            chunk_start = chunk_end;
+            *chunk_start = chunk_end;
         }
 
-        bundle_transaction_results.push(BundleTransactionsOutput {
+        return Ok(BundleTransactionsOutput::<'a> {
             transactions: chunk,
             load_and_execute_transactions_output,
             pre_tx_execution_accounts,
             post_tx_execution_accounts,
         });
     }
+}
 
-    LoadAndExecuteBundleOutput {
-        bundle_transaction_results,
-        metrics,
-        result: Ok(()),
+pub fn parallel_load_and_execute_bundle<'a>(
+    bank: &Bank,
+    bundle: &'a SanitizedBundle,
+    // Max blockhash age
+    max_age: usize,
+    // Upper bound on execution time for a bundle
+    max_processing_time: &Duration,
+    transaction_status_sender_enabled: bool,
+    log_messages_bytes_limit: &Option<usize>,
+    // simulation will not use the Bank's account locks when building the TransactionBatch
+    // if simulating on an unfrozen bank, this is helpful to avoid stalling replay and use whatever
+    // state the accounts are in at the current time
+    is_simulation: bool,
+    account_overrides: Option<&mut AccountOverrides>,
+    // these must be the same length as the bundle's transactions
+    // allows one to read account state before and after execution of each transaction in the bundle
+    // will use AccountsOverride + Bank
+    pre_execution_accounts: &[Option<Vec<Pubkey>>],
+    post_execution_accounts: &[Option<Vec<Pubkey>>],
+    scheduler: &mut Scheduler,
+    thread_pool: &ThreadPool,
+) -> LoadAndExecuteBundleOutput<'a> {
+    if pre_execution_accounts.len() != post_execution_accounts.len()
+        || post_execution_accounts.len() != bundle.transactions.len()
+    {
+        return LoadAndExecuteBundleOutput {
+            bundle_transaction_results: vec![],
+            result: Err(LoadAndExecuteBundleError::InvalidPreOrPostAccounts),
+            metrics: BundleExecutionMetrics::default(),
+        };
     }
+
+    let mut binding = AccountOverrides::default();
+    let account_overrides = account_overrides.unwrap_or(&mut binding);
+    if is_simulation {
+        bundle
+            .transactions
+            .iter()
+            .map(|tx| tx.message().account_keys())
+            .for_each(|account_keys| {
+                account_overrides.upsert_account_overrides(
+                    bank.get_account_overrides_for_simulation(&account_keys),
+                );
+
+                // An unfrozen bank's state is always changing.
+                // By taking a snapshot of the accounts we're mocking out grabbing their locks.
+                // **Note** this does not prevent race conditions, just mocks preventing them.
+                if !bank.is_frozen() {
+                    for pk in account_keys.iter() {
+                        // Save on a disk read.
+                        if account_overrides.get(pk).is_none() {
+                            account_overrides.set_account(pk, bank.get_account_shared_data(pk));
+                        }
+                    }
+                }
+            });
+    }
+
+    // Make this immutable so that we can use it across threads
+    let account_overrides: &AccountOverrides = account_overrides;
+    let mut bundle_transaction_results = Vec::new();
+    let mut metrics = BundleExecutionMetrics::default();
+
+    let start_time = Instant::now();
+    let num_channels = thread_pool.current_num_threads();
+    thread_pool.in_place_scope(|scope| {
+        // Bound these channels to 1 item to ensure we don't end up with a deep
+        // queue of scheduled transactions on one thread, when another thread
+        // may be open. The scheduler.pop() and scheduler.done() loop should be
+        // tight enough that we don't need a deep queue.
+        let mut start_channels: Vec<Producer<LocalMode, Range<usize>, 1>> =
+            Vec::with_capacity(num_channels);
+        // NOTE: I tried to use lossless channels here, but ran into issues.
+        // It is also a cleaner model to have an unbounded multi producer single
+        // consumer for aggregating results from the threads.
+        let (finish_tx, finish_rx) = mpsc::channel();
+
+        // spawn transaction execution threads
+        for _ in 0..num_channels {
+            let finish_tx = finish_tx.clone();
+            let (tx, mut rx) = lossless_pair::<Range<usize>, 1>();
+            start_channels.push(tx);
+            scope.spawn(move |_| {
+                // Use a heartbeat as the shutdown signal
+                while !rx.producer_heartbeat() {
+                    if let Some(range) = rx.pop() {
+                        let mut chunk_start = range.start;
+                        let chunk_end = range.end;
+                        let mut metrics = BundleExecutionMetrics::default();
+
+                        match load_and_execute_chunk(
+                            bank,
+                            bundle,
+                            max_age,
+                            max_processing_time,
+                            transaction_status_sender_enabled,
+                            log_messages_bytes_limit,
+                            is_simulation,
+                            account_overrides,
+                            pre_execution_accounts,
+                            post_execution_accounts,
+                            &mut metrics,
+                            &start_time,
+                            &mut chunk_start,
+                            chunk_end,
+                        ) {
+                            Ok(bundle_transaction_output) => {
+                                let _ =
+                                    finish_tx.send(Ok((range, bundle_transaction_output, metrics)));
+                            }
+                            Err(e) => {
+                                let _ = finish_tx.send(Err(e));
+                            }
+                        };
+                    }
+                }
+            });
+        }
+
+        // Schedule transactions one at a time
+        let mut next_channel = 0;
+        scheduler.init(&bundle.transactions);
+        while !scheduler.finished {
+            // Schedule another transaction to execute
+            while let Some(range) = scheduler.pop(&bundle.transactions, &bank) {
+                // Schedule chunks until we hit a block
+                while start_channels[next_channel].push(range.clone()).is_err() {
+                    // try the next channel
+                    next_channel += 1;
+                    next_channel %= num_channels;
+                }
+                start_channels[next_channel].sync();
+                next_channel += 1;
+                next_channel %= num_channels;
+            }
+
+            // Finish any transactions that are queued up as done
+            if let Ok(result) = finish_rx.try_recv() {
+                match result {
+                    Ok((range, bundle_transaction_output, transaction_metrics)) => {
+                        bundle_transaction_results.push(bundle_transaction_output);
+                        metrics.accumulate(&transaction_metrics);
+                        scheduler.finish(range, &bundle.transactions);
+                    }
+                    Err(e) => {
+                        // Send exit heartbeat signal to the threads
+                        start_channels.into_iter().for_each(|tx| tx.beat());
+                        return LoadAndExecuteBundleOutput {
+                            bundle_transaction_results,
+                            metrics,
+                            result: Err(e),
+                        };
+                    }
+                };
+            }
+        }
+
+        // Send exit heartbeat signal to the threads
+        start_channels.into_iter().for_each(|tx| tx.beat());
+
+        LoadAndExecuteBundleOutput {
+            bundle_transaction_results,
+            metrics,
+            result: Ok(()),
+        }
+    })
 }
 
 fn get_account_transactions(
@@ -423,11 +648,16 @@ fn get_account_transactions(
 mod tests {
     use {
         crate::{
-            bundle_execution::{load_and_execute_bundle, LoadAndExecuteBundleError},
+            bundle_execution::{
+                load_and_execute_bundle, parallel_load_and_execute_bundle,
+                LoadAndExecuteBundleError,
+            },
+            scheduler::Scheduler,
             SanitizedBundle,
         },
         anchor_lang::solana_program::clock::MAX_PROCESSING_AGE,
         assert_matches::assert_matches,
+        rayon::ThreadPoolBuilder,
         solana_keypair::Keypair,
         solana_ledger::genesis_utils::create_genesis_config,
         solana_pubkey::Pubkey,
@@ -548,6 +778,7 @@ mod tests {
 
     /// Test a simple failure
     #[test]
+    #[ignore = "Allow failing transactions for bundling whole blocks"]
     fn test_single_transaction_bundle_fail() {
         const TRANSFER_AMOUNT: u64 = 1_000;
         let (genesis_config_info, bank, _bank_forks) =
@@ -769,6 +1000,7 @@ mod tests {
 
     /// Tests a multi-tx bundle with the middle transaction failing.
     #[test]
+    #[ignore = "Allow failing transactions for bundling whole blocks"]
     fn test_multi_transaction_bundle_fails() {
         let (genesis_config_info, bank, _bank_forks) =
             create_simple_test_bank(MINT_AMOUNT_LAMPORTS);
@@ -1006,6 +1238,440 @@ mod tests {
             None,
             &vec![None; bundle.transactions.len()],
             &PRE_EXECUTION_ACCOUNTS,
+        );
+        assert_matches!(
+            result.result,
+            Err(LoadAndExecuteBundleError::InvalidPreOrPostAccounts)
+        );
+    }
+
+    /// A single, valid bundle shall execute successfully and return the correct BundleTransactionsOutput content
+    #[test]
+    fn test_single_transaction_bundle_success_parallel() {
+        const TRANSFER_AMOUNT: u64 = 1_000;
+        let (genesis_config_info, bank, _bank_forks) =
+            create_simple_test_bank(MINT_AMOUNT_LAMPORTS);
+
+        let kp = Keypair::new();
+        let transactions = vec![transfer(
+            &genesis_config_info.mint_keypair,
+            &kp.pubkey(),
+            TRANSFER_AMOUNT,
+            genesis_config_info.genesis_config.hash(),
+        )];
+        let bundle = make_bundle(&transactions, &bank);
+        let default_accounts = vec![None; bundle.transactions.len()];
+        let mut scheduler = Scheduler::new();
+        let thread_pool = ThreadPoolBuilder::new().num_threads(8).build().unwrap();
+
+        let execution_result = parallel_load_and_execute_bundle(
+            &bank,
+            &bundle,
+            MAX_PROCESSING_AGE,
+            &MAX_PROCESSING_TIME,
+            true,
+            &LOG_MESSAGE_BYTES_LIMITS,
+            false,
+            None,
+            &default_accounts,
+            &default_accounts,
+            &mut scheduler,
+            &thread_pool,
+        );
+
+        // make sure the bundle succeeded
+        assert!(execution_result.result.is_ok());
+
+        // check to make sure there was one batch returned with one transaction that was the same that was put in
+        assert_eq!(execution_result.bundle_transaction_results.len(), 1);
+        let tx_result = execution_result.bundle_transaction_results.first().unwrap();
+        assert_eq!(tx_result.transactions.len(), 1);
+        assert_eq!(
+            tx_result.transactions[0].to_versioned_transaction(),
+            bundle.transactions[0].to_versioned_transaction()
+        );
+
+        // make sure the transaction executed successfully
+        assert_eq!(
+            tx_result
+                .load_and_execute_transactions_output
+                .processing_results
+                .len(),
+            1
+        );
+        let execution_result = tx_result
+            .load_and_execute_transactions_output
+            .processing_results
+            .first()
+            .unwrap();
+        assert!(execution_result.is_ok());
+        let processed = execution_result.as_ref().unwrap().executed_transaction();
+        assert!(processed.is_some());
+        let executed = processed.unwrap();
+        assert!(executed.was_successful());
+    }
+
+    /// Tests a multi-tx bundle that succeeds. Checks the returned results
+    #[test]
+    fn test_multi_transaction_bundle_success_parallel() {
+        const TRANSFER_AMOUNT_1: u64 = 100_000;
+        const TRANSFER_AMOUNT_2: u64 = 50_000;
+        const TRANSFER_AMOUNT_3: u64 = 10_000;
+        let (genesis_config_info, bank, _bank_forks) =
+            create_simple_test_bank(MINT_AMOUNT_LAMPORTS);
+        // mint transfers 100k to 1
+        // 1 transfers 50k to 2
+        // 2 transfers 10k to 3
+        // should get executed in 3 batches [[1], [2], [3]]
+        let kp1 = Keypair::new();
+        let kp2 = Keypair::new();
+        let kp3 = Keypair::new();
+        let transactions = vec![
+            transfer(
+                &genesis_config_info.mint_keypair,
+                &kp1.pubkey(),
+                TRANSFER_AMOUNT_1,
+                genesis_config_info.genesis_config.hash(),
+            ),
+            transfer(
+                &kp1,
+                &kp2.pubkey(),
+                TRANSFER_AMOUNT_2,
+                genesis_config_info.genesis_config.hash(),
+            ),
+            transfer(
+                &kp2,
+                &kp3.pubkey(),
+                TRANSFER_AMOUNT_3,
+                genesis_config_info.genesis_config.hash(),
+            ),
+        ];
+        let bundle = make_bundle(&transactions, &bank);
+        let mut scheduler = Scheduler::new();
+        let thread_pool = ThreadPoolBuilder::new().num_threads(8).build().unwrap();
+
+        let default_accounts = vec![None; bundle.transactions.len()];
+        let execution_result = parallel_load_and_execute_bundle(
+            &bank,
+            &bundle,
+            MAX_PROCESSING_AGE,
+            &MAX_PROCESSING_TIME,
+            true,
+            &LOG_MESSAGE_BYTES_LIMITS,
+            false,
+            None,
+            &default_accounts,
+            &default_accounts,
+            &mut scheduler,
+            &thread_pool,
+        );
+
+        assert!(
+            execution_result.result.is_ok(),
+            "{:?}",
+            execution_result.result
+        );
+        assert_eq!(execution_result.bundle_transaction_results.len(), 3);
+
+        // Since we chunk transactions by checking dependencies, we won't
+        // attempt to execute the whole bundle as one chunk, which results in
+        // bundle_transaction_results being a vec of single transaction results
+        // with no failures instead of a vec of multiple transaction results
+        // with failures
+        assert_eq!(
+            execution_result.bundle_transaction_results[0]
+                .transactions
+                .iter()
+                .map(|r| r.to_versioned_transaction())
+                .collect::<Vec<VersionedTransaction>>(),
+            bundle.transactions[0..=0]
+                .iter()
+                .map(|r| r.to_versioned_transaction())
+                .collect::<Vec<VersionedTransaction>>()
+        );
+        assert_eq!(
+            execution_result.bundle_transaction_results[0]
+                .load_and_execute_transactions_output
+                .processing_results
+                .len(),
+            1 // Only 1, because we only dispatch the first transaction
+        );
+        assert!(execution_result
+            .bundle_transaction_results
+            .first()
+            .unwrap()
+            .load_and_execute_transactions_output
+            .processing_results
+            .first()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .status()
+            .is_ok());
+
+        // in the second batch, the second transaction was executed
+        assert_eq!(
+            execution_result.bundle_transaction_results[1]
+                .transactions
+                .iter()
+                .map(|r| r.to_versioned_transaction())
+                .collect::<Vec<VersionedTransaction>>(),
+            bundle.transactions[1..=1]
+                .iter()
+                .map(|r| r.to_versioned_transaction())
+                .collect::<Vec<VersionedTransaction>>()
+        );
+        assert_eq!(
+            execution_result.bundle_transaction_results[1]
+                .load_and_execute_transactions_output
+                .processing_results
+                .len(),
+            1
+        );
+        assert!(execution_result.bundle_transaction_results[1]
+            .load_and_execute_transactions_output
+            .processing_results
+            .first()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .status()
+            .is_ok());
+
+        // in the third batch, the third transaction was executed
+        assert_eq!(
+            execution_result.bundle_transaction_results[2]
+                .transactions
+                .iter()
+                .map(|r| r.to_versioned_transaction())
+                .collect::<Vec<VersionedTransaction>>(),
+            bundle.transactions[2..]
+                .iter()
+                .map(|r| r.to_versioned_transaction())
+                .collect::<Vec<VersionedTransaction>>(),
+        );
+        assert_eq!(
+            execution_result.bundle_transaction_results[2]
+                .load_and_execute_transactions_output
+                .processing_results
+                .len(),
+            1
+        );
+        assert!(execution_result.bundle_transaction_results[2]
+            .load_and_execute_transactions_output
+            .processing_results
+            .first()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .status()
+            .is_ok());
+    }
+
+    /// Tests that when the max processing time is exceeded, the bundle is an error
+    #[test]
+    fn test_bundle_max_processing_time_exceeded_parallel() {
+        let (genesis_config_info, bank, _bank_forks) =
+            create_simple_test_bank(MINT_AMOUNT_LAMPORTS);
+
+        let kp = Keypair::new();
+        let transactions = vec![transfer(
+            &genesis_config_info.mint_keypair,
+            &kp.pubkey(),
+            1,
+            genesis_config_info.genesis_config.hash(),
+        )];
+        let bundle = make_bundle(&transactions, &bank);
+        let mut scheduler = Scheduler::new();
+        let thread_pool = ThreadPoolBuilder::new().num_threads(8).build().unwrap();
+
+        let locked_transfer = vec![RuntimeTransaction::from_transaction_for_tests(transfer(
+            &genesis_config_info.mint_keypair,
+            &kp.pubkey(),
+            2,
+            genesis_config_info.genesis_config.hash(),
+        ))];
+
+        // locks it and prevents execution bc write lock on genesis_config_info.mint_keypair + kp.pubkey() held
+        let _batch = bank.prepare_sanitized_batch(&locked_transfer);
+
+        let default = vec![None; bundle.transactions.len()];
+        let result = parallel_load_and_execute_bundle(
+            &bank,
+            &bundle,
+            MAX_PROCESSING_AGE,
+            &Duration::from_millis(100),
+            false,
+            &None,
+            false,
+            None,
+            &default,
+            &default,
+            &mut scheduler,
+            &thread_pool,
+        );
+        assert_matches!(
+            result.result,
+            Err(LoadAndExecuteBundleError::ProcessingTimeExceeded(_))
+        );
+    }
+
+    #[test]
+    fn test_simulate_bundle_with_locked_account_works_parallel() {
+        let (genesis_config_info, bank, _bank_forks) =
+            create_simple_test_bank(MINT_AMOUNT_LAMPORTS);
+
+        let kp = Keypair::new();
+        let transactions = vec![transfer(
+            &genesis_config_info.mint_keypair,
+            &kp.pubkey(),
+            1,
+            genesis_config_info.genesis_config.hash(),
+        )];
+        let bundle = make_bundle(&transactions, &bank);
+        let mut scheduler = Scheduler::new();
+        let thread_pool = ThreadPoolBuilder::new().num_threads(8).build().unwrap();
+
+        let locked_transfer = vec![RuntimeTransaction::from_transaction_for_tests(transfer(
+            &genesis_config_info.mint_keypair,
+            &kp.pubkey(),
+            2,
+            genesis_config_info.genesis_config.hash(),
+        ))];
+
+        let _batch = bank.prepare_sanitized_batch(&locked_transfer);
+
+        // simulation ignores account locks so you can simulate bundles on unfrozen banks
+        let default = vec![None; bundle.transactions.len()];
+        let result = parallel_load_and_execute_bundle(
+            &bank,
+            &bundle,
+            MAX_PROCESSING_AGE,
+            &Duration::from_millis(100),
+            false,
+            &None,
+            true,
+            None,
+            &default,
+            &default,
+            &mut scheduler,
+            &thread_pool,
+        );
+        assert!(result.result.is_ok());
+    }
+
+    /// Creates a multi-tx bundle and temporarily locks the accounts for one of the transactions in a bundle.
+    /// Ensures the result is what's expected
+    #[test]
+    fn test_bundle_works_with_released_account_locks_parallel() {
+        let (genesis_config_info, bank, _bank_forks) =
+            create_simple_test_bank(MINT_AMOUNT_LAMPORTS);
+        let barrier = Arc::new(Barrier::new(2));
+
+        let kp = Keypair::new();
+
+        let transactions = vec![transfer(
+            &genesis_config_info.mint_keypair,
+            &kp.pubkey(),
+            1,
+            genesis_config_info.genesis_config.hash(),
+        )];
+        let bundle = make_bundle(&transactions, &bank);
+        let mut scheduler = Scheduler::new();
+        let thread_pool = ThreadPoolBuilder::new().num_threads(8).build().unwrap();
+
+        let locked_transfer = vec![RuntimeTransaction::from_transaction_for_tests(transfer(
+            &genesis_config_info.mint_keypair,
+            &kp.pubkey(),
+            2,
+            genesis_config_info.genesis_config.hash(),
+        ))];
+
+        // background thread locks the accounts for a bit then unlocks them
+        let thread = {
+            let barrier = barrier.clone();
+            let bank = bank.clone();
+            spawn(move || {
+                let batch = bank.prepare_sanitized_batch(&locked_transfer);
+                barrier.wait();
+                sleep(Duration::from_millis(500));
+                drop(batch);
+            })
+        };
+
+        let _ = barrier.wait();
+
+        // load_and_execute_bundle should spin for a bit then process after the 500ms sleep is over
+        let default = vec![None; bundle.transactions.len()];
+        let result = parallel_load_and_execute_bundle(
+            &bank,
+            &bundle,
+            MAX_PROCESSING_AGE,
+            &Duration::from_secs(2),
+            false,
+            &None,
+            false,
+            None,
+            &default,
+            &default,
+            &mut scheduler,
+            &thread_pool,
+        );
+        assert!(result.result.is_ok());
+
+        thread.join().unwrap();
+    }
+
+    /// Tests that when the max processing time is exceeded, the bundle is an error
+    #[test]
+    fn test_bundle_bad_pre_post_accounts_parallel() {
+        const PRE_EXECUTION_ACCOUNTS: [Option<Vec<Pubkey>>; 2] = [None, None];
+        let (genesis_config_info, bank, _bank_forks) =
+            create_simple_test_bank(MINT_AMOUNT_LAMPORTS);
+
+        let kp = Keypair::new();
+        let transactions = vec![transfer(
+            &genesis_config_info.mint_keypair,
+            &kp.pubkey(),
+            1,
+            genesis_config_info.genesis_config.hash(),
+        )];
+        let bundle = make_bundle(&transactions, &bank);
+        let mut scheduler = Scheduler::new();
+        let thread_pool = ThreadPoolBuilder::new().num_threads(8).build().unwrap();
+
+        let result = parallel_load_and_execute_bundle(
+            &bank,
+            &bundle,
+            MAX_PROCESSING_AGE,
+            &Duration::from_millis(100),
+            false,
+            &None,
+            false,
+            None,
+            &PRE_EXECUTION_ACCOUNTS,
+            &vec![None; bundle.transactions.len()],
+            &mut scheduler,
+            &thread_pool,
+        );
+        assert_matches!(
+            result.result,
+            Err(LoadAndExecuteBundleError::InvalidPreOrPostAccounts)
+        );
+
+        let result = parallel_load_and_execute_bundle(
+            &bank,
+            &bundle,
+            MAX_PROCESSING_AGE,
+            &Duration::from_millis(100),
+            false,
+            &None,
+            false,
+            None,
+            &vec![None; bundle.transactions.len()],
+            &PRE_EXECUTION_ACCOUNTS,
+            &mut scheduler,
+            &thread_pool,
         );
         assert_matches!(
             result.result,

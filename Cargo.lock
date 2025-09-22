@@ -171,7 +171,7 @@ dependencies = [
  "ctrlc",
  "dirs-next",
  "indicatif",
- "nix",
+ "nix 0.30.1",
  "reqwest 0.12.16",
  "scopeguard",
  "semver 1.0.26",
@@ -542,7 +542,7 @@ dependencies = [
  "getrandom 0.2.15",
  "once_cell",
  "version_check",
- "zerocopy 0.7.31",
+ "zerocopy",
 ]
 
 [[package]]
@@ -2297,7 +2297,7 @@ version = "3.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "46f93780a459b7d656ef7f071fe699c4d3d2cb201c4b24d085b6ddc505276e73"
 dependencies = [
- "nix",
+ "nix 0.30.1",
  "windows-sys 0.59.0",
 ]
 
@@ -2838,7 +2838,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27cea6e7f512d43b098939ff4d5a5d6fe3db07971e1d05176fe26c642d33f5b8"
 dependencies = [
  "getrandom 0.3.3",
- "rand 0.9.0",
+ "rand 0.9.2",
  "siphasher 1.0.1",
  "wide",
 ]
@@ -4688,6 +4688,18 @@ dependencies = [
 
 [[package]]
 name = "nix"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71e2746dc3a24dd78b3cfcb7be93368c6de9963d30f43a6a73998a9cf4b17b46"
+dependencies = [
+ "bitflags 2.9.1",
+ "cfg-if 1.0.0",
+ "cfg_aliases",
+ "libc",
+]
+
+[[package]]
+name = "nix"
 version = "0.30.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "74523f3a35e05aba87a1d978330aef40f67b0304ac79c1c00b294c9830543db6"
@@ -5572,6 +5584,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "que"
+version = "0.4.5"
+source = "git+https://github.com/temporalxyz/que.git?branch=channel-mode-refactor#8ac26d07de5adb52d779d39d65f7b0a43faeda3f"
+dependencies = [
+ "bytemuck",
+ "nix 0.29.0",
+]
+
+[[package]]
 name = "quick-error"
 version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5607,7 +5628,7 @@ dependencies = [
  "fastbloom",
  "getrandom 0.3.3",
  "lru-slab",
- "rand 0.9.0",
+ "rand 0.9.2",
  "ring",
  "rustc-hash 2.0.0",
  "rustls 0.23.27",
@@ -5702,13 +5723,12 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.9.0"
+version = "0.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3779b94aeb87e8bd4e834cee3650289ee9e0d5677f976ecdb6d219e5f4f6cd94"
+checksum = "6db2770f06117d490610c7488547d543617b21bfa07796d7a12f6f1bd53850d1"
 dependencies = [
  "rand_chacha 0.9.0",
  "rand_core 0.9.3",
- "zerocopy 0.8.23",
 ]
 
 [[package]]
@@ -7521,19 +7541,38 @@ version = "2.3.6"
 dependencies = [
  "anchor-lang",
  "assert_matches",
+ "bincode",
+ "criterion",
+ "dashmap",
  "itertools 0.12.1",
  "log",
+ "que",
+ "rand 0.9.2",
+ "rayon",
+ "rustc-hash 2.0.0",
  "serde",
  "sha2 0.10.9",
  "solana-account",
  "solana-accounts-db",
+ "solana-clock",
+ "solana-cluster-type",
+ "solana-compute-budget-interface",
+ "solana-cost-model",
+ "solana-fee-calculator",
+ "solana-genesis-config",
+ "solana-hash",
+ "solana-instruction",
  "solana-keypair",
  "solana-ledger",
  "solana-logger",
  "solana-measure",
+ "solana-message",
+ "solana-native-token",
  "solana-poh",
  "solana-program-runtime",
+ "solana-program-test",
  "solana-pubkey",
+ "solana-rent",
  "solana-runtime",
  "solana-runtime-transaction",
  "solana-signature",
@@ -7544,6 +7583,7 @@ dependencies = [
  "solana-transaction",
  "solana-transaction-error",
  "solana-transaction-status",
+ "solana-vote-interface",
  "thiserror 2.0.12",
 ]
 
@@ -9402,7 +9442,7 @@ dependencies = [
  "hxdmp",
  "itertools 0.12.1",
  "log",
- "nix",
+ "nix 0.30.1",
  "pcap-file",
  "rand 0.8.5",
  "serde",
@@ -9503,7 +9543,7 @@ dependencies = [
  "fnv",
  "libc",
  "log",
- "nix",
+ "nix 0.30.1",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
  "rayon",
@@ -11012,7 +11052,7 @@ dependencies = [
  "itertools 0.12.1",
  "libc",
  "log",
- "nix",
+ "nix 0.30.1",
  "pem",
  "percentage",
  "quinn",
@@ -11052,6 +11092,7 @@ dependencies = [
  "ahash 0.8.11",
  "assert_matches",
  "bincode",
+ "dashmap",
  "ed25519-dalek",
  "itertools 0.12.1",
  "libsecp256k1",
@@ -11898,7 +11939,7 @@ dependencies = [
  "itertools 0.12.1",
  "libc",
  "log",
- "nix",
+ "nix 0.30.1",
  "pem",
  "percentage",
  "quinn",
@@ -14360,16 +14401,7 @@ version = "0.7.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c4061bedbb353041c12f413700357bec76df2c7e2ca8e4df8bac24c6bf68e3d"
 dependencies = [
- "zerocopy-derive 0.7.31",
-]
-
-[[package]]
-name = "zerocopy"
-version = "0.8.23"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd97444d05a4328b90e75e503a34bad781f14e28a823ad3557f0750df1ebcbc6"
-dependencies = [
- "zerocopy-derive 0.8.23",
+ "zerocopy-derive",
 ]
 
 [[package]]
@@ -14377,17 +14409,6 @@ name = "zerocopy-derive"
 version = "0.7.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b3c129550b3e6de3fd0ba67ba5c81818f9805e58b8d7fee80a3a59d2c9fc601a"
-dependencies = [
- "proc-macro2 1.0.95",
- "quote 1.0.40",
- "syn 2.0.101",
-]
-
-[[package]]
-name = "zerocopy-derive"
-version = "0.8.23"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6352c01d0edd5db859a63e2605f4ea3183ddbd15e2c4a9e7d32184df75e4f154"
 dependencies = [
  "proc-macro2 1.0.95",
  "quote 1.0.40",

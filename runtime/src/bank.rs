@@ -3480,7 +3480,7 @@ impl Bank {
         &self,
         account_keys: &AccountKeys,
     ) -> AccountOverrides {
-        let mut account_overrides = AccountOverrides::default();
+        let account_overrides = AccountOverrides::default();
         let slot_history_id = sysvar::slot_history::id();
         if account_keys.iter().any(|pubkey| *pubkey == slot_history_id) {
             let current_account = self.get_account_with_fixed_root(&slot_history_id);

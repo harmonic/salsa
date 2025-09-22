@@ -10,6 +10,7 @@ use {
 };
 
 pub mod bundle_execution;
+pub mod scheduler;
 
 #[derive(Error, Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum TipError {
