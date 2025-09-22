@@ -610,6 +610,11 @@ pub fn parallel_load_and_execute_bundle<'a>(
         // Send exit heartbeat signal to the threads
         start_channels.into_iter().for_each(|tx| tx.beat());
 
+        info!(
+            "bundle: {} transactions executed in {} ms",
+            bundle.transactions.len(),
+            start_time.elapsed().as_millis()
+        );
         LoadAndExecuteBundleOutput {
             bundle_transaction_results,
             metrics,
