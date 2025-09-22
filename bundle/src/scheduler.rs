@@ -1,5 +1,5 @@
 use {
-    log::*,
+    // log::*,
     rustc_hash::{FxBuildHasher, FxHashMap},
     solana_cost_model::cost_model::CostModel,
     solana_message::SanitizedMessage,
@@ -35,6 +35,17 @@ impl Default for Scheduler {
             completed: 0,
             finished: false,
         }
+    }
+}
+
+impl std::fmt::Debug for Scheduler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "indices: {:?}", self.indices)?;
+        writeln!(f, "running_locks: {:?}", self.running_locks)?;
+        writeln!(f, "skipped_locks: {:?}", self.skipped_locks)?;
+        writeln!(f, "next: {:?}", self.next)?;
+        writeln!(f, "completed: {:?}", self.completed)?;
+        writeln!(f, "finished: {:?}", self.finished)
     }
 }
 
@@ -101,9 +112,7 @@ impl Scheduler {
 
     /// Initialize the scheduler for a slice of transactions
     pub fn init(&mut self, transactions: &[RuntimeTransaction<SanitizedTransaction>]) {
-        info!("indices: {:?}", self.indices);
-        info!("running_locks: {:?}", self.running_locks);
-        info!("running_locks: {:?}", self.running_locks);
+        // info!("init():\n{self:?}");
         self.indices.extend(0..transactions.len());
         self.running_locks.clear();
         self.completed = 0;
@@ -135,7 +144,7 @@ impl Scheduler {
         transactions: &[RuntimeTransaction<SanitizedTransaction>],
         bank: &Bank,
     ) -> Option<Range<usize>> {
-        info!("\n    indices: {:?}\n    running_locks: {:?}\n    skipped_locks: {:?}\n    next: {}, completed: {}, finished: {}", self.indices, self.running_locks, self.skipped_locks, self.next, self.completed, self.finished);
+        // info!("pop():\n{self:?}");
         let mut value: Option<Range<usize>> = None;
         let mut cost = 0;
         // Look through at most Self::MAX_RANGE transactions
@@ -195,6 +204,7 @@ impl Scheduler {
         range: Range<usize>,
         transactions: &[RuntimeTransaction<SanitizedTransaction>],
     ) {
+        // info!("finish():\n{self:?}");
         // Count of completed transactions
         self.completed += range.len();
         // Unlock all of the finished transactions' locks
