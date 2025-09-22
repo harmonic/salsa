@@ -635,7 +635,7 @@ pub fn parallel_load_and_execute_bundle<'a>(
         start_channels.into_iter().for_each(|tx| tx.beat());
 
         info!(
-            "{} transactions executed in {} ms",
+            "{} transactions executed in {} us",
             bundle.transactions.len(),
             start_time.elapsed_us()
         );
