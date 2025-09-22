@@ -1,4 +1,5 @@
 use {
+    log::*,
     rustc_hash::{FxBuildHasher, FxHashMap},
     solana_cost_model::cost_model::CostModel,
     solana_message::SanitizedMessage,
@@ -100,6 +101,9 @@ impl Scheduler {
 
     /// Initialize the scheduler for a slice of transactions
     pub fn init(&mut self, transactions: &[RuntimeTransaction<SanitizedTransaction>]) {
+        info!("indices: {:?}", self.indices);
+        info!("running_locks: {:?}", self.running_locks);
+        info!("running_locks: {:?}", self.running_locks);
         self.indices.extend(0..transactions.len());
         self.running_locks.clear();
         self.completed = 0;
@@ -131,6 +135,7 @@ impl Scheduler {
         transactions: &[RuntimeTransaction<SanitizedTransaction>],
         bank: &Bank,
     ) -> Option<Range<usize>> {
+        info!("\n    indices: {:?}\n    running_locks: {:?}\n    skipped_locks: {:?}\n    next: {}, completed: {}, finished: {}", self.indices, self.running_locks, self.skipped_locks, self.next, self.completed, self.finished);
         let mut value: Option<Range<usize>> = None;
         let mut cost = 0;
         // Look through at most Self::MAX_RANGE transactions

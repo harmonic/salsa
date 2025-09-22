@@ -35,7 +35,7 @@ impl Timer {
     #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
     pub fn elapsed_us(&self) -> u64 {
         match self {
-            Timer::RDTSC(_) => unreachable!("RDTSC not support outside x86"),
+            Timer::RDTSC(_) => unreachable!("RDTSC not supported outside x86"),
             Timer::Instant(instant) => instant.elapsed().as_micros() as u64,
         }
     }
