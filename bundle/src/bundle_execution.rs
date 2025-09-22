@@ -1,5 +1,5 @@
 use {
-    crate::{scheduler::Scheduler, timer::Timer, SanitizedBundle},
+    crate::{scheduler::Scheduler, SanitizedBundle},
     itertools::izip,
     log::*,
     que::{
@@ -33,7 +33,7 @@ use {
         ops::{AddAssign, Range},
         result,
         sync::mpsc,
-        time::Duration,
+        time::{Duration, Instant},
     },
     thiserror::Error,
 };
@@ -249,7 +249,7 @@ pub fn load_and_execute_bundle<'a>(
     }
 
     let mut chunk_start = 0;
-    let start_time = Timer::new();
+    let start_time = Instant::now();
 
     let mut bundle_transaction_results = vec![];
     let mut metrics = BundleExecutionMetrics::default();
@@ -305,15 +305,15 @@ fn load_and_execute_chunk<'a>(
     pre_execution_accounts: &[Option<Vec<Pubkey>>],
     post_execution_accounts: &[Option<Vec<Pubkey>>],
     metrics: &mut BundleExecutionMetrics,
-    start_time: &Timer,
+    start_time: &Instant,
     chunk_start: &mut usize,
     chunk_end: usize,
 ) -> result::Result<BundleTransactionsOutput<'a>, LoadAndExecuteBundleError> {
     loop {
-        if start_time.elapsed_us() > max_processing_time.as_millis() as u64 {
+        if start_time.elapsed() > *max_processing_time {
             trace!("bundle: {} took too long to execute", bundle.slot);
             return Err(LoadAndExecuteBundleError::ProcessingTimeExceeded(
-                Duration::from_millis(start_time.elapsed_us()),
+                start_time.elapsed(),
             ));
         }
 
@@ -513,7 +513,7 @@ pub fn parallel_load_and_execute_bundle<'a>(
     let mut bundle_transaction_results = Vec::new();
     let mut metrics = BundleExecutionMetrics::default();
 
-    let start_time = Timer::new();
+    let start_time = Instant::now();
     let num_channels = thread_pool.current_num_threads();
     thread_pool.in_place_scope(|scope| {
         // Bound these channels to 1 item to ensure we don't end up with a deep
@@ -539,7 +539,7 @@ pub fn parallel_load_and_execute_bundle<'a>(
                         let mut chunk_start = range.start;
                         let chunk_end = range.end;
                         let mut metrics = BundleExecutionMetrics::default();
-                        let start = start_time.elapsed_us();
+                        let start = start_time.elapsed().as_micros();
 
                         match load_and_execute_chunk(
                             bank,
@@ -564,7 +564,7 @@ pub fn parallel_load_and_execute_bundle<'a>(
                                     bundle_transaction_output,
                                     metrics,
                                     start,
-                                    start_time.elapsed_us(),
+                                    start_time.elapsed().as_micros(),
                                 )));
                             }
                             Err(e) => {
@@ -637,7 +637,7 @@ pub fn parallel_load_and_execute_bundle<'a>(
         info!(
             "{} transactions executed in {} ms",
             bundle.transactions.len(),
-            start_time.elapsed_us()
+            start_time.elapsed().as_millis()
         );
         info!(
             "max queued transactions: {}, transactions processed per thread: {:?}",

@@ -11,7 +11,6 @@ use {
 
 pub mod bundle_execution;
 pub mod scheduler;
-pub mod timer;
 
 #[derive(Error, Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum TipError {

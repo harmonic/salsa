@@ -48,9 +48,6 @@ use {
     },
 };
 
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-use solana_bundle::timer;
-
 type ReserveBundleBlockspaceResult<'a> = BundleExecutionResult<(
     Vec<TransactionResult<TransactionCost<'a, RuntimeTransaction<SanitizedTransaction>>>>,
     u64,
@@ -107,10 +104,6 @@ impl BundleConsumer {
         cluster_info: Arc<ClusterInfo>,
     ) -> Self {
         let blacklisted_accounts = HashSet::from_iter([tip_manager.tip_payment_program_id()]);
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        {
-            timer::memoize_ticks_per_us_and_invariant_tsc_check()
-        }
         Self {
             committer,
             transaction_recorder,
