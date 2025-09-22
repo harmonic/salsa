@@ -91,9 +91,9 @@ fn ticks_per_us() -> u64 {
         let end_tsc = unsafe { core::arch::x86_64::_rdtsc() };
         let elapsed_tsc = end_tsc - start_tsc;
 
-        let duration_us = measurement_duration.as_secs_f64() * 1000000.0;
-        let tsc_per_us = elapsed_tsc as f64 / duration_us;
+        let duration_us = measurement_duration.as_nanos() / 1000;
+        let tsc_per_us = elapsed_tsc / duration_us;
 
-        tsc_per_us as u64
+        tsc_per_us
     })
 }

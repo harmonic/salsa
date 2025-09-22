@@ -310,7 +310,7 @@ fn load_and_execute_chunk<'a>(
     chunk_end: usize,
 ) -> result::Result<BundleTransactionsOutput<'a>, LoadAndExecuteBundleError> {
     loop {
-        if start_time.elapsed_us() > max_processing_time.as_millis() as u64 {
+        if start_time.elapsed_us() > max_processing_time.as_micros() as u64 {
             trace!("bundle: {} took too long to execute", bundle.slot);
             return Err(LoadAndExecuteBundleError::ProcessingTimeExceeded(
                 Duration::from_millis(start_time.elapsed_us()),
@@ -1223,6 +1223,7 @@ mod tests {
             &default,
             &default,
         );
+        println!("{:?}", result.result);
         assert!(result.result.is_ok());
 
         thread.join().unwrap();
