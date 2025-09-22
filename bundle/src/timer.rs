@@ -42,9 +42,9 @@ impl Timer {
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-pub fn memoize_ticks_per_ms_and_invariant_tsc_check() {
+pub fn memoize_ticks_per_us_and_invariant_tsc_check() {
     check_cpu_supports_invariant_tsc();
-    ticks_per_ms();
+    ticks_per_us();
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -68,9 +68,9 @@ pub fn check_cpu_supports_invariant_tsc() -> bool {
 fn ticks_per_us() -> u64 {
     use std::{sync::OnceLock, time::Duration};
 
-    static TICKS_PER_MS: OnceLock<u64> = OnceLock::new();
+    static TICKS_PER_US: OnceLock<u64> = OnceLock::new();
 
-    *TICKS_PER_MS.get_or_init(|| {
+    *TICKS_PER_US.get_or_init(|| {
         let warm_up_duration = Duration::from_millis(1000);
         let measurement_duration = Duration::from_millis(1000);
 

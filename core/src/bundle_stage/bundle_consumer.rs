@@ -109,7 +109,7 @@ impl BundleConsumer {
         let blacklisted_accounts = HashSet::from_iter([tip_manager.tip_payment_program_id()]);
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
-            timer::memoize_ticks_per_ms_and_invariant_tsc_check()
+            timer::memoize_ticks_per_us_and_invariant_tsc_check()
         }
         Self {
             committer,
