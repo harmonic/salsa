@@ -25,18 +25,18 @@ impl Timer {
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    pub fn elapsed_ms(&self) -> u64 {
+    pub fn elapsed_us(&self) -> u64 {
         match self {
-            Timer::RDTSC(rdtsc) => (unsafe { _rdtsc() - rdtsc } / ticks_per_ms()),
-            Timer::Instant(instant) => instant.elapsed().as_millis() as u64,
+            Timer::RDTSC(rdtsc) => (unsafe { _rdtsc() - rdtsc } / ticks_per_us()),
+            Timer::Instant(instant) => instant.elapsed().as_micros() as u64,
         }
     }
 
     #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-    pub fn elapsed_ms(&self) -> u64 {
+    pub fn elapsed_us(&self) -> u64 {
         match self {
             Timer::RDTSC(_) => unreachable!("RDTSC not support outside x86"),
-            Timer::Instant(instant) => instant.elapsed().as_millis() as u64,
+            Timer::Instant(instant) => instant.elapsed().as_micros() as u64,
         }
     }
 }
@@ -65,7 +65,7 @@ pub fn check_cpu_supports_invariant_tsc() -> bool {
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-fn ticks_per_ms() -> u64 {
+fn ticks_per_us() -> u64 {
     use std::{sync::OnceLock, time::Duration};
 
     static TICKS_PER_MS: OnceLock<u64> = OnceLock::new();
@@ -84,16 +84,16 @@ fn ticks_per_ms() -> u64 {
         let start_tsc = unsafe { core::arch::x86_64::_rdtsc() };
 
         // Measure
-        while Instant::now().duration_since(start) < measurement_duration {
+        while start.elapsed() < measurement_duration {
             // Spin
         }
 
         let end_tsc = unsafe { core::arch::x86_64::_rdtsc() };
         let elapsed_tsc = end_tsc - start_tsc;
 
-        let duration_ms = measurement_duration.as_secs_f64() * 1000.0;
-        let tsc_per_ms = elapsed_tsc as f64 / duration_ms;
+        let duration_us = measurement_duration.as_secs_f64() * 1000000.0;
+        let tsc_per_us = elapsed_tsc as f64 / duration_us;
 
-        tsc_per_ms as u64
+        tsc_per_us as u64
     })
 }

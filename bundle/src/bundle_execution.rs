@@ -310,10 +310,10 @@ fn load_and_execute_chunk<'a>(
     chunk_end: usize,
 ) -> result::Result<BundleTransactionsOutput<'a>, LoadAndExecuteBundleError> {
     loop {
-        if start_time.elapsed_ms() > max_processing_time.as_millis() as u64 {
+        if start_time.elapsed_us() > max_processing_time.as_millis() as u64 {
             trace!("bundle: {} took too long to execute", bundle.slot);
             return Err(LoadAndExecuteBundleError::ProcessingTimeExceeded(
-                Duration::from_millis(start_time.elapsed_ms()),
+                Duration::from_millis(start_time.elapsed_us()),
             ));
         }
 
@@ -539,7 +539,7 @@ pub fn parallel_load_and_execute_bundle<'a>(
                         let mut chunk_start = range.start;
                         let chunk_end = range.end;
                         let mut metrics = BundleExecutionMetrics::default();
-                        let start = start_time.elapsed_ms();
+                        let start = start_time.elapsed_us();
 
                         match load_and_execute_chunk(
                             bank,
@@ -564,7 +564,7 @@ pub fn parallel_load_and_execute_bundle<'a>(
                                     bundle_transaction_output,
                                     metrics,
                                     start,
-                                    start_time.elapsed_ms(),
+                                    start_time.elapsed_us(),
                                 )));
                             }
                             Err(e) => {
@@ -637,7 +637,7 @@ pub fn parallel_load_and_execute_bundle<'a>(
         info!(
             "{} transactions executed in {} ms",
             bundle.transactions.len(),
-            start_time.elapsed_ms()
+            start_time.elapsed_us()
         );
         info!(
             "max queued transactions: {}, transactions processed per thread: {:?}",
