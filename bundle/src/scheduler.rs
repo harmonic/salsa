@@ -113,10 +113,13 @@ impl Scheduler {
     /// Initialize the scheduler for a slice of transactions
     pub fn init(&mut self, transactions: &[RuntimeTransaction<SanitizedTransaction>]) {
         // info!("init():\n{self:?}");
-        self.indices.extend(0..transactions.len());
+        self.indices.clear();
         self.running_locks.clear();
+        self.skipped_locks.clear();
         self.completed = 0;
+        self.next = 0;
         self.finished = false;
+        self.indices.extend(0..transactions.len());
     }
 
     /// Get the next available range of transactions to schedule
