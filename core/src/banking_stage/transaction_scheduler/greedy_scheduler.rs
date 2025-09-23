@@ -1,6 +1,6 @@
+use crate::banking_stage::transaction_scheduler::scheduler_controller::slot::consume_slot;
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
-use crate::banking_stage::transaction_scheduler::scheduler_controller::{slot::consume_slot};
 
 use {
     super::{
@@ -129,9 +129,11 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for GreedyScheduler<Tx> {
                 .check_locks(transaction_state.transaction())
             {
                 self.working_account_set.clear();
-                num_sent += self
-                    .common
-                    .send_batches(&mut batches, self.config.target_transactions_per_batch, consume_slot())?;
+                num_sent += self.common.send_batches(
+                    &mut batches,
+                    self.config.target_transactions_per_batch,
+                    consume_slot(),
+                )?;
             }
 
             // Now check if the transaction can actually be scheduled.
@@ -164,6 +166,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for GreedyScheduler<Tx> {
                     max_age,
                     cost,
                 }) => {
+                    info!("schduler: scheduling {}", transaction.signature());
                     assert!(
                         self.working_account_set.take_locks(&transaction),
                         "locks must be available"
