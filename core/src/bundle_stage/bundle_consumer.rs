@@ -16,8 +16,10 @@ use {
         proxy::block_engine_stage::BlockBuilderFeeInfo,
         tip_manager::TipManager,
     },
+    rayon::{ThreadPool, ThreadPoolBuilder},
     solana_bundle::{
-        bundle_execution::{load_and_execute_bundle, BundleExecutionMetrics},
+        bundle_execution::{parallel_load_and_execute_bundle, BundleExecutionMetrics},
+        scheduler::Scheduler,
         BundleExecutionError, BundleExecutionResult, SanitizedBundle, TipError,
     },
     solana_clock::{Slot, MAX_PROCESSING_AGE},
@@ -45,6 +47,9 @@ use {
         time::{Duration, Instant},
     },
 };
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+use solana_bundle::timer;
 
 type ReserveBundleBlockspaceResult<'a> = BundleExecutionResult<(
     Vec<TransactionResult<TransactionCost<'a, RuntimeTransaction<SanitizedTransaction>>>>,
@@ -79,9 +84,16 @@ pub struct BundleConsumer {
     max_bundle_retry_duration: Duration,
 
     cluster_info: Arc<ClusterInfo>,
+
+    // For use in the parallel_load_and_execute_bundle function
+    scheduler: Scheduler,
+    thread_pool: ThreadPool,
 }
 
 impl BundleConsumer {
+    /// Number of threads to run in the bundle consumer thread pool
+    const NUM_THREADS: usize = 8;
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         committer: Committer,
@@ -95,6 +107,10 @@ impl BundleConsumer {
         cluster_info: Arc<ClusterInfo>,
     ) -> Self {
         let blacklisted_accounts = HashSet::from_iter([tip_manager.tip_payment_program_id()]);
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        {
+            timer::memoize_ticks_per_us_and_invariant_tsc_check()
+        }
         Self {
             committer,
             transaction_recorder,
@@ -108,6 +124,11 @@ impl BundleConsumer {
             block_builder_fee_info,
             max_bundle_retry_duration,
             cluster_info,
+            scheduler: Scheduler::new(),
+            thread_pool: ThreadPoolBuilder::new()
+                .num_threads(Self::NUM_THREADS)
+                .build()
+                .expect("Failed to build thread pool"),
         }
     }
 
@@ -153,6 +174,8 @@ impl BundleConsumer {
                     bundles,
                     bank_start,
                     bundle_stage_leader_metrics,
+                    &mut self.scheduler,
+                    &self.thread_pool,
                 )
             },
         );
@@ -179,6 +202,8 @@ impl BundleConsumer {
         bundles: &[(ImmutableDeserializedBundle, SanitizedBundle)],
         bank_start: &BankStart,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
+        scheduler: &mut Scheduler,
+        thread_pool: &ThreadPool,
     ) -> Vec<Result<(), BundleExecutionError>> {
         // BundleAccountLocker holds RW locks for ALL accounts in ALL transactions within a single bundle.
         // By pre-locking bundles before they're ready to be processed, it will prevent BankingStage from
@@ -215,6 +240,8 @@ impl BundleConsumer {
                             &locked_bundle,
                             bank_start,
                             bundle_stage_leader_metrics,
+                            scheduler,
+                            thread_pool,
                         ));
                         bundle_stage_leader_metrics
                             .leader_slot_metrics_tracker()
@@ -254,6 +281,8 @@ impl BundleConsumer {
         locked_bundle: &LockedBundle,
         bank_start: &BankStart,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
+        scheduler: &mut Scheduler,
+        thread_pool: &ThreadPool,
     ) -> Result<(), BundleExecutionError> {
         if !Bank::should_bank_still_be_processing_txs(
             &bank_start.bank_creation_time,
@@ -278,6 +307,8 @@ impl BundleConsumer {
                 max_bundle_retry_duration,
                 bank_start,
                 bundle_stage_leader_metrics,
+                scheduler,
+                thread_pool,
             );
 
             bundle_stage_leader_metrics
@@ -299,6 +330,8 @@ impl BundleConsumer {
             bank_start,
             bundle_stage_leader_metrics,
             true,
+            scheduler,
+            thread_pool,
         )?;
 
         Ok(())
@@ -318,6 +351,8 @@ impl BundleConsumer {
         max_bundle_retry_duration: Duration,
         bank_start: &BankStart,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
+        scheduler: &mut Scheduler,
+        thread_pool: &ThreadPool,
     ) -> Result<(), BundleExecutionError> {
         debug!("handle_tip_programs");
 
@@ -348,6 +383,8 @@ impl BundleConsumer {
                 bank_start,
                 bundle_stage_leader_metrics,
                 false,
+                scheduler,
+                thread_pool,
             )
             .map_err(|e| {
                 bundle_stage_leader_metrics
@@ -401,6 +438,8 @@ impl BundleConsumer {
                 bank_start,
                 bundle_stage_leader_metrics,
                 false,
+                scheduler,
+                thread_pool,
             )
             .map_err(|e| {
                 bundle_stage_leader_metrics
@@ -460,6 +499,8 @@ impl BundleConsumer {
         bank_start: &BankStart,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
         should_reset_reserve_hash: bool,
+        scheduler: &mut Scheduler,
+        thread_pool: &ThreadPool,
     ) -> BundleExecutionResult<()> {
         debug!(
             "bundle: {} reserving blockspace for {} transactions",
@@ -488,7 +529,9 @@ impl BundleConsumer {
             max_bundle_retry_duration,
             sanitized_bundle,
             bank_start,
-            should_reset_reserve_hash
+            should_reset_reserve_hash,
+            scheduler,
+            thread_pool,
         ));
 
         bundle_stage_leader_metrics
@@ -573,6 +616,8 @@ impl BundleConsumer {
         sanitized_bundle: &SanitizedBundle,
         bank_start: &BankStart,
         should_reset_reserve_hash: bool,
+        scheduler: &mut Scheduler,
+        thread_pool: &ThreadPool,
     ) -> ExecuteRecordCommitResult {
         let transaction_status_sender_enabled = committer.transaction_status_sender_enabled();
 
@@ -580,7 +625,7 @@ impl BundleConsumer {
 
         debug!("bundle: {} executing", sanitized_bundle.slot);
         let default_accounts = vec![None; sanitized_bundle.transactions.len()];
-        let bundle_execution_results = load_and_execute_bundle(
+        let bundle_execution_results = parallel_load_and_execute_bundle(
             &bank_start.working_bank,
             sanitized_bundle,
             MAX_PROCESSING_AGE,
@@ -591,6 +636,8 @@ impl BundleConsumer {
             None,
             &default_accounts,
             &default_accounts,
+            scheduler,
+            thread_pool,
         );
 
         let execution_metrics = bundle_execution_results.metrics.clone();
@@ -781,7 +828,8 @@ mod tests {
         crossbeam_channel::{unbounded, Receiver},
         jito_tip_distribution::sdk::derive_tip_distribution_account_address,
         rand::{thread_rng, RngCore},
-        solana_bundle::SanitizedBundle,
+        rayon::ThreadPoolBuilder,
+        solana_bundle::{scheduler::Scheduler, SanitizedBundle},
         solana_bundle_sdk::derive_bundle_id,
         solana_clock::MAX_PROCESSING_AGE,
         solana_cost_model::cost_model::CostModel,
@@ -1371,6 +1419,11 @@ mod tests {
         ));
 
         let bank_start = poh_recorder.read().unwrap().bank_start().unwrap();
+        let mut scheduler = Scheduler::new();
+        let thread_pool = ThreadPoolBuilder::new()
+            .num_threads(BundleConsumer::NUM_THREADS)
+            .build()
+            .expect("Failed to build thread pool");
 
         let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(1);
         assert_matches!(
@@ -1385,7 +1438,9 @@ mod tests {
                 &None,
                 Duration::from_secs(10),
                 &bank_start,
-                &mut bundle_stage_leader_metrics
+                &mut bundle_stage_leader_metrics,
+                &mut scheduler,
+                &thread_pool,
             ),
             Ok(())
         );

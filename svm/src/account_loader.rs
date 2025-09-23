@@ -184,8 +184,8 @@ impl<'a, CB: TransactionProcessingCallback> AccountLoader<'a, CB> {
             loaded_accounts.insert(slot_history::id(), slot_history.clone());
         }
         if let Some(overrides) = account_overrides {
-            for (key, account) in overrides.accounts() {
-                loaded_accounts.insert(*key, account.clone());
+            for entry in overrides.accounts() {
+                loaded_accounts.insert(*entry.key(), entry.value().clone());
             }
         }
 
@@ -1390,7 +1390,7 @@ mod tests {
     #[test]
     fn test_overrides() {
         solana_logger::setup();
-        let mut account_overrides = AccountOverrides::default();
+        let account_overrides = AccountOverrides::default();
         let slot_history_id = sysvar::slot_history::id();
         let account = AccountSharedData::new(42, 0, &Pubkey::default());
         account_overrides.set_slot_history(Some(account));
