@@ -1,22 +1,13 @@
-#[deprecated(
-    since = "2.2.0",
-    note = "Please import from `send_transaction_service` directly."
-)]
-pub use crate::{
-    send_transaction_service_stats::SendTransactionServiceStats,
-    transaction_client::{CurrentLeaderInfo, LEADER_INFO_REFRESH_RATE_MS},
-};
 use {
     crate::{
-        send_transaction_service_stats::SendTransactionServiceStatsReport,
-        tpu_info::TpuInfo,
-        transaction_client::{ConnectionCacheClient, TransactionClient},
+        send_transaction_service_stats::{
+            SendTransactionServiceStats, SendTransactionServiceStatsReport,
+        },
+        transaction_client::TransactionClient,
     },
     crossbeam_channel::{Receiver, RecvTimeoutError},
     itertools::Itertools,
     log::*,
-    solana_client::connection_cache::ConnectionCache,
-    solana_gossip::cluster_info::ClusterInfo,
     solana_hash::Hash,
     solana_nonce_account as nonce_account,
     solana_pubkey::Pubkey,
@@ -70,7 +61,9 @@ pub struct SendTransactionService {
 }
 
 pub struct TransactionInfo {
+    pub message_hash: Hash,
     pub signature: Signature,
+    pub blockhash: Hash,
     pub wire_transaction: Vec<u8>,
     pub last_valid_block_height: u64,
     pub durable_nonce_info: Option<(Pubkey, Hash)>,
@@ -82,7 +75,9 @@ pub struct TransactionInfo {
 
 impl TransactionInfo {
     pub fn new(
+        message_hash: Hash,
         signature: Signature,
+        blockhash: Hash,
         wire_transaction: Vec<u8>,
         last_valid_block_height: u64,
         durable_nonce_info: Option<(Pubkey, Hash)>,
@@ -90,7 +85,9 @@ impl TransactionInfo {
         last_sent_time: Option<Instant>,
     ) -> Self {
         Self {
+            message_hash,
             signature,
+            blockhash,
             wire_transaction,
             last_valid_block_height,
             durable_nonce_info,
@@ -157,55 +154,6 @@ impl Default for Config {
 pub const MAX_RETRY_SLEEP_MS: u64 = 1000;
 
 impl SendTransactionService {
-    #[deprecated(since = "2.2.0", note = "Please use `new_with_client` instead.")]
-    pub fn new<T: TpuInfo + std::marker::Send + 'static>(
-        cluster_info: Arc<ClusterInfo>,
-        bank_forks: &Arc<RwLock<BankForks>>,
-        leader_info: Option<T>,
-        receiver: Receiver<TransactionInfo>,
-        connection_cache: &Arc<ConnectionCache>,
-        retry_rate_ms: u64,
-        leader_forward_count: u64,
-        exit: Arc<AtomicBool>,
-    ) -> Self {
-        let config = Config {
-            retry_rate_ms,
-            leader_forward_count,
-            ..Config::default()
-        };
-        #[allow(deprecated)]
-        Self::new_with_config(
-            cluster_info,
-            bank_forks,
-            leader_info,
-            receiver,
-            connection_cache,
-            config,
-            exit,
-        )
-    }
-
-    #[deprecated(since = "2.2.0", note = "Please use `new_with_client` instead.")]
-    pub fn new_with_config<T: TpuInfo + std::marker::Send + 'static>(
-        cluster_info: Arc<ClusterInfo>,
-        bank_forks: &Arc<RwLock<BankForks>>,
-        leader_info: Option<T>,
-        receiver: Receiver<TransactionInfo>,
-        connection_cache: &Arc<ConnectionCache>,
-        config: Config,
-        exit: Arc<AtomicBool>,
-    ) -> Self {
-        let client = ConnectionCacheClient::new(
-            connection_cache.clone(),
-            cluster_info,
-            config.tpu_peers.clone(),
-            leader_info,
-            config.leader_forward_count,
-        );
-
-        Self::new_with_client(bank_forks, receiver, client, config, exit)
-    }
-
     pub fn new_with_client<Client: TransactionClient + Clone + std::marker::Send + 'static>(
         bank_forks: &Arc<RwLock<BankForks>>,
         receiver: Receiver<TransactionInfo>,
@@ -363,6 +311,7 @@ impl SendTransactionService {
         exit: Arc<AtomicBool>,
     ) -> JoinHandle<()> {
         debug!("Starting send-transaction-service::retry_thread.");
+        let root_bank = bank_forks.read().unwrap().sharable_root_bank();
         let retry_interval_ms_default = MAX_RETRY_SLEEP_MS.min(config.retry_rate_ms);
         let mut retry_interval_ms = retry_interval_ms_default;
         Builder::new()
@@ -382,7 +331,7 @@ impl SendTransactionService {
                         .store(transactions.len() as u64, Ordering::Relaxed);
                     let (root_bank, working_bank) = {
                         let bank_forks = bank_forks.read().unwrap();
-                        (bank_forks.root_bank(), bank_forks.working_bank())
+                        (root_bank.load(), bank_forks.working_bank())
                     };
 
                     let result = Self::process_transactions(
@@ -435,13 +384,22 @@ impl SendTransactionService {
             if transaction_info.durable_nonce_info.is_some() {
                 stats.nonced_transactions.fetch_add(1, Ordering::Relaxed);
             }
-            if root_bank.has_signature(signature) {
-                info!("Transaction is rooted: {}", signature);
+            if root_bank
+                .get_committed_transaction_status_and_slot(
+                    &transaction_info.message_hash,
+                    &transaction_info.blockhash,
+                )
+                .is_some()
+            {
+                info!("Transaction is rooted: {signature}");
                 result.rooted += 1;
                 stats.rooted_transactions.fetch_add(1, Ordering::Relaxed);
                 return false;
             }
-            let signature_status = working_bank.get_signature_status_slot(signature);
+            let signature_status = working_bank.get_committed_transaction_status_and_slot(
+                &transaction_info.message_hash,
+                &transaction_info.blockhash,
+            );
             if let Some((nonce_pubkey, durable_nonce)) = transaction_info.durable_nonce_info {
                 let nonce_account = working_bank.get_account(&nonce_pubkey).unwrap_or_default();
                 let now = Instant::now();
@@ -453,14 +411,14 @@ impl SendTransactionService {
                 let verify_nonce_account =
                     nonce_account::verify_nonce_account(&nonce_account, &durable_nonce);
                 if verify_nonce_account.is_none() && signature_status.is_none() && expired {
-                    info!("Dropping expired durable-nonce transaction: {}", signature);
+                    info!("Dropping expired durable-nonce transaction: {signature}");
                     result.expired += 1;
                     stats.expired_transactions.fetch_add(1, Ordering::Relaxed);
                     return false;
                 }
             }
             if transaction_info.last_valid_block_height < root_bank.block_height() {
-                info!("Dropping expired transaction: {}", signature);
+                info!("Dropping expired transaction: {signature}");
                 result.expired += 1;
                 stats.expired_transactions.fetch_add(1, Ordering::Relaxed);
                 return false;
@@ -471,7 +429,7 @@ impl SendTransactionService {
 
             if let Some(max_retries) = max_retries {
                 if transaction_info.retries >= max_retries {
-                    info!("Dropping transaction due to max retries: {}", signature);
+                    info!("Dropping transaction due to max retries: {signature}");
                     result.max_retries_elapsed += 1;
                     stats
                         .transactions_exceeding_max_retries
@@ -493,7 +451,7 @@ impl SendTransactionService {
                             // Transaction sent before is unknown to the working bank, it might have been
                             // dropped or landed in another fork. Re-send it.
 
-                            info!("Retrying transaction: {}", signature);
+                            info!("Retrying transaction: {signature}");
                             result.retried += 1;
                             transaction_info.retries += 1;
                         }
@@ -519,8 +477,8 @@ impl SendTransactionService {
                     true
                 }
                 Some((_slot, status)) => {
-                    if status.is_err() {
-                        info!("Dropping failed transaction: {}", signature);
+                    if !status {
+                        info!("Dropping failed transaction: {signature}");
                         result.failed += 1;
                         stats.failed_transactions.fetch_add(1, Ordering::Relaxed);
                         false
@@ -571,8 +529,9 @@ mod test {
     use {
         super::*,
         crate::{
-            test_utils::ClientWithCreator, tpu_info::NullTpuInfo,
-            transaction_client::TpuClientNextClient,
+            test_utils::ClientWithCreator,
+            tpu_info::NullTpuInfo,
+            transaction_client::{ConnectionCacheClient, TpuClientNextClient},
         },
         crossbeam_channel::{bounded, unbounded},
         solana_account::AccountSharedData,
@@ -635,7 +594,9 @@ mod test {
         let (sender, receiver) = bounded(0);
 
         let dummy_tx_info = || TransactionInfo {
+            message_hash: Hash::default(),
             signature: Signature::default(),
+            blockhash: Hash::default(),
             wire_transaction: vec![0; 128],
             last_valid_block_height: 0,
             durable_nonce_info: None,
@@ -710,9 +671,17 @@ mod test {
             .insert(root_bank)
             .clone_without_scheduler();
 
-        let rooted_signature = root_bank
-            .transfer(1, &mint_keypair, &mint_keypair.pubkey())
-            .unwrap();
+        let (rooted_transaction, rooted_signature) = {
+            let transaction = system_transaction::transfer(
+                &mint_keypair,
+                &mint_keypair.pubkey(),
+                1,
+                root_bank.last_blockhash(),
+            );
+            root_bank.process_transaction(&transaction).unwrap();
+            let signature = transaction.signatures[0];
+            (transaction, signature)
+        };
 
         let working_bank = bank_forks
             .write()
@@ -724,17 +693,28 @@ mod test {
             ))
             .clone_without_scheduler();
 
-        let non_rooted_signature = working_bank
-            .transfer(2, &mint_keypair, &mint_keypair.pubkey())
-            .unwrap();
-
-        let failed_signature = {
-            let blockhash = working_bank.last_blockhash();
-            let transaction =
-                system_transaction::transfer(&mint_keypair, &Pubkey::default(), 1, blockhash);
+        let (non_rooted_transaction, non_rooted_signature) = {
+            let transaction = system_transaction::transfer(
+                &mint_keypair,
+                &mint_keypair.pubkey(),
+                2,
+                working_bank.last_blockhash(),
+            );
+            working_bank.process_transaction(&transaction).unwrap();
             let signature = transaction.signatures[0];
+            (transaction, signature)
+        };
+
+        let (failed_transaction, failed_signature) = {
+            let transaction = system_transaction::transfer(
+                &mint_keypair,
+                &Pubkey::default(),
+                1,
+                working_bank.last_blockhash(),
+            );
             working_bank.process_transaction(&transaction).unwrap_err();
-            signature
+            let signature = transaction.signatures[0];
+            (transaction, signature)
         };
 
         let mut transactions = HashMap::new();
@@ -744,7 +724,9 @@ mod test {
         transactions.insert(
             Signature::default(),
             TransactionInfo::new(
+                Hash::default(),
                 Signature::default(),
+                Hash::default(),
                 vec![],
                 root_bank.block_height() - 1,
                 None,
@@ -789,7 +771,9 @@ mod test {
         transactions.insert(
             rooted_signature,
             TransactionInfo::new(
+                rooted_transaction.message.hash(),
                 rooted_signature,
+                rooted_transaction.message.recent_blockhash,
                 vec![],
                 working_bank.block_height(),
                 None,
@@ -818,7 +802,9 @@ mod test {
         transactions.insert(
             failed_signature,
             TransactionInfo::new(
+                failed_transaction.message.hash(),
                 failed_signature,
+                failed_transaction.message.recent_blockhash,
                 vec![],
                 working_bank.block_height(),
                 None,
@@ -847,7 +833,9 @@ mod test {
         transactions.insert(
             non_rooted_signature,
             TransactionInfo::new(
+                non_rooted_transaction.message.hash(),
                 non_rooted_signature,
+                non_rooted_transaction.message.recent_blockhash,
                 vec![],
                 working_bank.block_height(),
                 None,
@@ -877,7 +865,9 @@ mod test {
         transactions.insert(
             Signature::default(),
             TransactionInfo::new(
+                Hash::default(),
                 Signature::default(),
+                Hash::default(),
                 vec![],
                 working_bank.block_height(),
                 None,
@@ -908,7 +898,9 @@ mod test {
         transactions.insert(
             Signature::from([1; 64]),
             TransactionInfo::new(
+                Hash::default(),
                 Signature::default(),
+                Hash::default(),
                 vec![],
                 working_bank.block_height(),
                 None,
@@ -919,7 +911,9 @@ mod test {
         transactions.insert(
             Signature::from([2; 64]),
             TransactionInfo::new(
+                Hash::default(),
                 Signature::default(),
+                Hash::default(),
                 vec![],
                 working_bank.block_height(),
                 None,
@@ -977,9 +971,17 @@ mod test {
             .insert(root_bank)
             .clone_without_scheduler();
 
-        let rooted_signature = root_bank
-            .transfer(1, &mint_keypair, &mint_keypair.pubkey())
-            .unwrap();
+        let (rooted_transaction, rooted_signature) = {
+            let transaction = system_transaction::transfer(
+                &mint_keypair,
+                &mint_keypair.pubkey(),
+                1,
+                root_bank.last_blockhash(),
+            );
+            root_bank.process_transaction(&transaction).unwrap();
+            let signature = transaction.signatures[0];
+            (transaction, signature)
+        };
 
         let nonce_address = Pubkey::new_unique();
         let durable_nonce = DurableNonce::from_blockhash(&Hash::new_unique());
@@ -999,19 +1001,28 @@ mod test {
                 2,
             ))
             .clone_without_scheduler();
-        let non_rooted_signature = working_bank
-            .transfer(2, &mint_keypair, &mint_keypair.pubkey())
-            .unwrap();
+
+        let (non_rooted_transaction, non_rooted_signature) = {
+            let transaction = system_transaction::transfer(
+                &mint_keypair,
+                &mint_keypair.pubkey(),
+                2,
+                working_bank.last_blockhash(),
+            );
+            let signature = transaction.signatures[0];
+            working_bank.process_transaction(&transaction).unwrap();
+            (transaction, signature)
+        };
 
         let last_valid_block_height = working_bank.block_height() + 300;
 
-        let failed_signature = {
+        let (failed_transaction, failed_signature) = {
             let blockhash = working_bank.last_blockhash();
             let transaction =
                 system_transaction::transfer(&mint_keypair, &Pubkey::default(), 1, blockhash);
             let signature = transaction.signatures[0];
             working_bank.process_transaction(&transaction).unwrap_err();
-            signature
+            (transaction, signature)
         };
 
         let mut transactions = HashMap::new();
@@ -1020,7 +1031,9 @@ mod test {
         transactions.insert(
             rooted_signature,
             TransactionInfo::new(
+                rooted_transaction.message.hash(),
                 rooted_signature,
+                rooted_transaction.message.recent_blockhash,
                 vec![],
                 last_valid_block_height,
                 Some((nonce_address, *durable_nonce.as_hash())),
@@ -1061,7 +1074,9 @@ mod test {
         transactions.insert(
             rooted_signature,
             TransactionInfo::new(
+                rooted_transaction.message.hash(),
                 rooted_signature,
+                rooted_transaction.message.recent_blockhash,
                 vec![],
                 last_valid_block_height,
                 Some((nonce_address, Hash::new_unique())),
@@ -1091,7 +1106,9 @@ mod test {
         transactions.insert(
             Signature::default(),
             TransactionInfo::new(
+                Hash::default(),
                 Signature::default(),
+                Hash::default(),
                 vec![],
                 last_valid_block_height,
                 Some((nonce_address, Hash::new_unique())),
@@ -1119,7 +1136,9 @@ mod test {
         transactions.insert(
             Signature::default(),
             TransactionInfo::new(
+                Hash::default(),
                 Signature::default(),
+                Hash::default(),
                 vec![],
                 root_bank.block_height() - 1,
                 Some((nonce_address, *durable_nonce.as_hash())),
@@ -1148,7 +1167,9 @@ mod test {
         transactions.insert(
             failed_signature,
             TransactionInfo::new(
+                failed_transaction.message.hash(),
                 failed_signature,
+                failed_transaction.message.recent_blockhash,
                 vec![],
                 last_valid_block_height,
                 Some((nonce_address, Hash::new_unique())), // runtime should advance nonce on failed transactions
@@ -1177,7 +1198,9 @@ mod test {
         transactions.insert(
             non_rooted_signature,
             TransactionInfo::new(
+                non_rooted_transaction.message.hash(),
                 non_rooted_signature,
+                non_rooted_transaction.message.recent_blockhash,
                 vec![],
                 last_valid_block_height,
                 Some((nonce_address, Hash::new_unique())), // runtime advances nonce when transaction lands
@@ -1208,7 +1231,9 @@ mod test {
         transactions.insert(
             Signature::default(),
             TransactionInfo::new(
+                Hash::default(),
                 Signature::default(),
+                Hash::default(),
                 vec![],
                 last_valid_block_height,
                 Some((nonce_address, *durable_nonce.as_hash())),

@@ -31,7 +31,11 @@ EOL
   export OPENSSL_INCLUDE_DIR="$PWD/vcpkg_installed/x64-windows-static-md/include"
   ;;
 "macOS") ;;
-"Linux") ;;
+"Linux")
+  if grep "Alpine" /etc/os-release ; then
+    apk add openssl-dev openssl-libs-static
+  fi
+  ;;
 *)
   echo "Unknown Operating System"
   ;;

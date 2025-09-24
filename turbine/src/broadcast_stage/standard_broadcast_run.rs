@@ -9,9 +9,9 @@ use {
     solana_entry::entry::Entry,
     solana_hash::Hash,
     solana_keypair::Keypair,
-    solana_ledger::{
-        blockstore,
-        shred::{shred_code, ProcessShredsStats, ReedSolomonCache, Shred, ShredType, Shredder},
+    solana_ledger::shred::{
+        ProcessShredsStats, ReedSolomonCache, Shred, ShredType, Shredder, MAX_CODE_SHREDS_PER_SLOT,
+        MAX_DATA_SHREDS_PER_SLOT,
     },
     solana_time_utils::AtomicInterval,
     std::{borrow::Cow, net::SocketAddr, sync::RwLock},
@@ -178,7 +178,7 @@ impl StandardBroadcastRun {
         let _ = self.transmit(
             &srecv,
             cluster_info,
-            sock,
+            BroadcastSocket::Udp(sock),
             bank_forks,
             quic_endpoint_sender,
             &Arc::new(RwLock::new(None)),
@@ -275,8 +275,8 @@ impl StandardBroadcastRun {
                 reference_tick as u8,
                 is_last_in_slot,
                 process_stats,
-                blockstore::MAX_DATA_SHREDS_PER_SLOT as u32,
-                shred_code::MAX_CODE_SHREDS_PER_SLOT as u32,
+                MAX_DATA_SHREDS_PER_SLOT as u32,
+                MAX_CODE_SHREDS_PER_SLOT as u32,
             )
             .unwrap();
         // Insert the first data shred synchronously so that blockstore stores
@@ -377,7 +377,7 @@ impl StandardBroadcastRun {
 
     fn broadcast(
         &mut self,
-        sock: &UdpSocket,
+        sock: BroadcastSocket,
         cluster_info: &ClusterInfo,
         shreds: Arc<Vec<Shred>>,
         broadcast_shred_batch_info: Option<BroadcastShredBatchInfo>,
@@ -389,6 +389,8 @@ impl StandardBroadcastRun {
         let mut transmit_stats = TransmitShredsStats::default();
         // Broadcast the shreds
         let mut transmit_time = Measure::start("broadcast_shreds");
+
+        transmit_stats.num_shreds = shreds.len();
 
         broadcast_shreds(
             sock,
@@ -405,7 +407,6 @@ impl StandardBroadcastRun {
         transmit_time.stop();
 
         transmit_stats.transmit_elapsed = transmit_time.as_us();
-        transmit_stats.num_shreds = shreds.len();
 
         // Process metrics
         self.update_transmit_metrics(&transmit_stats, &broadcast_shred_batch_info);
@@ -471,7 +472,7 @@ impl BroadcastRun for StandardBroadcastRun {
         &mut self,
         receiver: &TransmitReceiver,
         cluster_info: &ClusterInfo,
-        sock: &UdpSocket,
+        sock: BroadcastSocket,
         bank_forks: &RwLock<BankForks>,
         quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
         shred_receiver_address: &Arc<RwLock<Option<SocketAddr>>>,
@@ -501,7 +502,7 @@ mod test {
         rand::Rng,
         solana_entry::entry::create_ticks,
         solana_genesis_config::GenesisConfig,
-        solana_gossip::cluster_info::{ClusterInfo, Node},
+        solana_gossip::{cluster_info::ClusterInfo, node::Node},
         solana_hash::Hash,
         solana_keypair::Keypair,
         solana_ledger::{
@@ -510,7 +511,7 @@ mod test {
             get_tmp_ledger_path,
             shred::{max_ticks_per_n_shreds, DATA_SHREDS_PER_FEC_BLOCK},
         },
-        solana_net_utils::bind_to_unspecified,
+        solana_net_utils::sockets::bind_to_localhost_unique,
         solana_runtime::bank::Bank,
         solana_signer::Signer,
         solana_streamer::socket::SocketAddrSpace,
@@ -542,7 +543,7 @@ mod test {
             leader_keypair.clone(),
             SocketAddrSpace::Unspecified,
         ));
-        let socket = bind_to_unspecified().unwrap();
+        let socket = bind_to_localhost_unique().expect("should bind");
         let mut genesis_config = create_genesis_config(10_000).genesis_config;
         genesis_config.ticks_per_slot = max_ticks_per_n_shreds(num_shreds_per_slot, None) + 1;
 
@@ -845,7 +846,7 @@ mod test {
         assert!(!coding.is_empty());
 
         let r = bs.entries_to_shreds(&keypair, &entries, 0, false, &mut stats, 10, 10);
-        info!("{:?}", r);
+        info!("{r:?}");
         assert_matches!(r, Err(BroadcastError::TooManyShreds));
     }
 }

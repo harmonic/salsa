@@ -30,6 +30,7 @@ use {
     },
     solana_time_utils::AtomicInterval,
     std::{
+        ops::Deref,
         sync::{
             atomic::{AtomicBool, AtomicU64, Ordering},
             Arc, Mutex, RwLock,
@@ -264,7 +265,7 @@ impl BundleStage {
             replay_vote_sender,
             prioritization_fee_cache.clone(),
         );
-        let decision_maker = DecisionMaker::new(cluster_info.id(), poh_recorder.clone());
+        let decision_maker = DecisionMaker::from(poh_recorder.read().unwrap().deref());
 
         let unprocessed_bundle_storage = BundleStorage::default();
 
@@ -364,24 +365,24 @@ impl BundleStage {
             measure_us!(decision_maker.make_consume_or_forward_decision());
 
         let (metrics_action, banking_stage_metrics_action) =
-            bundle_stage_leader_metrics.check_leader_slot_boundary(decision.bank_start());
+            bundle_stage_leader_metrics.check_leader_slot_boundary(decision.bank());
         bundle_stage_leader_metrics
             .leader_slot_metrics_tracker()
             .increment_make_decision_us(make_decision_time_us);
 
         let mut this_slot_block_len = None;
-        let decision = if let Some(bank_start) = decision.bank_start() {
+        let decision = if let Some(bank) = decision.bank() {
             // let consumed_for_slot =
             //     unprocessed_bundle_storage.consumed_for_slot(bank_start.working_bank.slot());
 
             let consumed_for_slot =
-                bundle_storage.consumed_for_slot(bank_start.working_bank.slot());
+                bundle_storage.consumed_for_slot(bank.slot());
 
             // Check if we have a block for this slot
             this_slot_block_len = bundle_storage
                 .unprocessed_bundle_storage
                 .iter()
-                .find(|b| b.slot() == bank_start.working_bank.slot())
+                .find(|b| b.slot() == bank.slot())
                 .map(|b| b.len());
 
             if this_slot_block_len.is_some() && !consumed_for_slot {
@@ -398,7 +399,7 @@ impl BundleStage {
         match decision {
             // BufferedPacketsDecision::Consume means this leader is scheduled to be running at the moment.
             // Execute, record, and commit as many bundles possible given time, compute, and other constraints.
-            BufferedPacketsDecision::Consume(bank_start) => {
+            BufferedPacketsDecision::Consume(bank) => {
                 // Take metrics action before consume packets (potentially resetting the
                 // slot metrics tracker to the next slot) so that we don't count the
                 // packet processing metrics from the next slot towards the metrics
@@ -407,17 +408,12 @@ impl BundleStage {
                     .apply_action(metrics_action, banking_stage_metrics_action);
 
                 set_reserve_hashes(this_slot_block_len.expect("only consumes if some"));
-                bank_start
-                    .working_bank
+                bank
                     .write_cost_tracker()
                     .unwrap()
                     .save_nonvote_cost_limits();
                 let (_, consume_buffered_packets_time_us) = measure_us!(consumer
-                    .consume_buffered_bundles(
-                        &bank_start,
-                        bundle_storage,
-                        bundle_stage_leader_metrics,
-                    ));
+                    .consume_buffered_bundles(&bank, bundle_storage, bundle_stage_leader_metrics,));
                 bundle_stage_leader_metrics
                     .leader_slot_metrics_tracker()
                     .increment_consume_buffered_packets_us(consume_buffered_packets_time_us);

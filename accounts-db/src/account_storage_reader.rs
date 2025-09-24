@@ -32,7 +32,7 @@ impl<'a> AccountStorageReader<'a> {
 
         let mut sorted_obsolete_accounts = storage.get_obsolete_accounts(snapshot_slot);
 
-        // Tiered storage is not compatible with obsolete acocunts at this time
+        // Tiered storage is not compatible with obsolete accounts at this time
         if matches!(storage.accounts, AccountsFile::TieredStorage(_)) {
             assert!(
                 sorted_obsolete_accounts.is_empty(),
@@ -172,12 +172,12 @@ mod tests {
             (&Pubkey::new_unique(), &account2),
         ];
 
-        storage.accounts.append_accounts(&(slot, &accounts[..]), 0);
+        storage.accounts.write_accounts(&(slot, &accounts[..]), 0);
 
         let offset = 0;
         // Mark the obsolete accounts in storage
         let mut size = storage.accounts.get_account_data_lens(&[0]);
-        storage.mark_account_obsolete(offset, size.pop().unwrap(), 0);
+        storage.mark_accounts_obsolete(vec![(offset, size.pop().unwrap())].into_iter(), 0);
 
         _ = AccountStorageReader::new(&storage, None).unwrap();
     }
@@ -196,7 +196,7 @@ mod tests {
             (&Pubkey::new_unique(), &account2),
         ];
 
-        storage.accounts.append_accounts(&(slot, &accounts[..]), 0);
+        storage.accounts.write_accounts(&(slot, &accounts[..]), 0);
 
         let reader = AccountStorageReader::new(&storage, None).unwrap();
         assert_eq!(reader.len(), storage.accounts.len());
@@ -238,11 +238,11 @@ mod tests {
 
         let offsets = storage
             .accounts
-            .append_accounts(&(slot, &accounts_to_append[..]), 0);
+            .write_accounts(&(slot, &accounts_to_append[..]), 0);
 
         // Generate a seed from entropy and log the original seed
         let seed: u64 = rand::random();
-        info!("Generated seed: {}", seed);
+        info!("Generated seed: {seed}");
 
         // Use a seedable RNG with the generated seed for reproducibility
         let mut rng = StdRng::seed_from_u64(seed);
@@ -260,10 +260,10 @@ mod tests {
         assert_eq!(obsolete_account_offset.len(), number_of_accounts_to_remove);
 
         // Mark the obsolete accounts in storage
-        obsolete_account_offset.into_iter().for_each(|offset| {
-            let mut size = storage.accounts.get_account_data_lens(&[offset]);
-            storage.mark_account_obsolete(offset, size.pop().unwrap(), 0);
-        });
+        let data_lens = storage
+            .accounts
+            .get_account_data_lens(&obsolete_account_offset);
+        storage.mark_accounts_obsolete(obsolete_account_offset.into_iter().zip(data_lens), 0);
 
         let storage = storage
             .reopen_as_readonly(storage_access)
@@ -339,11 +339,11 @@ mod tests {
 
         let offsets = storage
             .accounts
-            .append_accounts(&(slot, &accounts_to_append[..]), 0);
+            .write_accounts(&(slot, &accounts_to_append[..]), 0);
 
         // Generate a seed from entropy and log the original seed
         let seed: u64 = rand::random();
-        info!("Generated seed: {}", seed);
+        info!("Generated seed: {seed}");
 
         // Use a seedable RNG with the generated seed for reproducibility
         let mut rng = StdRng::seed_from_u64(seed);
@@ -375,7 +375,10 @@ mod tests {
         let mut slot_marked_dead = 0;
         obsolete_account_offset.into_iter().for_each(|offset| {
             let mut size = storage.accounts.get_account_data_lens(&[offset]);
-            storage.mark_account_obsolete(offset, size.pop().unwrap(), slot_marked_dead);
+            storage.mark_accounts_obsolete(
+                vec![(offset, size.pop().unwrap())].into_iter(),
+                slot_marked_dead,
+            );
             slot_marked_dead += 1;
         });
 

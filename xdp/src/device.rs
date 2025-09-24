@@ -1,5 +1,6 @@
 use {
     crate::{
+        netlink::MacAddress,
         route::Router,
         umem::{Frame, FrameOffset},
     },
@@ -69,7 +70,7 @@ impl NetworkDevice {
         self.if_index
     }
 
-    pub fn mac_addr(&self) -> Result<[u8; 6], io::Error> {
+    pub fn mac_addr(&self) -> Result<MacAddress, io::Error> {
         let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
         if fd < 0 {
             return Err(io::Error::last_os_error());
@@ -94,11 +95,13 @@ impl NetworkDevice {
             return Err(io::Error::last_os_error());
         }
 
-        Ok(unsafe {
-            slice::from_raw_parts(req.ifr_ifru.ifru_hwaddr.sa_data.as_ptr() as *const u8, 6)
-        }
-        .try_into()
-        .unwrap())
+        Ok(MacAddress(
+            unsafe {
+                slice::from_raw_parts(req.ifr_ifru.ifru_hwaddr.sa_data.as_ptr() as *const u8, 6)
+            }
+            .try_into()
+            .unwrap(),
+        ))
     }
 
     pub fn ipv4_addr(&self) -> Result<Ipv4Addr, io::Error> {
@@ -135,11 +138,11 @@ impl NetworkDevice {
     }
 
     pub fn open_queue(&self, queue_id: QueueId) -> Result<DeviceQueue, io::Error> {
-        let (rx_size, tx_size) = Self::ring_sizes(&self.if_name)?;
-        Ok(DeviceQueue::new(self.if_index, queue_id, rx_size, tx_size))
+        let ring_sizes = Self::ring_sizes(&self.if_name).ok();
+        Ok(DeviceQueue::new(self.if_index, queue_id, ring_sizes))
     }
 
-    pub fn ring_sizes(if_name: &str) -> Result<(usize, usize), io::Error> {
+    pub fn ring_sizes(if_name: &str) -> Result<RingSizes, io::Error> {
         const ETHTOOL_GRINGPARAM: u32 = 0x00000010;
 
         #[repr(C)]
@@ -180,25 +183,40 @@ impl NetworkDevice {
             return Err(io::Error::last_os_error());
         }
 
-        Ok((rp.rx_pending as usize, rp.tx_pending as usize))
+        Ok(RingSizes {
+            rx: rp.rx_pending as usize,
+            tx: rp.tx_pending as usize,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RingSizes {
+    pub rx: usize,
+    pub tx: usize,
+}
+
+impl Default for RingSizes {
+    fn default() -> Self {
+        // These are reasonable defaults for devices which don't have a set ring size. Values must
+        // be a power of two.
+        Self { rx: 1024, tx: 1024 }
     }
 }
 
 pub struct DeviceQueue {
     if_index: u32,
     queue_id: QueueId,
-    rx_size: usize,
-    tx_size: usize,
+    ring_sizes: Option<RingSizes>,
     completion: Option<TxCompletionRing>,
 }
 
 impl DeviceQueue {
-    pub fn new(if_index: u32, queue_id: QueueId, rx_size: usize, tx_size: usize) -> Self {
+    pub fn new(if_index: u32, queue_id: QueueId, ring_sizes: Option<RingSizes>) -> Self {
         Self {
             if_index,
             queue_id,
-            rx_size,
-            tx_size,
+            ring_sizes,
             completion: None,
         }
     }
@@ -215,12 +233,8 @@ impl DeviceQueue {
         self.completion.as_ref()
     }
 
-    pub fn tx_size(&self) -> usize {
-        self.tx_size
-    }
-
-    pub fn rx_size(&self) -> usize {
-        self.rx_size
+    pub fn ring_sizes(&self) -> Option<RingSizes> {
+        self.ring_sizes
     }
 }
 
@@ -419,31 +433,38 @@ pub(crate) unsafe fn mmap_ring<T>(
     ring_type: u64,
 ) -> Result<RingMmap<T>, io::Error> {
     let map_size = (offsets.desc as usize).saturating_add(size);
-    let map_addr = mmap(
-        ptr::null_mut(),
-        map_size,
-        libc::PROT_READ | libc::PROT_WRITE,
-        libc::MAP_SHARED | libc::MAP_POPULATE,
-        fd,
-        ring_type as i64,
-    );
-    if map_addr == libc::MAP_FAILED {
+    // Safety: just a libc wrapper. We pass a valid size and file descriptor.
+    let map_addr = unsafe {
+        mmap(
+            ptr::null_mut(),
+            map_size,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED | libc::MAP_POPULATE,
+            fd,
+            ring_type as i64,
+        )
+    };
+    if ptr::eq(map_addr, libc::MAP_FAILED) {
         return Err(io::Error::last_os_error());
     }
-    let producer = map_addr.add(offsets.producer as usize) as *mut AtomicU32;
-    let consumer = map_addr.add(offsets.consumer as usize) as *mut AtomicU32;
-    let desc = map_addr.add(offsets.desc as usize) as *mut T;
-    let flags = map_addr.add(offsets.flags as usize) as *mut AtomicU32;
-    // V1
-    // let flags = map_addr.add(offsets.consumer as usize + mem::size_of::<u32>()) as *mut AtomicU32;
-    Ok(RingMmap {
-        mmap: map_addr as *const u8,
-        mmap_len: map_size,
-        producer,
-        consumer,
-        desc,
-        flags,
-    })
+    // Safety: manual pointer arithmetic. We are sure that the given offsets
+    // don't exceed the bounds.
+    unsafe {
+        let producer = map_addr.add(offsets.producer as usize) as *mut AtomicU32;
+        let consumer = map_addr.add(offsets.consumer as usize) as *mut AtomicU32;
+        let desc = map_addr.add(offsets.desc as usize) as *mut T;
+        let flags = map_addr.add(offsets.flags as usize) as *mut AtomicU32;
+        // V1
+        // let flags = map_addr.add(offsets.consumer as usize + mem::size_of::<u32>()) as *mut AtomicU32;
+        Ok(RingMmap {
+            mmap: map_addr as *const u8,
+            mmap_len: map_size,
+            producer,
+            consumer,
+            desc,
+            flags,
+        })
+    }
 }
 
 #[cfg(test)]

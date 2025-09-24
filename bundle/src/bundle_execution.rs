@@ -24,7 +24,7 @@ use {
         transaction_processing_result::{ProcessedTransaction, TransactionProcessingResult},
         transaction_processor::{ExecutionRecordingConfig, TransactionProcessingConfig},
     },
-    solana_timings::ExecuteTimings,
+    solana_svm_timings::ExecuteTimings,
     solana_transaction::{sanitized::SanitizedTransaction, versioned::VersionedTransaction},
     solana_transaction_error::TransactionError,
     std::{
@@ -241,7 +241,10 @@ pub fn load_and_execute_bundle<'a>(
                     for pk in account_keys.iter() {
                         // Save on a disk read.
                         if account_overrides.get(pk).is_none() {
-                            account_overrides.set_account(pk, bank.get_account_shared_data(pk));
+                            account_overrides.set_account(
+                                pk,
+                                bank.get_account_shared_data(pk).map(|data| data.0),
+                            );
                         }
                     }
                 }
@@ -509,7 +512,7 @@ pub fn parallel_load_and_execute_bundle<'a>(
                     for pk in account_keys.iter() {
                         // Save on a disk read.
                         if account_overrides.get(pk).is_none() {
-                            account_overrides.set_account(pk, bank.get_account_shared_data(pk));
+                            account_overrides.set_account(pk, bank.get_account_shared_data(pk).map(|data| data.0));
                         }
                     }
                 }
@@ -697,7 +700,7 @@ mod tests {
             scheduler::Scheduler,
             SanitizedBundle,
         },
-        anchor_lang::solana_program::clock::MAX_PROCESSING_AGE,
+        solana_clock::MAX_PROCESSING_AGE,
         assert_matches::assert_matches,
         rayon::ThreadPoolBuilder,
         solana_keypair::Keypair,

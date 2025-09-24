@@ -8,7 +8,6 @@
 //! command-line tools to spin up validators and a Rust library
 //!
 
-pub mod accounts_hash_verifier;
 pub mod admin_rpc_post_init;
 pub mod banking_simulation;
 pub mod banking_stage;
@@ -25,6 +24,7 @@ pub mod fetch_stage;
 pub mod forwarding_stage;
 pub mod gen_keys;
 pub mod immutable_deserialized_bundle;
+mod mock_alpenglow_consensus;
 pub mod next_leader;
 pub mod optimistic_confirmation_verifier;
 pub mod packet_bundle;
@@ -46,6 +46,7 @@ mod tpu_entry_notifier;
 pub mod tvu;
 pub mod unfrozen_gossip_verified_vote_hashes;
 pub mod validator;
+mod vortexor_receiver_adapter;
 pub mod vote_simulator;
 pub mod voting_service;
 pub mod warm_quic_cache_service;

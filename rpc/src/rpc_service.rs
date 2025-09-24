@@ -16,6 +16,7 @@ use {
         RequestMiddlewareAction, ServerBuilder,
     },
     regex::Regex,
+    solana_cli_output::display::build_balance_message,
     solana_client::connection_cache::ConnectionCache,
     solana_genesis_config::DEFAULT_GENESIS_DOWNLOAD_PATH,
     solana_gossip::cluster_info::ClusterInfo,
@@ -27,17 +28,18 @@ use {
         leader_schedule_cache::LeaderScheduleCache,
     },
     solana_metrics::inc_new_counter_info,
-    solana_native_token::lamports_to_sol,
     solana_perf::thread::renice_this_thread,
     solana_poh::poh_recorder::PohRecorder,
     solana_quic_definitions::NotifyKeyUpdate,
     solana_runtime::{
-        bank::Bank, bank_forks::BankForks, commitment::BlockCommitmentCache,
+        bank::Bank,
+        bank_forks::BankForks,
+        commitment::BlockCommitmentCache,
         non_circulating_supply::calculate_non_circulating_supply,
         prioritization_fee_cache::PrioritizationFeeCache,
         snapshot_archive_info::SnapshotArchiveInfoGetter,
-        snapshot_bank_utils::DISABLED_SNAPSHOT_ARCHIVE_INTERVAL, snapshot_config::SnapshotConfig,
-        snapshot_utils,
+        snapshot_config::SnapshotConfig,
+        snapshot_utils::{self, SnapshotInterval},
     },
     solana_send_transaction_service::{
         send_transaction_service::{self, SendTransactionService},
@@ -270,7 +272,7 @@ impl RpcRequestMiddleware {
             .map(|m| m.len())
             .unwrap_or(0)
             .to_string();
-        info!("get {} -> {:?} ({} bytes)", path, filename, file_length);
+        info!("get {path} -> {filename:?} ({file_length} bytes)");
 
         if cfg!(not(test)) {
             assert!(
@@ -280,14 +282,17 @@ impl RpcRequestMiddleware {
         }
         let snapshot_timeout = self.snapshot_config.as_ref().and_then(|config| {
             snapshot_type.map(|st| {
-                let slots = match st {
-                    SnapshotKind::Full => config.full_snapshot_archive_interval_slots,
-                    SnapshotKind::Incremental => config.incremental_snapshot_archive_interval_slots,
+                let interval = match st {
+                    SnapshotKind::Full => config.full_snapshot_archive_interval,
+                    SnapshotKind::Incremental => config.incremental_snapshot_archive_interval,
                 };
-                let computed = if slots == DISABLED_SNAPSHOT_ARCHIVE_INTERVAL {
-                    Duration::ZERO
-                } else {
-                    Duration::from_millis(slots.saturating_mul(solana_clock::DEFAULT_MS_PER_SLOT))
+                let computed = match interval {
+                    SnapshotInterval::Disabled => Duration::ZERO,
+                    SnapshotInterval::Slots(slots) => Duration::from_millis(
+                        slots
+                            .get()
+                            .saturating_mul(solana_clock::DEFAULT_MS_PER_SLOT),
+                    ),
                 };
                 let fallback = match st {
                     SnapshotKind::Full => FALLBACK_FULL_SNAPSHOT_TIMEOUT_SECS,
@@ -330,7 +335,7 @@ impl RpcRequestMiddleware {
             RpcHealthStatus::Behind { .. } => "behind",
             RpcHealthStatus::Unknown => "unknown",
         };
-        info!("health check: {}", response);
+        info!("health check: {response}");
         response
     }
 }
@@ -431,14 +436,14 @@ async fn handle_rest(bank_forks: &Arc<RwLock<BankForks>>, path: &str) -> Option<
             let bank = bank_forks.read().unwrap().root_bank();
             let supply_result = calculate_circulating_supply_async(&bank).await;
             match supply_result {
-                Ok(supply) => Some(format!("{}", lamports_to_sol(supply))),
+                Ok(supply) => Some(build_balance_message(supply, false, false)),
                 Err(_) => None,
             }
         }
         "/v0/total-supply" => {
             let bank = bank_forks.read().unwrap().root_bank();
             let total_supply = bank.capitalization();
-            Some(format!("{}", lamports_to_sol(total_supply)))
+            Some(build_balance_message(total_supply, false, false))
         }
         _ => None,
     }
@@ -687,8 +692,8 @@ impl JsonRpcService {
         prioritization_fee_cache: Arc<PrioritizationFeeCache>,
         runtime: Arc<TokioRuntime>,
     ) -> Result<Self, String> {
-        info!("rpc bound to {:?}", rpc_addr);
-        info!("rpc configuration: {:?}", config);
+        info!("rpc bound to {rpc_addr:?}");
+        info!("rpc configuration: {config:?}");
         let rpc_niceness_adj = config.rpc_niceness_adj;
 
         let health = Arc::new(RpcHealth::new(
@@ -749,7 +754,7 @@ impl JsonRpcService {
                         )
                     })
                     .unwrap_or_else(|err| {
-                        error!("Failed to initialize BigTable ledger storage: {:?}", err);
+                        error!("Failed to initialize BigTable ledger storage: {err:?}");
                         (None, None)
                     })
             } else {
@@ -838,9 +843,8 @@ impl JsonRpcService {
 
                 if let Err(e) = server {
                     warn!(
-                        "JSON RPC service unavailable error: {:?}. \n\
-                           Also, check that port {} is not already in use by another application",
-                        e,
+                        "JSON RPC service unavailable error: {e:?}. Also, check that port {} is \
+                         not already in use by another application",
                         rpc_addr.port()
                     );
                     close_handle_sender.send(Err(e.to_string())).unwrap();
@@ -928,7 +932,8 @@ mod tests {
     use {
         super::*,
         crate::rpc::{create_validator_exit, tests::new_test_cluster_info},
-        solana_genesis_config::{ClusterType, DEFAULT_GENESIS_ARCHIVE},
+        solana_cluster_type::ClusterType,
+        solana_genesis_config::DEFAULT_GENESIS_ARCHIVE,
         solana_ledger::{
             genesis_utils::{create_genesis_config, GenesisConfigInfo},
             get_tmp_ledger_path_auto_delete,
@@ -955,9 +960,10 @@ mod tests {
         let bank = Bank::new_for_tests(&genesis_config);
         let cluster_info = Arc::new(new_test_cluster_info());
         let ip_addr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+        let port_range = solana_net_utils::sockets::localhost_port_range_for_tests();
         let rpc_addr = SocketAddr::new(
             ip_addr,
-            solana_net_utils::find_available_port_in_range(ip_addr, (10000, 65535)).unwrap(),
+            solana_net_utils::find_available_port_in_range(ip_addr, port_range).unwrap(),
         );
         let bank_forks = BankForks::new_rw_arc(bank);
         let ledger_path = get_tmp_ledger_path_auto_delete!();
@@ -1104,49 +1110,57 @@ mod tests {
         assert!(!rrm.is_file_get_path("/incremental-snapshot.tar.bz2"));
 
         assert!(!rrm.is_file_get_path(
-            "/snapshot-100-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar.bz2"
+            "/snapshot-100-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar.zst"
         ));
         assert!(!rrm.is_file_get_path(
-            "/incremental-snapshot-100-200-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar.bz2"
+            "/incremental-snapshot-100-200-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar.zst"
         ));
 
-        assert!(rrm_with_snapshot_config.is_file_get_path(
-            "/snapshot-100-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar.bz2"
-        ));
         assert!(rrm_with_snapshot_config.is_file_get_path(
             "/snapshot-100-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar.zst"
         ));
-        assert!(rrm_with_snapshot_config
+        assert!(rrm_with_snapshot_config.is_file_get_path(
+            "/snapshot-100-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar.lz4"
+        ));
+        assert!(!rrm_with_snapshot_config.is_file_get_path(
+            "/snapshot-100-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar.bz2"
+        ));
+        assert!(!rrm_with_snapshot_config
             .is_file_get_path("/snapshot-100-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar.gz"));
-        assert!(rrm_with_snapshot_config
+        assert!(!rrm_with_snapshot_config
             .is_file_get_path("/snapshot-100-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar"));
 
-        assert!(rrm_with_snapshot_config.is_file_get_path(
-            "/incremental-snapshot-100-200-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar.bz2"
-        ));
         assert!(rrm_with_snapshot_config.is_file_get_path(
             "/incremental-snapshot-100-200-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar.zst"
         ));
         assert!(rrm_with_snapshot_config.is_file_get_path(
+            "/incremental-snapshot-100-200-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar.lz4"
+        ));
+        assert!(!rrm_with_snapshot_config.is_file_get_path(
+            "/incremental-snapshot-100-200-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar.bz2"
+        ));
+        assert!(!rrm_with_snapshot_config.is_file_get_path(
             "/incremental-snapshot-100-200-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar.gz"
         ));
-        assert!(rrm_with_snapshot_config.is_file_get_path(
+        assert!(!rrm_with_snapshot_config.is_file_get_path(
             "/incremental-snapshot-100-200-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar"
         ));
 
         assert!(!rrm_with_snapshot_config.is_file_get_path(
-            "/snapshot-notaslotnumber-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar.bz2"
+            "/snapshot-notaslotnumber-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar.zst"
         ));
         assert!(!rrm_with_snapshot_config.is_file_get_path(
-            "/incremental-snapshot-notaslotnumber-200-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar.bz2"
+            "/incremental-snapshot-notaslotnumber-200-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar.zst"
         ));
         assert!(!rrm_with_snapshot_config.is_file_get_path(
-            "/incremental-snapshot-100-notaslotnumber-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar.bz2"
+            "/incremental-snapshot-100-notaslotnumber-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar.zst"
         ));
 
-        assert!(!rrm_with_snapshot_config.is_file_get_path("../../../test/snapshot-123-xxx.tar"));
+        assert!(
+            !rrm_with_snapshot_config.is_file_get_path("../../../test/snapshot-123-xxx.tar.zst")
+        );
         assert!(!rrm_with_snapshot_config
-            .is_file_get_path("../../../test/incremental-snapshot-123-456-xxx.tar"));
+            .is_file_get_path("../../../test/incremental-snapshot-123-456-xxx.tar.zst"));
 
         assert!(!rrm.is_file_get_path("/"));
         assert!(!rrm.is_file_get_path("//"));
@@ -1162,20 +1176,23 @@ mod tests {
         assert!(!rrm.is_file_get_path("..//"));
         assert!(!rrm.is_file_get_path("🎣"));
 
-        assert!(!rrm_with_snapshot_config
-            .is_file_get_path("//snapshot-100-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar"));
-        assert!(!rrm_with_snapshot_config
-            .is_file_get_path("/./snapshot-100-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar"));
-        assert!(!rrm_with_snapshot_config
-            .is_file_get_path("/../snapshot-100-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar"));
         assert!(!rrm_with_snapshot_config.is_file_get_path(
-            "//incremental-snapshot-100-200-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar"
+            "//snapshot-100-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar.zst"
         ));
         assert!(!rrm_with_snapshot_config.is_file_get_path(
-            "/./incremental-snapshot-100-200-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar"
+            "/./snapshot-100-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar.zst"
         ));
         assert!(!rrm_with_snapshot_config.is_file_get_path(
-            "/../incremental-snapshot-100-200-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar"
+            "/../snapshot-100-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar.zst"
+        ));
+        assert!(!rrm_with_snapshot_config.is_file_get_path(
+            "//incremental-snapshot-100-200-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar.zst"
+        ));
+        assert!(!rrm_with_snapshot_config.is_file_get_path(
+            "/./incremental-snapshot-100-200-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar.zst"
+        ));
+        assert!(!rrm_with_snapshot_config.is_file_get_path(
+            "/../incremental-snapshot-100-200-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar.zst"
         ));
     }
 

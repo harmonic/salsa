@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 use {
     bip39::{Mnemonic, MnemonicType, Seed},
     clap::{crate_description, crate_name, Arg, ArgMatches, Command, PossibleValue},
@@ -16,7 +17,7 @@ use {
     },
     solana_seed_derivable::SeedDerivable,
     solana_signer::EncodableKey,
-    solana_zk_token_sdk::encryption::{auth_encryption::AeKey, elgamal::ElGamalKeypair},
+    solana_zk_sdk::encryption::{auth_encryption::AeKey, elgamal::ElGamalKeypair},
     std::{error, str::FromStr},
     thiserror::Error,
 };

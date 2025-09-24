@@ -11,23 +11,24 @@ use {
     solana_accounts_db::utils::create_accounts_run_and_snapshot_dirs,
     solana_client::connection_cache::ConnectionCache,
     solana_clock::{Slot, DEFAULT_DEV_SLOTS_PER_EPOCH, DEFAULT_TICKS_PER_SLOT},
+    solana_cluster_type::ClusterType,
     solana_commitment_config::CommitmentConfig,
     solana_core::{
         consensus::tower_storage::FileTowerStorage,
         validator::{Validator, ValidatorConfig, ValidatorStartProgress, ValidatorTpuConfig},
     },
     solana_epoch_schedule::EpochSchedule,
-    solana_genesis_config::{ClusterType, GenesisConfig},
+    solana_genesis_config::GenesisConfig,
     solana_gossip::{
-        cluster_info::Node,
         contact_info::{ContactInfo, Protocol},
         gossip_service::{discover, discover_validators},
+        node::Node,
     },
     solana_keypair::Keypair,
     solana_ledger::{create_new_tmp_ledger_with_size, shred::Shred},
     solana_message::Message,
     solana_native_token::LAMPORTS_PER_SOL,
-    solana_net_utils::bind_to_unspecified,
+    solana_net_utils::sockets::bind_to_localhost_unique,
     solana_poh_config::PohConfig,
     solana_pubkey::Pubkey,
     solana_rpc_client::rpc_client::RpcClient,
@@ -37,6 +38,7 @@ use {
             ValidatorVoteKeypairs,
         },
         snapshot_config::SnapshotConfig,
+        snapshot_utils::BANK_SNAPSHOTS_DIR,
     },
     solana_signer::{signers::Signers, Signer},
     solana_stake_interface::{
@@ -190,7 +192,7 @@ impl LocalCluster {
             snapshot_config.full_snapshot_archives_dir = ledger_path.to_path_buf();
         }
         if snapshot_config.bank_snapshots_dir == dummy {
-            snapshot_config.bank_snapshots_dir = ledger_path.join("snapshot");
+            snapshot_config.bank_snapshots_dir = ledger_path.join(BANK_SNAPSHOTS_DIR);
         }
     }
 
@@ -526,7 +528,7 @@ impl LocalCluster {
         // Give the validator some lamports to setup vote accounts
         if is_listener {
             // setup as a listener
-            info!("listener {} ", validator_pubkey,);
+            info!("listener {validator_pubkey} ",);
         } else if should_create_vote_pubkey {
             Self::transfer_with_client(
                 &client,
@@ -539,10 +541,7 @@ impl LocalCluster {
                 .get_balance_with_commitment(&validator_pubkey, CommitmentConfig::processed())
                 .expect("received response")
                 .value;
-            info!(
-                "validator {} balance {}",
-                validator_pubkey, validator_balance
-            );
+            info!("validator {validator_pubkey} balance {validator_balance}");
             Self::setup_vote_and_stake_accounts(
                 &client,
                 voting_keypair.as_ref().unwrap(),
@@ -624,7 +623,7 @@ impl LocalCluster {
             .map(|v| v.info.contact_info.clone())
             .collect();
         assert!(!alive_node_contact_infos.is_empty());
-        info!("{} discovering nodes", test_name);
+        info!("{test_name} discovering nodes");
         let cluster_nodes = discover_validators(
             &alive_node_contact_infos[0].gossip().unwrap(),
             alive_node_contact_infos.len(),
@@ -643,17 +642,14 @@ impl LocalCluster {
         socket_addr_space: SocketAddrSpace,
     ) {
         let alive_node_contact_infos = self.discover_nodes(socket_addr_space, test_name);
-        info!(
-            "{} looking minimum root {} on all nodes",
-            test_name, min_root
-        );
+        info!("{test_name} looking minimum root {min_root} on all nodes");
         cluster_tests::check_min_slot_is_rooted(
             min_root,
             &alive_node_contact_infos,
             &self.connection_cache,
             test_name,
         );
-        info!("{} done waiting for roots", test_name);
+        info!("{test_name} done waiting for roots");
     }
 
     pub fn check_for_new_roots(
@@ -663,14 +659,14 @@ impl LocalCluster {
         socket_addr_space: SocketAddrSpace,
     ) {
         let alive_node_contact_infos = self.discover_nodes(socket_addr_space, test_name);
-        info!("{} looking for new roots on all nodes", test_name);
+        info!("{test_name} looking for new roots on all nodes");
         cluster_tests::check_for_new_roots(
             num_new_roots,
             &alive_node_contact_infos,
             &self.connection_cache,
             test_name,
         );
-        info!("{} done waiting for roots", test_name);
+        info!("{test_name} done waiting for roots");
     }
 
     pub fn check_no_new_roots(
@@ -685,7 +681,7 @@ impl LocalCluster {
             .map(|node| &node.info.contact_info)
             .collect();
         assert!(!alive_node_contact_infos.is_empty());
-        info!("{} discovering nodes", test_name);
+        info!("{test_name} discovering nodes");
         let cluster_nodes = discover_validators(
             &alive_node_contact_infos[0].gossip().unwrap(),
             alive_node_contact_infos.len(),
@@ -694,14 +690,14 @@ impl LocalCluster {
         )
         .unwrap();
         info!("{} discovered {} nodes", test_name, cluster_nodes.len());
-        info!("{} making sure no new roots on any nodes", test_name);
+        info!("{test_name} making sure no new roots on any nodes");
         cluster_tests::check_no_new_roots(
             num_slots_to_wait,
             &alive_node_contact_infos,
             &self.connection_cache,
             test_name,
         );
-        info!("{} done waiting for roots", test_name);
+        info!("{test_name} done waiting for roots");
     }
 
     /// Poll RPC to see if transaction was processed. Return an error if unable
@@ -799,8 +795,7 @@ impl LocalCluster {
         let vote_account_pubkey = vote_account.pubkey();
         let node_pubkey = from_account.pubkey();
         info!(
-            "setup_vote_and_stake_accounts: {}, {}, amount: {}",
-            node_pubkey, vote_account_pubkey, amount,
+            "setup_vote_and_stake_accounts: {node_pubkey}, {vote_account_pubkey}, amount: {amount}",
         );
         let stake_account_keypair = Keypair::new();
         let stake_account_pubkey = stake_account_keypair.pubkey();
@@ -889,12 +884,9 @@ impl LocalCluster {
                 )
                 .expect("get balance");
         } else {
-            warn!(
-                "{} vote_account already has a balance?!?",
-                vote_account_pubkey
-            );
+            warn!("{vote_account_pubkey} vote_account already has a balance?!?");
         }
-        info!("Checking for vote account registration of {}", node_pubkey);
+        info!("Checking for vote account registration of {node_pubkey}");
         match (
             client
                 .rpc_client()
@@ -918,10 +910,7 @@ impl LocalCluster {
                                 } else if vote_state.node_pubkey != node_pubkey {
                                     Err(Error::other("invalid vote account state"))
                                 } else {
-                                    info!(
-                                        "node {} {:?} {:?}",
-                                        node_pubkey, stake_state, vote_state
-                                    );
+                                    info!("node {node_pubkey} {stake_state:?} {vote_state:?}");
 
                                     return Ok(());
                                 }
@@ -955,7 +944,7 @@ impl LocalCluster {
         rpc_client: Arc<RpcClient>,
         rpc_pubsub_addr: SocketAddr,
     ) -> Result<QuicTpuClient> {
-        let rpc_pubsub_url = format!("ws://{}/", rpc_pubsub_addr);
+        let rpc_pubsub_url = format!("ws://{rpc_pubsub_addr}/");
 
         let cache = match &*self.connection_cache {
             ConnectionCache::Quic(cache) => cache,
@@ -970,7 +959,7 @@ impl LocalCluster {
             TpuClientConfig::default(),
             cache.clone(),
         )
-        .map_err(|err| Error::other(format!("TpuSenderError: {}", err)))?;
+        .map_err(|err| Error::other(format!("TpuSenderError: {err}")))?;
 
         Ok(tpu_client)
     }
@@ -1152,7 +1141,7 @@ impl Cluster for LocalCluster {
     }
 
     fn send_shreds_to_validator(&self, dup_shreds: Vec<&Shred>, validator_key: &Pubkey) {
-        let send_socket = bind_to_unspecified().unwrap();
+        let send_socket = bind_to_localhost_unique().expect("should bind");
         let validator_tvu = self
             .get_contact_info(validator_key)
             .unwrap()

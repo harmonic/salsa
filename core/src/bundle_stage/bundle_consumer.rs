@@ -28,7 +28,6 @@ use {
     solana_gossip::cluster_info::ClusterInfo,
     solana_measure::measure_us,
     solana_poh::{
-        poh_recorder::BankStart,
         poh_service::reset_reserve_hashes,
         transaction_recorder::{
             RecordTransactionsSummary, RecordTransactionsTimings, TransactionRecorder,
@@ -151,12 +150,12 @@ impl BundleConsumer {
     //  - This is to avoid stalling the voting BankingStage threads.
     pub fn consume_buffered_bundles(
         &mut self,
-        bank_start: &BankStart,
+        bank: &Arc<Bank>,
         bundle_storage: &mut BundleStorage,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
     ) {
         let reached_end_of_slot = bundle_storage.process_bundles(
-            bank_start.working_bank.clone(),
+            bank.clone(),
             bundle_stage_leader_metrics,
             &self.blacklisted_accounts,
             |bundles, bundle_stage_leader_metrics| {
@@ -172,7 +171,7 @@ impl BundleConsumer {
                     &self.log_messages_bytes_limit,
                     self.max_bundle_retry_duration,
                     bundles,
-                    bank_start,
+                    bank,
                     bundle_stage_leader_metrics,
                     &mut self.scheduler,
                     &self.thread_pool,
@@ -200,7 +199,7 @@ impl BundleConsumer {
         log_messages_bytes_limit: &Option<usize>,
         max_bundle_retry_duration: Duration,
         bundles: &[(ImmutableDeserializedBundle, SanitizedBundle)],
-        bank_start: &BankStart,
+        bank: &Arc<Bank>,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
         scheduler: &mut Scheduler,
         thread_pool: &ThreadPool,
@@ -213,8 +212,7 @@ impl BundleConsumer {
         let (locked_bundle_results, locked_bundles_elapsed_us) = measure_us!(bundles
             .iter()
             .map(|(_, sanitized_bundle)| {
-                bundle_account_locker
-                    .prepare_locked_bundle(sanitized_bundle, &bank_start.working_bank)
+                bundle_account_locker.prepare_locked_bundle(sanitized_bundle, bank)
             })
             .collect::<Vec<_>>());
         bundle_stage_leader_metrics
@@ -238,7 +236,7 @@ impl BundleConsumer {
                             log_messages_bytes_limit,
                             max_bundle_retry_duration,
                             &locked_bundle,
-                            bank_start,
+                            bank,
                             bundle_stage_leader_metrics,
                             scheduler,
                             thread_pool,
@@ -279,19 +277,16 @@ impl BundleConsumer {
         log_messages_bytes_limit: &Option<usize>,
         max_bundle_retry_duration: Duration,
         locked_bundle: &LockedBundle,
-        bank_start: &BankStart,
+        bank: &Arc<Bank>,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
         scheduler: &mut Scheduler,
         thread_pool: &ThreadPool,
     ) -> Result<(), BundleExecutionError> {
-        if !Bank::should_bank_still_be_processing_txs(
-            &bank_start.bank_creation_time,
-            bank_start.working_bank.ns_per_slot,
-        ) {
+        if bank.is_complete() {
             return Err(BundleExecutionError::BankProcessingTimeLimitReached);
         }
 
-        let new_slot = bank_start.working_bank.slot() != *last_tip_updated_slot;
+        let new_slot = bank.slot() != *last_tip_updated_slot;
         let touches_tip_pdas = true;
         if new_slot && touches_tip_pdas {
             let start = Instant::now();
@@ -305,7 +300,7 @@ impl BundleConsumer {
                 qos_service,
                 log_messages_bytes_limit,
                 max_bundle_retry_duration,
-                bank_start,
+                bank,
                 bundle_stage_leader_metrics,
                 scheduler,
                 thread_pool,
@@ -317,7 +312,7 @@ impl BundleConsumer {
 
             result?;
 
-            *last_tip_updated_slot = bank_start.working_bank.slot();
+            *last_tip_updated_slot = bank.slot();
         }
 
         Self::update_qos_and_execute_record_commit_bundle(
@@ -327,7 +322,7 @@ impl BundleConsumer {
             log_messages_bytes_limit,
             max_bundle_retry_duration,
             locked_bundle.sanitized_bundle(),
-            bank_start,
+            bank,
             bundle_stage_leader_metrics,
             true,
             scheduler,
@@ -349,7 +344,7 @@ impl BundleConsumer {
         qos_service: &QosService,
         log_messages_bytes_limit: &Option<usize>,
         max_bundle_retry_duration: Duration,
-        bank_start: &BankStart,
+        bank: &Arc<Bank>,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
         scheduler: &mut Scheduler,
         thread_pool: &ThreadPool,
@@ -361,7 +356,7 @@ impl BundleConsumer {
         // this code should never run.
         let keypair = cluster_info.keypair().clone();
         let initialize_tip_programs_bundle =
-            tip_manager.get_initialize_tip_programs_bundle(&bank_start.working_bank, &keypair);
+            tip_manager.get_initialize_tip_programs_bundle(bank, &keypair);
         if let Some(bundle) = initialize_tip_programs_bundle {
             debug!(
                 "initializing tip programs with {} transactions, bundle id: {}",
@@ -370,7 +365,7 @@ impl BundleConsumer {
             );
 
             let locked_init_tip_programs_bundle = bundle_account_locker
-                .prepare_locked_bundle(&bundle, &bank_start.working_bank)
+                .prepare_locked_bundle(&bundle, bank)
                 .map_err(|_| BundleExecutionError::TipError(TipError::LockError))?;
 
             Self::update_qos_and_execute_record_commit_bundle(
@@ -380,7 +375,7 @@ impl BundleConsumer {
                 log_messages_bytes_limit,
                 max_bundle_retry_duration,
                 locked_init_tip_programs_bundle.sanitized_bundle(),
-                bank_start,
+                bank,
                 bundle_stage_leader_metrics,
                 false,
                 scheduler,
@@ -411,7 +406,7 @@ impl BundleConsumer {
 
         let kp = cluster_info.keypair().clone();
         let tip_crank_bundle = tip_manager.get_tip_programs_crank_bundle(
-            &bank_start.working_bank,
+            bank,
             &kp,
             &block_builder_fee_info.lock().unwrap(),
         )?;
@@ -425,7 +420,7 @@ impl BundleConsumer {
             );
 
             let locked_tip_crank_bundle = bundle_account_locker
-                .prepare_locked_bundle(&bundle, &bank_start.working_bank)
+                .prepare_locked_bundle(&bundle, bank)
                 .map_err(|_| BundleExecutionError::TipError(TipError::LockError))?;
 
             Self::update_qos_and_execute_record_commit_bundle(
@@ -435,7 +430,7 @@ impl BundleConsumer {
                 log_messages_bytes_limit,
                 max_bundle_retry_duration,
                 locked_tip_crank_bundle.sanitized_bundle(),
-                bank_start,
+                bank,
                 bundle_stage_leader_metrics,
                 false,
                 scheduler,
@@ -496,7 +491,7 @@ impl BundleConsumer {
         log_messages_bytes_limit: &Option<usize>,
         max_bundle_retry_duration: Duration,
         sanitized_bundle: &SanitizedBundle,
-        bank_start: &BankStart,
+        bank: &Arc<Bank>,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
         should_reset_reserve_hash: bool,
         scheduler: &mut Scheduler,
@@ -514,7 +509,7 @@ impl BundleConsumer {
         ) = measure_us!(Self::reserve_bundle_blockspace(
             qos_service,
             sanitized_bundle,
-            &bank_start.working_bank
+            bank
         )?);
 
         debug!(
@@ -528,7 +523,7 @@ impl BundleConsumer {
             log_messages_bytes_limit,
             max_bundle_retry_duration,
             sanitized_bundle,
-            bank_start,
+            bank,
             should_reset_reserve_hash,
             scheduler,
             thread_pool,
@@ -587,21 +582,17 @@ impl BundleConsumer {
                 QosService::remove_or_update_costs(
                     transaction_qos_cost_results.iter(),
                     Some(&result.commit_transaction_details),
-                    &bank_start.working_bank,
+                    bank,
                 );
 
-                qos_service.report_metrics(bank_start.working_bank.slot());
+                qos_service.report_metrics(bank.slot());
                 Ok(())
             }
             Err(e) => {
                 // on bundle failure, none of the transactions are committed, so need to revert
                 // all compute reserved
-                QosService::remove_or_update_costs(
-                    transaction_qos_cost_results.iter(),
-                    None,
-                    &bank_start.working_bank,
-                );
-                qos_service.report_metrics(bank_start.working_bank.slot());
+                QosService::remove_or_update_costs(transaction_qos_cost_results.iter(), None, bank);
+                qos_service.report_metrics(bank.slot());
 
                 Err(e)
             }
@@ -614,7 +605,7 @@ impl BundleConsumer {
         log_messages_bytes_limit: &Option<usize>,
         max_bundle_retry_duration: Duration,
         sanitized_bundle: &SanitizedBundle,
-        bank_start: &BankStart,
+        bank: &Arc<Bank>,
         should_reset_reserve_hash: bool,
         scheduler: &mut Scheduler,
         thread_pool: &ThreadPool,
@@ -626,7 +617,7 @@ impl BundleConsumer {
         debug!("bundle: {} executing", sanitized_bundle.slot);
         let default_accounts = vec![None; sanitized_bundle.transactions.len()];
         let bundle_execution_results = parallel_load_and_execute_bundle(
-            &bank_start.working_bank,
+            bank,
             sanitized_bundle,
             MAX_PROCESSING_AGE,
             &max_bundle_retry_duration,
@@ -657,8 +648,7 @@ impl BundleConsumer {
         // don't commit bundle if failure executing any part of the bundle
         if let Err(e) = bundle_execution_results.result {
             if should_reset_reserve_hash {
-                bank_start
-                    .working_bank
+                bank
                     .write_cost_tracker()
                     .unwrap()
                     .restore_nonvote_cost_limits();
@@ -690,7 +680,7 @@ impl BundleConsumer {
                 .collect::<Vec<usize>>()
         );
 
-        let (freeze_lock, freeze_lock_us) = measure_us!(bank_start.working_bank.freeze_lock());
+        let (freeze_lock, freeze_lock_us) = measure_us!(bank.freeze_lock());
         execute_and_commit_timings.freeze_lock_us = freeze_lock_us;
 
         let (hashes, hash_us) = measure_us!(executed_batches
@@ -698,14 +688,13 @@ impl BundleConsumer {
             .map(|txs| hash_transactions(txs))
             .collect());
         let (starting_index, poh_record_us) = measure_us!(recorder.record(
-            bank_start.working_bank.slot(),
+            bank.slot(),
             hashes,
             executed_batches,
             should_reset_reserve_hash,
         ));
         if should_reset_reserve_hash {
-            bank_start
-                .working_bank
+            bank
                 .write_cost_tracker()
                 .unwrap()
                 .restore_nonvote_cost_limits();
@@ -765,7 +754,7 @@ impl BundleConsumer {
         let (commit_us, commit_bundle_details) = committer.commit_bundle(
             bundle_execution_results,
             starting_transaction_index,
-            &bank_start.working_bank,
+            bank,
             &mut execute_and_commit_timings,
         );
         execute_and_commit_timings.commit_us = commit_us;
@@ -842,7 +831,7 @@ mod tests {
             blockstore::Blockstore, genesis_utils::create_genesis_config,
             get_tmp_ledger_path_auto_delete, leader_schedule_cache::LeaderScheduleCache,
         },
-        solana_native_token::sol_to_lamports,
+        solana_native_token::LAMPORTS_PER_SOL,
         solana_perf::packet::{BytesPacket, PacketBatch},
         solana_poh::{
             poh_recorder::{PohRecorder, Record, WorkingBankEntry},
@@ -870,7 +859,7 @@ mod tests {
         solana_system_transaction::transfer,
         solana_transaction::versioned::VersionedTransaction,
         solana_transaction_error::TransactionError,
-        solana_vote_program::vote_state::VoteState,
+        solana_vote_interface::state::VoteStateV3,
         std::{
             collections::HashSet,
             str::FromStr,
@@ -948,10 +937,7 @@ mod tests {
             &poh_config,
             exit.clone(),
         );
-        poh_recorder.set_bank(
-            BankWithScheduler::new_without_scheduler(bank.clone()),
-            false,
-        );
+        poh_recorder.set_bank(BankWithScheduler::new_without_scheduler(bank.clone()));
 
         let (record_sender, record_receiver) = unbounded();
         let transaction_recorder = TransactionRecorder::new(record_sender, exit.clone());
@@ -976,13 +962,13 @@ mod tests {
         let rent = Rent::default();
 
         let mut genesis_config = create_genesis_config_with_leader_ex(
-            sol_to_lamports(mint_sol as f64),
+            mint_sol * LAMPORTS_PER_SOL,
             &mint_keypair.pubkey(),
             &leader_keypair.pubkey(),
             &voting_keypair.pubkey(),
-            &solana_pubkey::new_rand(),
-            rent.minimum_balance(VoteState::size_of()) + sol_to_lamports(1_000_000.0),
-            sol_to_lamports(1_000_000.0),
+            &Pubkey::new_unique(),
+            rent.minimum_balance(VoteStateV3::size_of()) + (LAMPORTS_PER_SOL * 1_000_000),
+            LAMPORTS_PER_SOL * 1_000_000,
             FeeRateGovernor {
                 // Initialize with a non-zero fee
                 lamports_per_signature: DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE / 2,
@@ -1063,7 +1049,7 @@ mod tests {
                             .map(|tx| BytesPacket::from_data(None, tx).unwrap())
                             .collect::<Vec<_>>(),
                     ),
-                    bundle_id,
+                    slot: 0,
                 }
             })
             .collect::<Vec<_>>()
@@ -1139,7 +1125,7 @@ mod tests {
             cluster_info,
         );
 
-        let bank_start = poh_recorder.read().unwrap().bank_start().unwrap();
+        let working_bank = poh_recorder.read().unwrap().bank().unwrap();
 
         let mut bundle_storage = BundleStorage::default();
         let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(1);
@@ -1151,19 +1137,12 @@ mod tests {
             genesis_config_info.genesis_config.hash(),
             10_000,
         );
-        let deserialized_bundle = BundlePacketDeserializer::deserialize_bundle(
-            packet_bundles.get_mut(0).unwrap(),
-            None,
-            &Ok,
-        )
-        .unwrap();
+        let deserialized_bundle =
+            BundlePacketDeserializer::deserialize_bundle(packet_bundles.get_mut(0).unwrap(), None)
+                .unwrap();
         let mut error_metrics = TransactionErrorMetrics::default();
         let sanitized_bundle = deserialized_bundle
-            .build_sanitized_bundle(
-                &bank_start.working_bank,
-                &HashSet::default(),
-                &mut error_metrics,
-            )
+            .build_sanitized_bundle(&working_bank, &HashSet::default(), &mut error_metrics)
             .unwrap();
 
         let summary = bundle_storage.insert_unprocessed_bundles(vec![deserialized_bundle]);
@@ -1175,7 +1154,7 @@ mod tests {
         assert_eq!(summary.num_bundles_inserted, 1);
 
         consumer.consume_buffered_bundles(
-            &bank_start,
+            &working_bank,
             &mut bundle_storage,
             &mut bundle_stage_leader_metrics,
         );
@@ -1266,7 +1245,7 @@ mod tests {
             cluster_info.clone(),
         );
 
-        let bank_start = poh_recorder.read().unwrap().bank_start().unwrap();
+        let working_bank = poh_recorder.read().unwrap().bank().unwrap();
 
         let mut bundle_storage = BundleStorage::default();
         let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(1);
@@ -1286,18 +1265,14 @@ mod tests {
                 ),
             )
             .unwrap()]),
-            bundle_id: "test_transfer".to_string(),
+            slot: 0,
         };
 
         let deserialized_bundle =
-            BundlePacketDeserializer::deserialize_bundle(&mut packet_bundle, None, &Ok).unwrap();
+            BundlePacketDeserializer::deserialize_bundle(&mut packet_bundle, None).unwrap();
         let mut error_metrics = TransactionErrorMetrics::default();
         let sanitized_bundle = deserialized_bundle
-            .build_sanitized_bundle(
-                &bank_start.working_bank,
-                &HashSet::default(),
-                &mut error_metrics,
-            )
+            .build_sanitized_bundle(&working_bank, &HashSet::default(), &mut error_metrics)
             .unwrap();
 
         let summary = bundle_storage.insert_unprocessed_bundles(vec![deserialized_bundle]);
@@ -1306,7 +1281,7 @@ mod tests {
         assert_eq!(summary.num_bundles_dropped, 0);
 
         consumer.consume_buffered_bundles(
-            &bank_start,
+            &working_bank,
             &mut bundle_storage,
             &mut bundle_stage_leader_metrics,
         );
@@ -1358,10 +1333,10 @@ mod tests {
                     &derive_tip_distribution_account_address(
                         &tip_manager.tip_distribution_program_id(),
                         &genesis_config_info.validator_pubkey,
-                        bank_start.working_bank.epoch()
+                        working_bank.epoch()
                     )
                     .0,
-                    &bank_start.working_bank,
+                    &working_bank,
                     &keypair,
                     &keypair.pubkey(),
                     &block_builder_pubkey,
@@ -1484,10 +1459,10 @@ mod tests {
                     &derive_tip_distribution_account_address(
                         &tip_manager.tip_distribution_program_id(),
                         &genesis_config_info.validator_pubkey,
-                        bank_start.working_bank.epoch()
+                        working_bank.epoch()
                     )
                     .0,
-                    &bank_start.working_bank,
+                    &working_bank,
                     &keypair,
                     &keypair.pubkey(),
                     &block_builder_pubkey,

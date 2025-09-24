@@ -15,7 +15,6 @@ use {
     solana_client::connection_cache::ConnectionCache,
     solana_clock::{Epoch, Slot},
     solana_commitment_config::CommitmentConfig,
-    solana_decode_error::DecodeError,
     solana_hash::Hash,
     solana_instruction::error::InstructionError,
     solana_keypair::{read_keypair_file, Keypair},
@@ -489,11 +488,11 @@ pub enum CliError {
     #[error("Command not recognized: {0}")]
     CommandNotRecognized(String),
     #[error("Account {1} has insufficient funds for fee ({0} SOL)")]
-    InsufficientFundsForFee(f64, Pubkey),
+    InsufficientFundsForFee(String, Pubkey),
     #[error("Account {1} has insufficient funds for spend ({0} SOL)")]
-    InsufficientFundsForSpend(f64, Pubkey),
+    InsufficientFundsForSpend(String, Pubkey),
     #[error("Account {2} has insufficient funds for spend ({0} SOL) + fee ({1} SOL)")]
-    InsufficientFundsForSpendAndFee(f64, f64, Pubkey),
+    InsufficientFundsForSpendAndFee(String, String, Pubkey),
     #[error(transparent)]
     InvalidNonce(solana_rpc_client_nonce_utils::Error),
     #[error("Dynamic program error: {0}")]
@@ -1737,13 +1736,32 @@ pub fn request_and_confirm_airdrop(
 
 pub fn common_error_adapter<E>(ix_error: &InstructionError) -> Option<E>
 where
-    E: 'static + std::error::Error + DecodeError<E> + FromPrimitive,
+    E: 'static + std::error::Error + FromPrimitive,
 {
-    if let InstructionError::Custom(code) = ix_error {
-        E::decode_custom_error_to_enum(*code)
-    } else {
-        None
+    match ix_error {
+        InstructionError::Custom(code) => E::from_u32(*code),
+        _ => None,
     }
+}
+
+pub fn to_str_error_adapter<E>(ix_error: &InstructionError) -> Option<E>
+where
+    E: 'static + std::error::Error + std::convert::TryFrom<u32>,
+{
+    match ix_error {
+        InstructionError::Custom(code) => E::try_from(*code).ok(),
+        _ => None,
+    }
+}
+
+pub fn log_instruction_custom_error_to_str<E>(
+    result: ClientResult<Signature>,
+    config: &CliConfig,
+) -> ProcessResult
+where
+    E: 'static + std::error::Error + std::convert::TryFrom<u32>,
+{
+    log_instruction_custom_error_ex::<E, _>(result, &config.output_format, to_str_error_adapter)
 }
 
 pub fn log_instruction_custom_error<E>(
@@ -1751,7 +1769,7 @@ pub fn log_instruction_custom_error<E>(
     config: &CliConfig,
 ) -> ProcessResult
 where
-    E: 'static + std::error::Error + DecodeError<E> + FromPrimitive,
+    E: 'static + std::error::Error + FromPrimitive,
 {
     log_instruction_custom_error_ex::<E, _>(result, &config.output_format, common_error_adapter)
 }
@@ -1762,7 +1780,7 @@ pub fn log_instruction_custom_error_ex<E, F>(
     error_adapter: F,
 ) -> ProcessResult
 where
-    E: 'static + std::error::Error + DecodeError<E> + FromPrimitive,
+    E: 'static + std::error::Error,
     F: Fn(&InstructionError) -> Option<E>,
 {
     match result {

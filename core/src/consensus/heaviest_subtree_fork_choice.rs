@@ -11,7 +11,7 @@ use {
     solana_hash::Hash,
     solana_measure::measure::Measure,
     solana_pubkey::Pubkey,
-    solana_runtime::{bank::Bank, bank_forks::BankForks, epoch_stakes::EpochStakes},
+    solana_runtime::{bank::Bank, bank_forks::BankForks, epoch_stakes::VersionedEpochStakes},
     std::{
         borrow::Borrow,
         cmp::Ordering,
@@ -143,9 +143,9 @@ impl ForkInfo {
         if let Some(latest_invalid_ancestor) = self.latest_invalid_ancestor {
             if latest_invalid_ancestor <= newly_valid_ancestor {
                 info!(
-                    "Fork choice for {:?} clearing latest invalid ancestor {:?} because {:?} was \
-                     duplicate confirmed",
-                    my_key, latest_invalid_ancestor, newly_valid_ancestor
+                    "Fork choice for {my_key:?} clearing latest invalid ancestor \
+                     {latest_invalid_ancestor:?} because {newly_valid_ancestor:?} was duplicate \
+                     confirmed"
                 );
                 self.latest_invalid_ancestor = None;
             }
@@ -344,7 +344,7 @@ impl HeaviestSubtreeForkChoice {
         &'a mut self,
         // newly updated votes on a fork
         pubkey_votes: impl Iterator<Item = impl Borrow<(Pubkey, SlotHashKey)> + 'b>,
-        epoch_stakes: &HashMap<Epoch, EpochStakes>,
+        epoch_stakes: &HashMap<Epoch, VersionedEpochStakes>,
         epoch_schedule: &EpochSchedule,
     ) -> SlotHashKey {
         // Generate the set of updates
@@ -655,7 +655,7 @@ impl HeaviestSubtreeForkChoice {
         &mut self,
         other: HeaviestSubtreeForkChoice,
         merge_leaf: &SlotHashKey,
-        epoch_stakes: &HashMap<Epoch, EpochStakes>,
+        epoch_stakes: &HashMap<Epoch, VersionedEpochStakes>,
         epoch_schedule: &EpochSchedule,
     ) {
         assert!(self.fork_infos.contains_key(merge_leaf));
@@ -936,10 +936,7 @@ impl HeaviestSubtreeForkChoice {
         let fork_info = self.fork_infos.get_mut(&slot_hash_key).unwrap();
         if is_duplicate_confirmed {
             if !fork_info.is_duplicate_confirmed {
-                info!(
-                    "Fork choice setting {:?} to duplicate confirmed",
-                    slot_hash_key
-                );
+                info!("Fork choice setting {slot_hash_key:?} to duplicate confirmed");
             }
             fork_info.set_duplicate_confirmed();
         }
@@ -974,7 +971,7 @@ impl HeaviestSubtreeForkChoice {
     fn generate_update_operations<'a, 'b>(
         &'a mut self,
         pubkey_votes: impl Iterator<Item = impl Borrow<(Pubkey, SlotHashKey)> + 'b>,
-        epoch_stakes: &HashMap<Epoch, EpochStakes>,
+        epoch_stakes: &HashMap<Epoch, VersionedEpochStakes>,
         epoch_schedule: &EpochSchedule,
     ) -> UpdateOperations {
         let mut update_operations: BTreeMap<(SlotHashKey, UpdateLabel), UpdateOperation> =
@@ -1038,8 +1035,8 @@ impl HeaviestSubtreeForkChoice {
                     {
                         assert!(if new_vote_slot == old_latest_vote_slot {
                             warn!(
-                                "Got a duplicate vote for validator: {pubkey}, \
-                                 slot_hash: {new_vote_slot_hash:?}",
+                                "Got a duplicate vote for validator: {pubkey}, slot_hash: \
+                                 {new_vote_slot_hash:?}",
                             );
                             // If the slots are equal, then the new
                             // vote must be for a smaller hash
@@ -1331,10 +1328,7 @@ impl ForkChoice for HeaviestSubtreeForkChoice {
     }
 
     fn mark_fork_invalid_candidate(&mut self, invalid_slot_hash_key: &SlotHashKey) {
-        info!(
-            "marking fork starting at: {:?} invalid candidate",
-            invalid_slot_hash_key
-        );
+        info!("marking fork starting at: {invalid_slot_hash_key:?} invalid candidate");
         let fork_info = self.fork_infos.get_mut(invalid_slot_hash_key);
         if let Some(fork_info) = fork_info {
             // Should not be marking duplicate confirmed blocks as invalid candidates
@@ -1359,10 +1353,7 @@ impl ForkChoice for HeaviestSubtreeForkChoice {
     }
 
     fn mark_fork_valid_candidate(&mut self, valid_slot_hash_key: &SlotHashKey) -> Vec<SlotHashKey> {
-        info!(
-            "marking fork starting at: {:?} valid candidate",
-            valid_slot_hash_key
-        );
+        info!("marking fork starting at: {valid_slot_hash_key:?} valid candidate");
         let mut newly_duplicate_confirmed_ancestors = vec![];
 
         for ancestor_key in std::iter::once(*valid_slot_hash_key)

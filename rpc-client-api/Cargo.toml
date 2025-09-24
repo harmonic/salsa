@@ -31,3 +31,6 @@ solana-svm = { workspace = true }
 solana-transaction-error = { workspace = true }
 solana-transaction-status-client-types = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+test-case = { workspace = true }

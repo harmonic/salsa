@@ -1,25 +1,15 @@
 use {
     crate::{
-        banking_stage::{
-            immutable_deserialized_packet::{DeserializedPacketError, ImmutableDeserializedPacket},
-            packet_filter::PacketFilterFailure,
+        banking_stage::immutable_deserialized_packet::{
+            DeserializedPacketError, ImmutableDeserializedPacket,
         },
         packet_bundle::PacketBundle,
-    },
-    rayon::prelude::*,
-    solana_bundle::SanitizedBundle,
-    solana_clock::MAX_PROCESSING_AGE,
-    solana_perf::sigverify::verify_packet,
-    solana_pubkey::Pubkey,
-    solana_runtime::bank::Bank,
-    solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
-    solana_svm::transaction_error_metrics::TransactionErrorMetrics,
-    solana_transaction::sanitized::SanitizedTransaction,
-    std::{
+    }, rayon::prelude::*, solana_accounts_db::account_locks::validate_account_locks, solana_bundle::SanitizedBundle, solana_clock::MAX_PROCESSING_AGE, solana_perf::sigverify::verify_packet, solana_pubkey::Pubkey, solana_runtime::bank::Bank, solana_runtime_transaction::{
+        runtime_transaction::RuntimeTransaction, transaction_meta::StaticMeta,
+    }, solana_svm::transaction_error_metrics::TransactionErrorMetrics, solana_transaction::sanitized::SanitizedTransaction, std::{
         collections::{hash_map::RandomState, HashSet},
         iter::repeat_n,
-    },
-    thiserror::Error,
+    }, thiserror::Error
 };
 
 #[derive(Debug, Error)]
@@ -54,11 +44,14 @@ pub enum DeserializedBundleError {
     #[error("Bundle failed check_transactions")]
     FailedCheckTransactions,
 
-    #[error("PacketFilterFailure: {0}")]
-    PacketFilterFailure(#[from] PacketFilterFailure),
-
     #[error("Failed to verify precompiles")]
     FailedVerifyPrecompiles,
+
+    #[error("Bundle contains a transaction with too many account locks")]
+    TooManyAccountLocks,
+
+    #[error("Bundle contains a transaction with invalid compute budget limits")]
+    InvalidComputeBudgetLimits,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -71,9 +64,6 @@ impl ImmutableDeserializedBundle {
     pub fn new(
         bundle: &mut PacketBundle,
         max_len: Option<usize>,
-        packet_filter: &impl Fn(
-            ImmutableDeserializedPacket,
-        ) -> Result<ImmutableDeserializedPacket, PacketFilterFailure>,
     ) -> Result<Self, DeserializedBundleError> {
         info!(
             "Received bundle with {} packets to process",
@@ -111,7 +101,6 @@ impl ImmutableDeserializedBundle {
         let mut immutable_packets = Vec::with_capacity(bundle.batch.len());
         for packet in bundle.batch.iter() {
             let immutable_packet = ImmutableDeserializedPacket::new(packet)?;
-            let immutable_packet = packet_filter(immutable_packet)?;
             immutable_packets.push(immutable_packet);
         }
 
@@ -149,6 +138,7 @@ impl ImmutableDeserializedBundle {
         if bank.vote_only_bank() {
             return Err(DeserializedBundleError::VoteOnlyMode);
         }
+        let transaction_account_lock_limit = bank.get_transaction_account_lock_limit();
 
         let unique_hashes: HashSet<_, RandomState> =
             HashSet::from_iter(self.packets.iter().map(|p| p.message_hash()));
@@ -173,15 +163,21 @@ impl ImmutableDeserializedBundle {
             return Err(DeserializedBundleError::FailedToSerializeTransaction);
         }
 
-        let contains_blacklisted_account = transactions.iter().any(|tx| {
-            tx.message()
+        for tx in transactions.iter() {
+            validate_account_locks(tx.message().account_keys(), transaction_account_lock_limit)
+                .map_err(|_| DeserializedBundleError::TooManyAccountLocks)?;
+            tx.compute_budget_instruction_details()
+                .sanitize_and_convert_to_compute_budget_limits(&bank.feature_set)
+                .map_err(|_| DeserializedBundleError::InvalidComputeBudgetLimits)?;
+
+            if tx
+                .message()
                 .account_keys()
                 .iter()
                 .any(|acc| blacklisted_accounts.contains(acc))
-        });
-
-        if contains_blacklisted_account {
-            return Err(DeserializedBundleError::BlacklistedAccount);
+            {
+                return Err(DeserializedBundleError::BlacklistedAccount);
+            }
         }
 
         // assume everything locks okay to check for already-processed transaction or expired/invalid blockhash
@@ -252,7 +248,6 @@ mod tests {
                 slot: 0,
             },
             None,
-            &Ok,
         )
         .unwrap();
 
@@ -280,7 +275,6 @@ mod tests {
                     slot: 0,
                 },
                 None,
-                &Ok
             ),
             Err(DeserializedBundleError::EmptyBatch)
         );
@@ -307,7 +301,6 @@ mod tests {
                     slot: 0,
                 },
                 Some(5),
-                &Ok
             ),
             Err(DeserializedBundleError::TooManyPackets)
         );
@@ -329,7 +322,6 @@ mod tests {
                     slot: 0,
                 },
                 Some(5),
-                &Ok
             ),
             Err(DeserializedBundleError::MarkedDiscard)
         );
@@ -351,7 +343,6 @@ mod tests {
                     slot: 0,
                 },
                 None,
-                &Ok
             ),
             Err(DeserializedBundleError::SignatureVerificationFailure)
         );
@@ -384,7 +375,6 @@ mod tests {
                 slot: 0,
             },
             None,
-            &Ok,
         )
         .unwrap();
 
@@ -421,7 +411,6 @@ mod tests {
                 slot: 0,
             },
             None,
-            &Ok,
         )
         .unwrap();
 
@@ -451,7 +440,6 @@ mod tests {
                 slot: 0,
             },
             None,
-            &Ok,
         )
         .unwrap();
 
@@ -487,7 +475,6 @@ mod tests {
                 slot: 0,
             },
             None,
-            &Ok,
         )
         .unwrap();
 
@@ -517,7 +504,6 @@ mod tests {
                 slot: 0,
             },
             None,
-            &Ok,
         )
         .unwrap();
 

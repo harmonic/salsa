@@ -1,14 +1,7 @@
 use {
     crate::proxy::block_engine_stage::BlockBuilderFeeInfo,
-    anchor_lang::{AccountDeserialize, InstructionData, ToAccountMetas},
-    jito_tip_distribution::sdk::{
-        derive_config_account_address, derive_tip_distribution_account_address,
-        instruction::{
-            initialize_ix, initialize_tip_distribution_account_ix, InitializeAccounts,
-            InitializeArgs, InitializeTipDistributionAccountAccounts,
-            InitializeTipDistributionAccountArgs,
-        },
-    },
+    anchor_lang::{prelude::Pubkey as AnchorPubkey, AccountDeserialize, InstructionData},
+    jito_tip_distribution::state::{Config as TipDistributionConfig, TipDistributionAccount},
     jito_tip_payment::{
         Config, InitBumps, TipPaymentAccount, CONFIG_ACCOUNT_SEED, TIP_ACCOUNT_SEED_0,
         TIP_ACCOUNT_SEED_1, TIP_ACCOUNT_SEED_2, TIP_ACCOUNT_SEED_3, TIP_ACCOUNT_SEED_4,
@@ -18,7 +11,7 @@ use {
     solana_account::ReadableAccount,
     solana_bundle::{SanitizedBundle, TipError},
     solana_clock::Epoch,
-    solana_instruction::Instruction,
+    solana_instruction::{AccountMeta, Instruction},
     solana_keypair::Keypair,
     solana_pubkey::Pubkey,
     solana_runtime::bank::Bank,
@@ -116,7 +109,7 @@ impl TipManager {
             tip_distribution_account_config,
         } = config;
 
-        let config_pda_bump =
+        let tip_payment_config_pda_bump =
             Pubkey::find_program_address(&[CONFIG_ACCOUNT_SEED], &tip_payment_program_id);
 
         let tip_pda_0 =
@@ -136,12 +129,13 @@ impl TipManager {
         let tip_pda_7 =
             Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_7], &tip_payment_program_id);
 
-        let config_pda_and_bump = derive_config_account_address(&tip_distribution_program_id);
+        let tip_distribution_config_pubkey_bump =
+            derive_tip_distribution_config_account_address(&tip_distribution_program_id);
 
         TipManager {
             tip_payment_program_info: TipPaymentProgramInfo {
                 program_id: tip_payment_program_id,
-                config_pda_bump,
+                config_pda_bump: tip_payment_config_pda_bump,
                 tip_pda_0,
                 tip_pda_1,
                 tip_pda_2,
@@ -153,7 +147,7 @@ impl TipManager {
             },
             tip_distribution_program_info: TipDistributionProgramInfo {
                 program_id: tip_distribution_program_id,
-                config_pda_and_bump,
+                config_pda_and_bump: tip_distribution_config_pubkey_bump,
             },
             tip_distribution_account_config,
         }
@@ -175,11 +169,6 @@ impl TipManager {
     /// Returns the [Config] account owned by the tip-distribution program.
     pub fn tip_distribution_config_pubkey(&self) -> Pubkey {
         self.tip_distribution_program_info.config_pda_and_bump.0
-    }
-
-    /// Given a bank, returns the current `tip_receiver` configured with the tip-payment program.
-    pub fn get_configured_tip_receiver(&self, bank: &Bank) -> Result<Pubkey> {
-        Ok(self.get_tip_payment_config_account(bank)?.tip_receiver)
     }
 
     pub fn get_tip_accounts(&self) -> HashSet<Pubkey> {
@@ -227,20 +216,19 @@ impl TipManager {
                 },
             }
             .data(),
-            accounts: jito_tip_payment::accounts::Initialize {
-                config: self.tip_payment_program_info.config_pda_bump.0,
-                tip_payment_account_0: self.tip_payment_program_info.tip_pda_0.0,
-                tip_payment_account_1: self.tip_payment_program_info.tip_pda_1.0,
-                tip_payment_account_2: self.tip_payment_program_info.tip_pda_2.0,
-                tip_payment_account_3: self.tip_payment_program_info.tip_pda_3.0,
-                tip_payment_account_4: self.tip_payment_program_info.tip_pda_4.0,
-                tip_payment_account_5: self.tip_payment_program_info.tip_pda_5.0,
-                tip_payment_account_6: self.tip_payment_program_info.tip_pda_6.0,
-                tip_payment_account_7: self.tip_payment_program_info.tip_pda_7.0,
-                system_program: system_program::id(),
-                payer: keypair.pubkey(),
-            }
-            .to_account_metas(None),
+            accounts: vec![
+                AccountMeta::new(self.tip_payment_program_info.config_pda_bump.0, false),
+                AccountMeta::new(self.tip_payment_program_info.tip_pda_0.0, false),
+                AccountMeta::new(self.tip_payment_program_info.tip_pda_1.0, false),
+                AccountMeta::new(self.tip_payment_program_info.tip_pda_2.0, false),
+                AccountMeta::new(self.tip_payment_program_info.tip_pda_3.0, false),
+                AccountMeta::new(self.tip_payment_program_info.tip_pda_4.0, false),
+                AccountMeta::new(self.tip_payment_program_info.tip_pda_5.0, false),
+                AccountMeta::new(self.tip_payment_program_info.tip_pda_6.0, false),
+                AccountMeta::new(self.tip_payment_program_info.tip_pda_7.0, false),
+                AccountMeta::new_readonly(system_program::id(), false),
+                AccountMeta::new(keypair.pubkey(), true),
+            ],
         };
         let tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
             &[init_ix],
@@ -305,21 +293,25 @@ impl TipManager {
         bank: &Bank,
         kp: &Keypair,
     ) -> RuntimeTransaction<SanitizedTransaction> {
-        let ix = initialize_ix(
-            self.tip_distribution_program_info.program_id,
-            InitializeArgs {
-                authority: kp.pubkey(),
-                expired_funds_account: kp.pubkey(),
+        let ix = Instruction {
+            program_id: self.tip_distribution_program_info.program_id,
+            data: jito_tip_distribution::instruction::Initialize {
+                authority: AnchorPubkey::from(*kp.pubkey().as_array()),
+                expired_funds_account: AnchorPubkey::from(*kp.pubkey().as_array()),
                 num_epochs_valid: 10,
                 max_validator_commission_bps: 10_000,
                 bump: self.tip_distribution_program_info.config_pda_and_bump.1,
-            },
-            InitializeAccounts {
-                config: self.tip_distribution_program_info.config_pda_and_bump.0,
-                system_program: system_program::id(),
-                initializer: kp.pubkey(),
-            },
-        );
+            }
+            .data(),
+            accounts: vec![
+                AccountMeta::new(
+                    self.tip_distribution_program_info.config_pda_and_bump.0,
+                    false,
+                ),
+                AccountMeta::new_readonly(system_program::id(), false),
+                AccountMeta::new(kp.pubkey(), true),
+            ],
+        };
 
         let tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
             &[ix],
@@ -349,23 +341,30 @@ impl TipManager {
             bank.epoch(),
         );
 
-        let ix = initialize_tip_distribution_account_ix(
-            self.tip_distribution_program_info.program_id,
-            InitializeTipDistributionAccountArgs {
-                merkle_root_upload_authority: self
-                    .tip_distribution_account_config
-                    .merkle_root_upload_authority,
+        let ix = Instruction {
+            program_id: self.tip_distribution_program_info.program_id,
+            data: jito_tip_distribution::instruction::InitializeTipDistributionAccount {
+                merkle_root_upload_authority: AnchorPubkey::from(
+                    *self
+                        .tip_distribution_account_config
+                        .merkle_root_upload_authority
+                        .as_array(),
+                ),
                 validator_commission_bps: self.tip_distribution_account_config.commission_bps,
                 bump,
-            },
-            InitializeTipDistributionAccountAccounts {
-                config: self.tip_distribution_program_info.config_pda_and_bump.0,
-                tip_distribution_account,
-                system_program: system_program::id(),
-                signer: kp.pubkey(),
-                validator_vote_account: self.tip_distribution_account_config.vote_account,
-            },
-        );
+            }
+            .data(),
+            accounts: vec![
+                AccountMeta::new_readonly(
+                    self.tip_distribution_program_info.config_pda_and_bump.0,
+                    false,
+                ),
+                AccountMeta::new(tip_distribution_account, false),
+                AccountMeta::new_readonly(self.tip_distribution_account_config.vote_account, false),
+                AccountMeta::new(kp.pubkey(), true),
+                AccountMeta::new_readonly(system_program::id(), false),
+            ],
+        };
 
         let tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
             &[ix],
@@ -396,11 +395,11 @@ impl TipManager {
     ) -> Result<RuntimeTransaction<SanitizedTransaction>> {
         let config = self.get_tip_payment_config_account(bank)?;
         Ok(self.build_change_tip_receiver_and_block_builder_tx(
-            &config.tip_receiver,
+            &Pubkey::from(*config.tip_receiver.as_array()),
             new_tip_receiver,
             bank,
             keypair,
-            &config.block_builder,
+            &Pubkey::from(*config.block_builder.as_array()),
             block_builder,
             block_builder_commission,
         ))
@@ -419,45 +418,44 @@ impl TipManager {
         let change_tip_ix = Instruction {
             program_id: self.tip_payment_program_info.program_id,
             data: jito_tip_payment::instruction::ChangeTipReceiver {}.data(),
-            accounts: jito_tip_payment::accounts::ChangeTipReceiver {
-                config: self.tip_payment_program_info.config_pda_bump.0,
-                old_tip_receiver: *old_tip_receiver,
-                new_tip_receiver: *new_tip_receiver,
-                block_builder: *old_block_builder,
-                tip_payment_account_0: self.tip_payment_program_info.tip_pda_0.0,
-                tip_payment_account_1: self.tip_payment_program_info.tip_pda_1.0,
-                tip_payment_account_2: self.tip_payment_program_info.tip_pda_2.0,
-                tip_payment_account_3: self.tip_payment_program_info.tip_pda_3.0,
-                tip_payment_account_4: self.tip_payment_program_info.tip_pda_4.0,
-                tip_payment_account_5: self.tip_payment_program_info.tip_pda_5.0,
-                tip_payment_account_6: self.tip_payment_program_info.tip_pda_6.0,
-                tip_payment_account_7: self.tip_payment_program_info.tip_pda_7.0,
-                signer: keypair.pubkey(),
-            }
-            .to_account_metas(None),
+            accounts: vec![
+                AccountMeta::new(self.tip_payment_program_info.config_pda_bump.0, false),
+                AccountMeta::new(*old_tip_receiver, false),
+                AccountMeta::new(*new_tip_receiver, false),
+                AccountMeta::new(*old_block_builder, false),
+                AccountMeta::new(self.tip_payment_program_info.tip_pda_0.0, false),
+                AccountMeta::new(self.tip_payment_program_info.tip_pda_1.0, false),
+                AccountMeta::new(self.tip_payment_program_info.tip_pda_2.0, false),
+                AccountMeta::new(self.tip_payment_program_info.tip_pda_3.0, false),
+                AccountMeta::new(self.tip_payment_program_info.tip_pda_4.0, false),
+                AccountMeta::new(self.tip_payment_program_info.tip_pda_5.0, false),
+                AccountMeta::new(self.tip_payment_program_info.tip_pda_6.0, false),
+                AccountMeta::new(self.tip_payment_program_info.tip_pda_7.0, false),
+                AccountMeta::new(keypair.pubkey(), true),
+            ],
         };
+
         let change_block_builder_ix = Instruction {
             program_id: self.tip_payment_program_info.program_id,
             data: jito_tip_payment::instruction::ChangeBlockBuilder {
                 block_builder_commission,
             }
             .data(),
-            accounts: jito_tip_payment::accounts::ChangeBlockBuilder {
-                config: self.tip_payment_program_info.config_pda_bump.0,
-                tip_receiver: *new_tip_receiver, // tip receiver will have just changed in previous ix
-                old_block_builder: *old_block_builder,
-                new_block_builder: *block_builder,
-                tip_payment_account_0: self.tip_payment_program_info.tip_pda_0.0,
-                tip_payment_account_1: self.tip_payment_program_info.tip_pda_1.0,
-                tip_payment_account_2: self.tip_payment_program_info.tip_pda_2.0,
-                tip_payment_account_3: self.tip_payment_program_info.tip_pda_3.0,
-                tip_payment_account_4: self.tip_payment_program_info.tip_pda_4.0,
-                tip_payment_account_5: self.tip_payment_program_info.tip_pda_5.0,
-                tip_payment_account_6: self.tip_payment_program_info.tip_pda_6.0,
-                tip_payment_account_7: self.tip_payment_program_info.tip_pda_7.0,
-                signer: keypair.pubkey(),
-            }
-            .to_account_metas(None),
+            accounts: vec![
+                AccountMeta::new(self.tip_payment_program_info.config_pda_bump.0, false),
+                AccountMeta::new(*new_tip_receiver, false), // tip receiver will have just changed in previous ix
+                AccountMeta::new(*old_block_builder, false),
+                AccountMeta::new(*block_builder, false),
+                AccountMeta::new(self.tip_payment_program_info.tip_pda_0.0, false),
+                AccountMeta::new(self.tip_payment_program_info.tip_pda_1.0, false),
+                AccountMeta::new(self.tip_payment_program_info.tip_pda_2.0, false),
+                AccountMeta::new(self.tip_payment_program_info.tip_pda_3.0, false),
+                AccountMeta::new(self.tip_payment_program_info.tip_pda_4.0, false),
+                AccountMeta::new(self.tip_payment_program_info.tip_pda_5.0, false),
+                AccountMeta::new(self.tip_payment_program_info.tip_pda_6.0, false),
+                AccountMeta::new(self.tip_payment_program_info.tip_pda_7.0, false),
+                AccountMeta::new(keypair.pubkey(), true),
+            ],
         };
         let tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
             &[change_tip_ix, change_block_builder_ix],
@@ -567,22 +565,24 @@ impl TipManager {
         let tip_payment_config = self.get_tip_payment_config_account(bank)?;
 
         let my_tip_receiver = self.get_my_tip_distribution_pda(bank.epoch());
-        let maybe_change_tip_receiver_tx = if tip_payment_config.tip_receiver != my_tip_receiver
-            || tip_payment_config.block_builder != block_builder_fee_info.block_builder
-            || tip_payment_config.block_builder_commission_pct
-                != block_builder_fee_info.block_builder_commission
-        {
-            debug!("change_tip_receiver=true");
-            Some(self.change_tip_receiver_and_block_builder_tx(
-                &my_tip_receiver,
-                bank,
-                keypair,
-                &block_builder_fee_info.block_builder,
-                block_builder_fee_info.block_builder_commission,
-            )?)
-        } else {
-            None
-        };
+        let maybe_change_tip_receiver_tx =
+            if Pubkey::from(*tip_payment_config.tip_receiver.as_array()) != my_tip_receiver
+                || Pubkey::from(*tip_payment_config.block_builder.as_array())
+                    != block_builder_fee_info.block_builder
+                || tip_payment_config.block_builder_commission_pct
+                    != block_builder_fee_info.block_builder_commission
+            {
+                debug!("change_tip_receiver=true");
+                Some(self.change_tip_receiver_and_block_builder_tx(
+                    &my_tip_receiver,
+                    bank,
+                    keypair,
+                    &block_builder_fee_info.block_builder,
+                    block_builder_fee_info.block_builder_commission,
+                )?)
+            } else {
+                None
+            };
         debug!(
             "maybe_change_tip_receiver_tx: {:?}",
             maybe_change_tip_receiver_tx
@@ -605,4 +605,25 @@ impl TipManager {
             }))
         }
     }
+}
+
+pub fn derive_tip_distribution_account_address(
+    tip_distribution_program_id: &Pubkey,
+    vote_pubkey: &Pubkey,
+    epoch: Epoch,
+) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[
+            TipDistributionAccount::SEED,
+            vote_pubkey.to_bytes().as_ref(),
+            epoch.to_le_bytes().as_ref(),
+        ],
+        tip_distribution_program_id,
+    )
+}
+
+pub fn derive_tip_distribution_config_account_address(
+    tip_distribution_program_id: &Pubkey,
+) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[TipDistributionConfig::SEED], tip_distribution_program_id)
 }

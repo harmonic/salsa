@@ -28,7 +28,6 @@ serde = { workspace = true }
 sha2 = { workspace = true }
 solana-account = { workspace = true }
 solana-accounts-db = { workspace = true }
-solana-keypair = { workspace = true }
 solana-cost-model.workspace = true
 solana-ledger = { workspace = true }
 solana-logger = { workspace = true }
@@ -41,7 +40,7 @@ solana-runtime = { workspace = true }
 solana-runtime-transaction = { workspace = true }
 solana-signature = { workspace = true }
 solana-svm = { workspace = true }
-solana-timings = { workspace = true }
+solana-svm-timings = { workspace = true }
 solana-transaction = { workspace = true }
 solana-transaction-error = { workspace = true }
 solana-transaction-status = { workspace = true }
@@ -52,19 +51,19 @@ assert_matches = { workspace = true }
 bincode.workspace = true
 criterion.workspace = true
 rand = "0.9.2"
-solana-clock.workspace = true
 solana-cluster-type.workspace = true
 solana-compute-budget-interface.workspace = true
 solana-fee-calculator.workspace = true
 solana-genesis-config.workspace = true
-solana-hash.workspace = true
+solana-hash = { workspace = true }
+solana-clock = { workspace = true }
 solana-instruction.workspace = true
-solana-keypair.workspace = true
+solana-keypair = { workspace = true }
 solana-logger = { workspace = true }
 solana-native-token.workspace = true
 solana-program-test.workspace = true
-solana-pubkey.workspace = true
-solana-rent.workspace = true
+solana-pubkey = { workspace = true }
+solana-rent = { workspace = true }
 solana-runtime = { workspace = true, features = ["dev-context-only-utils"] }
 solana-signer = { workspace = true }
 solana-system-transaction = { workspace = true }

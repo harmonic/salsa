@@ -5,7 +5,55 @@ All notable changes to this project will be documented in this file.
 Please follow the [guidance](#adding-to-this-changelog) at the bottom of this file when making changes
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
-and follows a [Backwards Compatibility Policy](https://docs.solanalabs.com/backwards-compatibility)
+and follows a [Backwards Compatibility Policy](https://docs.anza.xyz/backwards-compatibility)
+
+Release channels have their own copy of this changelog:
+* [edge - v3.1](#edge-channel)
+* [beta - v3.0](https://github.com/anza-xyz/agave/blob/v3.0/CHANGELOG.md)
+* [stable - v2.3](https://github.com/anza-xyz/agave/blob/v2.3/CHANGELOG.md)
+
+<a name="edge-channel"></a>
+## 3.1.0—Unreleased
+### RPC
+#### Breaking
+#### Changes
+### Validator
+#### Breaking
+
+## 3.0.0
+
+### RPC
+
+#### Breaking
+* Added a `slot` property to `EpochRewardsPeriodActiveErrorData`
+* Added error data containing a `slot` property to `RpcCustomError::SlotNotEpochBoundary`
+
+#### Changes
+* The subscription server now prioritizes processing received messages before sending out responses. This ensures that new subscription requests and time-sensitive messages like `PING` opcodes take priority over notifications.
+
+### Validator
+
+#### Breaking
+* Require increased `memlock` limits - recommended setting is `LimitMEMLOCK=2000000000` in systemd service configuration. Lack of sufficient limit (on Linux) will cause startup error.
+* Remove deprecated arguments
+  * `--accounts-index-memory-limit-mb`
+  * `--accountsdb-repl-bind-address`, `--accountsdb-repl-port`, `--accountsdb-repl-threads`, `--enable-accountsdb-repl`
+  * `--disable-quic-servers`, `--enable-quic-servers`
+  * `--etcd-cacert-file`, `--etcd-cert-file`, `--etcd-domain-name`, `--etcd-endpoint`, `--etcd-key-file`, `--tower-storage`
+  * `--no-check-vote-account`
+  * `--no-rocksdb-compaction`, `--rocksdb-compaction-interval-slots`, `--rocksdb-max-compaction-jitter-slots`
+  * `--replay-slots-concurrently`
+  * `--rpc-pubsub-max-connections`, `--rpc-pubsub-max-fragment-size`, `--rpc-pubsub-max-in-buffer-capacity`, `--rpc-pubsub-max-out-buffer-capacity`, `--enable-cpi-and-log-storage`, `--minimal-rpc-api`
+  * `--skip-poh-verify`
+* Deprecated snapshot archive formats have been removed and are no longer loadable.
+* Using `--snapshot-interval-slots 0` to disable generating snapshots has been removed. Use `--no-snapshots` instead.
+* Validator will now bind all ports within provided `--dynamic-port-range`, including the client ports. A range of at least 25 ports is recommended to avoid failures to bind during startup.
+
+#### Changes
+* `--transaction-structure view` is now the default.
+* The default full snapshot interval is now 100,000 slots.
+* `SOLANA_BANKING_THREADS` environment variable is no longer supported. Use `--block-prouduction-num-workers` instead.
+* By default, `agave-validator exit` will now wait for the validator process to terminate before returning. The `--wait-for-exit` flag has been deprecated, but operators can still opt out with the new `--no-wait-for-exit` flag.
 
 ## 2.3.0
 
@@ -235,11 +283,8 @@ This simplifies the process of diffing between versions of the log.
   * Update the edge, beta, and stable links
   * Create new section: `vx.y+1.0 - Unreleased`
   * Remove `Unreleased` annotation from vx.y.0 section.
-* Create vx.y branch starting at that commit
-* Tag that commit as vx.y.0
-
-### When creating a new patch release:
-* Commit to the release branch updating the changelog:
-  * Remove `Unreleased` annotation from `vx.y.z` section
-  * Add a new section at the top for `vx.y.z+1 - Unreleased`
-* Tag that new commit as the new release
+* Create vx.y branch starting at that commit.
+* Commit to `vx.y` updating the changelog:
+  * Remove the `vx.y+1.0 - Unreleased` section
+  * Remove the channel links
+* Tag vx.y.0 on the new branch

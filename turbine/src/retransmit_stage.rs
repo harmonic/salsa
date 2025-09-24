@@ -4,7 +4,7 @@ use {
     crate::{
         addr_cache::AddrCache,
         cluster_nodes::{self, ClusterNodes, ClusterNodesCache, Error, MAX_NUM_TURBINE_HOPS},
-        xdp::{XdpConfig, XdpRetransmitter, XdpSender},
+        xdp::XdpSender,
     },
     bytes::Bytes,
     crossbeam_channel::{Receiver, RecvError, TryRecvError},
@@ -411,15 +411,8 @@ fn retransmit_shred(
         return None;
     }
     let mut compute_turbine_peers = Measure::start("turbine_start");
-    let (root_distance, addrs) = get_retransmit_addrs(
-        &key,
-        root_bank,
-        cache,
-        addr_cache,
-        socket_addr_space,
-        stats,
-        shred_receiver_addr,
-    )?;
+    let (root_distance, addrs) =
+        get_retransmit_addrs(&key, root_bank, cache, addr_cache, socket_addr_space, stats)?;
     compute_turbine_peers.stop();
     stats
         .compute_turbine_peers_total
@@ -431,7 +424,7 @@ fn retransmit_shred(
     let num_addrs = addrs.len();
     let num_nodes = match cluster_nodes::get_broadcast_protocol(&key) {
         Protocol::QUIC => {
-            let shred = Bytes::from(shred::Payload::unwrap_or_clone(shred));
+            let shred = shred.bytes;
             addrs
                 .iter()
                 .filter_map(|&addr| quic_endpoint_sender.try_send((addr, shred.clone())).ok())
@@ -441,7 +434,13 @@ fn retransmit_shred(
             RetransmitSocket::Xdp(sender) => {
                 let mut sent = num_addrs;
                 if num_addrs > 0 {
-                    if let Err(e) = sender.try_send(key.index(), addrs.to_vec(), shred) {
+                    // shred receiver not included in the stats
+                    let mut send_addrs = Vec::with_capacity(num_addrs + 1);
+                    send_addrs.extend(addrs.iter());
+                    if let Some(addr) = shred_receiver_addr {
+                        send_addrs.push(*addr);
+                    }
+                    if let Err(e) = sender.try_send(key.index() as usize, send_addrs, shred) {
                         log::warn!("xdp channel full: {e:?}");
                         stats
                             .num_shreds_dropped_xdp_full
@@ -451,13 +450,24 @@ fn retransmit_shred(
                 }
                 sent
             }
-            RetransmitSocket::Socket(socket) => match multi_target_send(socket, shred, &addrs) {
-                Ok(()) => num_addrs,
-                Err(SendPktsError::IoError(ioerr, num_failed)) => {
-                    error!("retransmit_to multi_target_send error: {ioerr:?}, {num_failed}/{} packets failed", num_addrs);
-                    num_addrs - num_failed
+            RetransmitSocket::Socket(socket) => {
+                let mut send_addrs = Vec::with_capacity(num_addrs + 1);
+                send_addrs.extend(addrs.iter());
+                // shred receiver not included in the stats
+                if let Some(addr) = shred_receiver_addr {
+                    send_addrs.push(*addr);
                 }
-            },
+                match multi_target_send(socket, shred, &send_addrs) {
+                    Ok(()) => num_addrs,
+                    Err(SendPktsError::IoError(ioerr, num_failed)) => {
+                        error!(
+                            "retransmit_to multi_target_send error: {ioerr:?}, \
+                         {num_failed}/{num_addrs} packets failed"
+                        );
+                        num_addrs.saturating_sub(num_failed)
+                    }
+                }
+            }
         },
     };
     retransmit_time.stop();
@@ -487,7 +497,6 @@ fn get_retransmit_addrs<'a>(
     addr_cache: &'a AddrCache,
     socket_addr_space: &SocketAddrSpace,
     stats: &RetransmitStats,
-    shred_receiver_addr: &Option<SocketAddr>,
 ) -> Option<(/*root_distance:*/ u8, Cow<'a, [SocketAddr]>)> {
     if let Some((root_distance, addrs)) = addr_cache.get(shred) {
         stats.addr_cache_hit.fetch_add(1, Ordering::Relaxed);
@@ -495,7 +504,7 @@ fn get_retransmit_addrs<'a>(
     }
     let (slot_leader, cluster_nodes) = cache.get(&shred.slot())?;
     let data_plane_fanout = cluster_nodes::get_data_plane_fanout(shred.slot(), root_bank);
-    let (root_distance, mut addrs) = cluster_nodes
+    let (root_distance, addrs) = cluster_nodes
         .get_retransmit_addrs(slot_leader, shred, data_plane_fanout, socket_addr_space)
         .inspect_err(|err| match err {
             Error::Loopback { .. } => {
@@ -503,9 +512,6 @@ fn get_retransmit_addrs<'a>(
             }
         })
         .ok()?;
-    if let Some(shred_receiver_addr) = shred_receiver_addr {
-        addrs.push(*shred_receiver_addr);
-    }
     stats.addr_cache_miss.fetch_add(1, Ordering::Relaxed);
     Some((root_distance, Cow::Owned(addrs)))
 }
@@ -577,7 +583,6 @@ fn cache_retransmit_addrs(
 /// Service to retransmit messages received from other peers in turbine.
 pub struct RetransmitStage {
     retransmit_thread_handle: JoinHandle<()>,
-    xdp_retransmitter: Option<XdpRetransmitter>,
 }
 
 impl RetransmitStage {
@@ -601,7 +606,7 @@ impl RetransmitStage {
         max_slots: Arc<MaxSlots>,
         rpc_subscriptions: Option<Arc<RpcSubscriptions>>,
         slot_status_notifier: Option<SlotStatusNotifier>,
-        xdp_config: Option<XdpConfig>,
+        xdp_sender: Option<XdpSender>,
         shred_receiver_addr: Arc<RwLock<Option<SocketAddr>>>,
     ) -> Self {
         let cluster_nodes_cache = ClusterNodesCache::<RetransmitStage>::new(
@@ -620,18 +625,6 @@ impl RetransmitStage {
                 .thread_name(|i| format!("solRetransmit{i:02}"))
                 .build()
                 .unwrap()
-        };
-
-        let (xdp_retransmitter, xdp_sender) = if let Some(xdp_config) = xdp_config {
-            let src_port = retransmit_sockets[0]
-                .local_addr()
-                .expect("failed to get local address")
-                .port();
-            let (rtx, sender) = XdpRetransmitter::new(xdp_config, src_port)
-                .expect("failed to create xdp retransmitter");
-            (Some(rtx), Some(sender))
-        } else {
-            (None, None)
         };
 
         let retransmit_thread_handle = Builder::new()
@@ -666,14 +659,10 @@ impl RetransmitStage {
 
         Self {
             retransmit_thread_handle,
-            xdp_retransmitter,
         }
     }
 
     pub fn join(self) -> thread::Result<()> {
-        if let Some(rtx) = self.xdp_retransmitter {
-            rtx.join()?;
-        }
         self.retransmit_thread_handle.join()
     }
 }
@@ -880,7 +869,7 @@ mod tests {
         bs58::decode(KEYPAIR)
             .into_vec()
             .as_deref()
-            .map(Keypair::from_bytes)
+            .map(Keypair::try_from)
             .unwrap()
             .unwrap()
     }
@@ -892,7 +881,7 @@ mod tests {
         let rsc = ReedSolomonCache::default();
         let make_shreds_for_slot = |slot, parent, code_index| {
             let shredder = Shredder::new(slot, parent, 1, 0).unwrap();
-            shredder.entries_to_shreds(
+            shredder.entries_to_merkle_shreds_for_tests(
                 &keypair,
                 &entries,
                 true,
@@ -900,7 +889,6 @@ mod tests {
                 Some(Hash::new_from_array(rand::thread_rng().gen())),
                 0,
                 code_index,
-                true,
                 &rsc,
                 &mut ProcessShredsStats::default(),
             )
@@ -932,18 +920,24 @@ mod tests {
         // Pick a shred with same index as `shred` but different parent offset
         let shred_dup = shreds_data_5_3.last().unwrap().clone();
         // first shred passed through
-        assert!(!shred_deduper.dedup(shred_dup.id(), shred_dup.payload(), MAX_DUPLICATE_COUNT),
-        "First time seeing shred X with differnt parent slot (3 instead of 4) => Not dup because common header is unique & shred ID only seen once"
+        assert!(
+            !shred_deduper.dedup(shred_dup.id(), shred_dup.payload(), MAX_DUPLICATE_COUNT),
+            "First time seeing shred X with differnt parent slot (3 instead of 4) => Not dup \
+             because common header is unique & shred ID only seen once"
         );
         // then blocked
-        assert!(shred_deduper.dedup(shred_dup.id(), shred_dup.payload(), MAX_DUPLICATE_COUNT),
-        "Second time seeing shred X with parent slot 3 => Dup because common header is not unique & shred ID seen twice"
+        assert!(
+            shred_deduper.dedup(shred_dup.id(), shred_dup.payload(), MAX_DUPLICATE_COUNT),
+            "Second time seeing shred X with parent slot 3 => Dup because common header is not \
+             unique & shred ID seen twice"
         );
 
         let shred_dup2 = shreds_data_5_2.last().unwrap().clone();
 
-        assert!(shred_deduper.dedup(shred_dup2.id(), shred_dup2.payload(), MAX_DUPLICATE_COUNT),
-            "First time seeing shred X with parent slot 2 => Dup because common header is unique but shred ID seen twice already"
+        assert!(
+            shred_deduper.dedup(shred_dup2.id(), shred_dup2.payload(), MAX_DUPLICATE_COUNT),
+            "First time seeing shred X with parent slot 2 => Dup because common header is unique \
+             but shred ID seen twice already"
         );
 
         /* Coding shreds */
@@ -974,11 +968,26 @@ mod tests {
             "we want a shred with same index but different FEC set index"
         );
         // 2nd unique coding passes
-        assert!(!shred_deduper.dedup(shred_inv_code_1.id(), shred_inv_code_1.payload(), MAX_DUPLICATE_COUNT),
-            "First time seeing shred Y w/ changed header (FEC Set index 2) => Not dup because common header is unique & shred ID only seen once");
+        assert!(
+            !shred_deduper.dedup(
+                shred_inv_code_1.id(),
+                shred_inv_code_1.payload(),
+                MAX_DUPLICATE_COUNT
+            ),
+            "First time seeing shred Y w/ changed header (FEC Set index 2) => Not dup because \
+             common header is unique & shred ID only seen once"
+        );
         // same again is blocked
-        assert!(shred_deduper.dedup(shred_inv_code_1.id(), shred_inv_code_1.payload(), MAX_DUPLICATE_COUNT),"
-           Second time seeing shred Y w/ changed header (FEC Set index 2) => Dup because common header is not unique & shred ID seen twice ");
+        assert!(
+            shred_deduper.dedup(
+                shred_inv_code_1.id(),
+                shred_inv_code_1.payload(),
+                MAX_DUPLICATE_COUNT
+            ),
+            "
+           Second time seeing shred Y w/ changed header (FEC Set index 2) => Dup because common \
+             header is not unique & shred ID seen twice "
+        );
         // Make a coding shred at index 4 based off FEC set index 3
         let (_, shreds_code_invalid) = make_shreds_for_slot(5, 4, 3);
 
@@ -988,7 +997,15 @@ mod tests {
             shred_inv_code_2.index(),
             "we want a shred with same index but different FEC set index"
         );
-        assert!(shred_deduper.dedup(shred_inv_code_2.id(), shred_inv_code_2.payload(), MAX_DUPLICATE_COUNT),"
-           First time seeing shred Y w/ changed header (FEC Set index 3)=>Dup because common header is unique but shred ID seen twice already");
+        assert!(
+            shred_deduper.dedup(
+                shred_inv_code_2.id(),
+                shred_inv_code_2.payload(),
+                MAX_DUPLICATE_COUNT
+            ),
+            "
+           First time seeing shred Y w/ changed header (FEC Set index 3)=>Dup because common \
+             header is unique but shred ID seen twice already"
+        );
     }
 }

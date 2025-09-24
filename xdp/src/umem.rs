@@ -170,7 +170,7 @@ impl PageAlignedMemory {
             )
         };
 
-        if ptr == libc::MAP_FAILED {
+        if std::ptr::eq(ptr, libc::MAP_FAILED) {
             return Err(AllocError);
         }
 

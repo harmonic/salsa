@@ -48,19 +48,10 @@ impl StakedStreamLoadEMA {
             max_streams_per_ms * EMA_WINDOW_MS
         };
 
-        let max_num_unstaked_connections =
-            u64::try_from(max_unstaked_connections).unwrap_or_else(|_| {
-                error!(
-                    "Failed to convert maximum number of unstaked connections {} to u64.",
-                    max_unstaked_connections
-                );
-                500
-            });
-
         let max_unstaked_load_in_throttling_window = if allow_unstaked_streams {
             Percentage::from(MAX_UNSTAKED_STREAMS_PERCENT)
                 .apply_to(max_streams_per_ms * STREAM_THROTTLING_INTERVAL_MS)
-                .saturating_div(max_num_unstaked_connections)
+                .saturating_div(max_unstaked_connections as u64)
         } else {
             0
         };
@@ -110,10 +101,7 @@ impl StakedStreamLoadEMA {
         }
 
         let Ok(updated_load_ema) = u64::try_from(updated_load_ema) else {
-            error!(
-                "Failed to convert EMA {} to a u64. Not updating the load EMA",
-                updated_load_ema
-            );
+            error!("Failed to convert EMA {updated_load_ema} to a u64. Not updating the load EMA");
             self.stats
                 .stream_load_ema_overflow
                 .fetch_add(1, Ordering::Relaxed);
@@ -173,8 +161,8 @@ impl StakedStreamLoadEMA {
                     / u128::from(EMA_WINDOW_MS);
                 let calculated_capacity = u64::try_from(calculated_capacity).unwrap_or_else(|_| {
                     error!(
-                        "Failed to convert stream capacity {} to u64. Using minimum load capacity",
-                        calculated_capacity
+                        "Failed to convert stream capacity {calculated_capacity} to u64. Using \
+                         minimum load capacity"
                     );
                     self.stats
                         .stream_load_capacity_overflow

@@ -94,8 +94,9 @@ impl Committer {
                                 loaded_accounts_data_size: committed_tx
                                     .loaded_account_stats
                                     .loaded_accounts_data_size,
+                                result: committed_tx.status.clone(),
                             },
-                            Err(_) => CommitTransactionDetails::NotCommitted,
+                            Err(err) => CommitTransactionDetails::NotCommitted(err.clone()),
                         })
                         .collect();
                     let num_committed = commit_transaction_statuses

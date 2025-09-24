@@ -7,8 +7,8 @@ use {
         bundle_execution::LoadAndExecuteBundleError, BundleExecutionError, SanitizedBundle,
     },
     solana_clock::Slot,
-    solana_poh::poh_recorder::BankStart,
-    std::{num::Saturating, ops::AddAssign},
+    solana_runtime::bank::Bank,
+    std::{num::Saturating, ops::AddAssign, sync::Arc},
 };
 
 pub struct BundleStageLeaderMetrics {
@@ -33,17 +33,17 @@ impl BundleStageLeaderMetrics {
 
     pub(crate) fn check_leader_slot_boundary(
         &mut self,
-        bank_start: Option<&BankStart>,
+        bank: Option<&Arc<Bank>>,
     ) -> (
         leader_slot_metrics::MetricsTrackerAction,
         MetricsTrackerAction,
     ) {
         let banking_stage_metrics_action = self
             .leader_slot_metrics_tracker
-            .check_leader_slot_boundary(bank_start);
+            .check_leader_slot_boundary(bank);
         let bundle_stage_metrics_action = self
             .bundle_stage_metrics_tracker
-            .check_leader_slot_boundary(bank_start);
+            .check_leader_slot_boundary(bank);
         (banking_stage_metrics_action, bundle_stage_metrics_action)
     }
 
@@ -83,21 +83,21 @@ impl BundleStageStatsMetricsTracker {
     /// Similar to as LeaderSlotMetricsTracker::check_leader_slot_boundary
     pub(crate) fn check_leader_slot_boundary(
         &mut self,
-        bank_start: Option<&BankStart>,
+        bank: Option<&Arc<Bank>>,
     ) -> MetricsTrackerAction {
-        match (self.bundle_stage_metrics.as_mut(), bank_start) {
+        match (self.bundle_stage_metrics.as_mut(), bank) {
             (None, None) => MetricsTrackerAction::Noop,
             (Some(_), None) => MetricsTrackerAction::ReportAndResetTracker,
             // Our leader slot has begun, time to create a new slot tracker
-            (None, Some(bank_start)) => MetricsTrackerAction::NewTracker(Some(
-                BundleStageStats::new(self.id, bank_start.working_bank.slot()),
-            )),
-            (Some(bundle_stage_metrics), Some(bank_start)) => {
-                if bundle_stage_metrics.slot != bank_start.working_bank.slot() {
+            (None, Some(bank)) => {
+                MetricsTrackerAction::NewTracker(Some(BundleStageStats::new(self.id, bank.slot())))
+            }
+            (Some(bundle_stage_metrics), Some(bank)) => {
+                if bundle_stage_metrics.slot != bank.slot() {
                     // Last slot has ended, new slot has began
                     MetricsTrackerAction::ReportAndNewTracker(Some(BundleStageStats::new(
                         self.id,
-                        bank_start.working_bank.slot(),
+                        bank.slot(),
                     )))
                 } else {
                     MetricsTrackerAction::Noop
@@ -197,14 +197,19 @@ impl BundleStageStatsMetricsTracker {
                             .sanitize_transaction_failed_sig_verify_failed
                             .add_assign(Saturating(1));
                     }
-                    DeserializedBundleError::PacketFilterFailure(_) => {
-                        bundle_stage_metrics
-                            .packet_filter_failure
-                            .add_assign(Saturating(1));
-                    }
                     DeserializedBundleError::FailedVerifyPrecompiles => {
                         bundle_stage_metrics
                             .failed_verify_precompiles
+                            .add_assign(Saturating(1));
+                    }
+                    DeserializedBundleError::TooManyAccountLocks => {
+                        bundle_stage_metrics
+                            .sanitize_transaction_failed_too_many_account_locks
+                            .add_assign(Saturating(1));
+                    }
+                    DeserializedBundleError::InvalidComputeBudgetLimits => {
+                        bundle_stage_metrics
+                            .sanitize_transaction_failed_invalid_compute_budget_limits
                             .add_assign(Saturating(1));
                     }
                 },
@@ -355,7 +360,6 @@ pub struct BundleStageStats {
     sanitize_transaction_failed_too_many_packets: Saturating<u64>,
     sanitize_transaction_failed_marked_discard: Saturating<u64>,
     sanitize_transaction_failed_sig_verify_failed: Saturating<u64>,
-    packet_filter_failure: Saturating<u64>,
     failed_verify_precompiles: Saturating<u64>,
 
     locked_bundle_elapsed_us: Saturating<u64>,
@@ -382,6 +386,9 @@ pub struct BundleStageStats {
     execution_results_max_retries: Saturating<u64>,
 
     bad_argument: Saturating<u64>,
+
+    sanitize_transaction_failed_too_many_account_locks: Saturating<u64>,
+    sanitize_transaction_failed_invalid_compute_budget_limits: Saturating<u64>,
 }
 
 impl BundleStageStats {
@@ -461,7 +468,6 @@ impl BundleStageStats {
                 self.sanitize_transaction_failed_sig_verify_failed.0,
                 i64
             ),
-            ("packet_filter_failure", self.packet_filter_failure.0, i64),
             (
                 "failed_verify_precompiles",
                 self.failed_verify_precompiles.0,
@@ -529,6 +535,17 @@ impl BundleStageStats {
             (
                 "execution_results_max_retries",
                 self.execution_results_max_retries.0,
+                i64
+            ),
+            (
+                "sanitize_transaction_failed_too_many_account_locks",
+                self.sanitize_transaction_failed_too_many_account_locks.0,
+                i64
+            ),
+            (
+                "sanitize_transaction_failed_invalid_compute_budget_limits",
+                self.sanitize_transaction_failed_invalid_compute_budget_limits
+                    .0,
                 i64
             ),
             ("bad_argument", self.bad_argument.0, i64)

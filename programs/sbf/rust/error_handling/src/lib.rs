@@ -2,11 +2,9 @@
 
 use {
     num_derive::FromPrimitive,
-    num_traits::FromPrimitive,
     solana_account_info::AccountInfo,
-    solana_decode_error::DecodeError,
     solana_msg::msg,
-    solana_program_error::{PrintProgramError, ProgramError, ProgramResult},
+    solana_program_error::{ProgramError, ProgramResult, ToStr},
     solana_pubkey::{Pubkey, PubkeyError},
     thiserror::Error,
 };
@@ -24,19 +22,11 @@ impl From<MyError> for ProgramError {
         ProgramError::Custom(e as u32)
     }
 }
-impl<T> DecodeError<T> for MyError {
-    fn type_of() -> &'static str {
-        "MyError"
-    }
-}
-impl PrintProgramError for MyError {
-    fn print<E>(&self)
-    where
-        E: 'static + std::error::Error + DecodeError<E> + PrintProgramError + FromPrimitive,
-    {
+impl ToStr for MyError {
+    fn to_str(&self) -> &'static str {
         match self {
-            MyError::DefaultEnumStart => msg!("Error: Default enum start"),
-            MyError::TheAnswer => msg!("Error: The Answer"),
+            MyError::DefaultEnumStart => "Error: Default enum start",
+            MyError::TheAnswer => "Error: The Answer",
         }
     }
 }

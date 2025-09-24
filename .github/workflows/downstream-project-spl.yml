@@ -38,7 +38,8 @@ env:
 
 jobs:
   check:
-    if: github.repository == 'anza-xyz/agave'
+    #if: github.repository == 'anza-xyz/agave'
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -56,7 +57,7 @@ jobs:
           # re-enable with https://github.com/buffalojoec/mollusk/pull/74
           # - token
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: 'recursive'
 
@@ -78,7 +79,8 @@ jobs:
           cargo check
 
   test_cli:
-    if: github.repository == 'anza-xyz/agave'
+    #if: github.repository == 'anza-xyz/agave'
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -87,7 +89,7 @@ jobs:
           - single-pool
           - token-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: 'recursive'
 
@@ -110,7 +112,8 @@ jobs:
           cargo test --manifest-path clients/cli/Cargo.toml
 
   cargo-test-sbf:
-    if: github.repository == 'anza-xyz/agave'
+    #if: github.repository == 'anza-xyz/agave'
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -128,7 +131,7 @@ jobs:
           # re-enable with https://github.com/buffalojoec/mollusk/pull/74
           # - token
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: 'recursive'
 

@@ -348,7 +348,6 @@ pub(crate) mod tests {
         solana_signer::Signer,
         solana_system_transaction::transfer,
         std::sync::Arc,
-        test_case::test_case,
     };
 
     #[test]
@@ -453,7 +452,7 @@ pub(crate) mod tests {
         })
         .take(num_entries)
         .collect();
-        shredder.entries_to_shreds(
+        shredder.entries_to_merkle_shreds_for_tests(
             keypair,
             &entries,
             is_last_in_slot,
@@ -461,7 +460,6 @@ pub(crate) mod tests {
             Some(Hash::new_from_array(rng.gen())),
             next_shred_index,
             next_code_index, // next_code_index
-            true,
             &ReedSolomonCache::default(),
             &mut ProcessShredsStats::default(),
         )
@@ -591,9 +589,8 @@ pub(crate) mod tests {
         }
     }
 
-    #[test_case(true ; "merkle")]
-    #[test_case(false ; "legacy")]
-    fn test_latest_index_conflict_round_trip(merkle_variant: bool) {
+    #[test]
+    fn test_latest_index_conflict_round_trip() {
         let mut rng = rand::thread_rng();
         let leader = Arc::new(Keypair::new());
         let (slot, parent_slot, reference_tick, version) = (53084024, 53084023, 0, 0);
@@ -613,7 +610,7 @@ pub(crate) mod tests {
                     &mut rng,
                     // With Merkle shreds, last erasure batch is padded with
                     // empty data shreds.
-                    next_shred_index + if merkle_variant { 30 } else { 1 },
+                    next_shred_index + 30,
                     &shredder,
                     &leader,
                     false,
@@ -1105,7 +1102,7 @@ pub(crate) mod tests {
             new_rand_coding_shreds(&mut rng, next_shred_index, 10, &shredder, &leader)[0].clone();
         let mut data_shred_different_retransmitter_payload = data_shred.clone().into_payload();
         shred::layout::set_retransmitter_signature(
-            &mut data_shred_different_retransmitter_payload,
+            &mut data_shred_different_retransmitter_payload.as_mut(),
             &Signature::new_unique(),
         )
         .unwrap();
@@ -1113,7 +1110,7 @@ pub(crate) mod tests {
             Shred::new_from_serialized_shred(data_shred_different_retransmitter_payload).unwrap();
         let mut coding_shred_different_retransmitter_payload = coding_shred.clone().into_payload();
         shred::layout::set_retransmitter_signature(
-            &mut coding_shred_different_retransmitter_payload,
+            &mut coding_shred_different_retransmitter_payload.as_mut(),
             &Signature::new_unique(),
         )
         .unwrap();

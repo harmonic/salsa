@@ -20,7 +20,7 @@ use {
     solana_quic_definitions::NotifyKeyUpdate,
     solana_runtime::{
         bank::{Bank, CollectorFeeDetails},
-        root_bank_cache::RootBankCache,
+        bank_forks::SharableBank,
     },
     solana_runtime_transaction::{
         runtime_transaction::RuntimeTransaction, transaction_meta::StaticMeta,
@@ -125,7 +125,7 @@ pub(crate) fn spawn_forwarding_stage(
     receiver: Receiver<(BankingPacketBatch, bool)>,
     client: ForwardingClientOption<'_>,
     vote_client_udp_socket: UdpSocket,
-    root_bank_cache: RootBankCache,
+    root_bank: SharableBank,
     forward_address_getter: ForwardAddressGetter,
     data_budget: DataBudget,
 ) -> SpawnForwardingStageResult {
@@ -138,7 +138,7 @@ pub(crate) fn spawn_forwarding_stage(
                 receiver,
                 vote_client,
                 non_vote_client.clone(),
-                root_bank_cache,
+                root_bank,
                 data_budget,
             );
             SpawnForwardingStageResult {
@@ -166,7 +166,7 @@ pub(crate) fn spawn_forwarding_stage(
                 receiver,
                 vote_client,
                 non_vote_client.clone(),
-                root_bank_cache,
+                root_bank,
                 data_budget,
             );
             SpawnForwardingStageResult {
@@ -183,7 +183,7 @@ pub(crate) fn spawn_forwarding_stage(
 struct ForwardingStage<VoteClient: ForwardingClient, NonVoteClient: ForwardingClient> {
     receiver: Receiver<(BankingPacketBatch, bool)>,
     packet_container: PacketContainer,
-    root_bank_cache: RootBankCache,
+    root_bank: SharableBank,
     vote_client: VoteClient,
     non_vote_client: NonVoteClient,
     data_budget: DataBudget,
@@ -197,13 +197,13 @@ impl<VoteClient: ForwardingClient, NonVoteClient: ForwardingClient>
         receiver: Receiver<(BankingPacketBatch, bool)>,
         vote_client: VoteClient,
         non_vote_client: NonVoteClient,
-        root_bank_cache: RootBankCache,
+        root_bank: SharableBank,
         data_budget: DataBudget,
     ) -> Self {
         Self {
             receiver,
             packet_container: PacketContainer::with_capacity(4 * 4096),
-            root_bank_cache,
+            root_bank,
             non_vote_client,
             vote_client,
             data_budget,
@@ -214,7 +214,7 @@ impl<VoteClient: ForwardingClient, NonVoteClient: ForwardingClient>
     /// Runs `ForwardingStage`'s main loop, to receive, order, and forward packets.
     fn run(mut self) {
         loop {
-            let root_bank = self.root_bank_cache.root_bank();
+            let root_bank = self.root_bank.load();
             if !self.receive_and_buffer(&root_bank) {
                 break;
             }
@@ -236,25 +236,12 @@ impl<VoteClient: ForwardingClient, NonVoteClient: ForwardingClient>
                 self.buffer_packet_batches(packet_batches, tpu_vote_batch, bank);
 
                 // Drain the channel up to timeout
-                let timed_out = loop {
-                    if now.elapsed() >= TIMEOUT {
-                        break true;
-                    }
+                while now.elapsed() > TIMEOUT {
                     match self.receiver.try_recv() {
                         Ok((packet_batches, tpu_vote_batch)) => {
                             self.buffer_packet_batches(packet_batches, tpu_vote_batch, bank)
                         }
-                        Err(_) => break false,
-                    }
-                };
-
-                // If timeout was reached, prevent backup by draining all
-                // packets in the channel.
-                if timed_out {
-                    warn!("ForwardingStage is backed up, dropping packets");
-                    while let Ok((packet_batch, _)) = self.receiver.try_recv() {
-                        self.metrics.dropped_on_timeout +=
-                            packet_batch.iter().map(|b| b.len()).sum::<usize>();
+                        Err(_) => break,
                     }
                 }
 
@@ -279,8 +266,8 @@ impl<VoteClient: ForwardingClient, NonVoteClient: ForwardingClient>
             {
                 let Some(packet_data) = packet.data(..) else {
                     unreachable!(
-                        "packet.meta().discard() was already checked. \
-                         If not discarded, packet MUST have data"
+                        "packet.meta().discard() was already checked. If not discarded, packet \
+                         MUST have data"
                     );
                 };
 
@@ -722,8 +709,6 @@ struct ForwardingStageMetrics {
     non_votes_dropped_on_data_budget: usize,
     non_votes_forwarded: usize,
     non_votes_dropped_on_send: usize,
-
-    dropped_on_timeout: usize,
 }
 
 impl ForwardingStageMetrics {
@@ -803,7 +788,6 @@ impl Default for ForwardingStageMetrics {
             non_votes_dropped_on_data_budget: 0,
             non_votes_forwarded: 0,
             non_votes_dropped_on_send: 0,
-            dropped_on_timeout: 0,
         }
     }
 }
@@ -898,14 +882,14 @@ mod tests {
 
         let (_bank, bank_forks) =
             Bank::new_with_bank_forks_for_tests(&create_genesis_config(1).genesis_config);
-        let root_bank_cache = RootBankCache::new(bank_forks);
+        let root_bank = bank_forks.read().unwrap().sharable_root_bank();
         let vote_mock_client = MockClient::new();
         let non_vote_mock_client = MockClient::new();
         let mut forwarding_stage = ForwardingStage::new(
             packet_batch_receiver,
             vote_mock_client.clone(),
             non_vote_mock_client.clone(),
-            root_bank_cache,
+            root_bank,
             DataBudget::default(),
         );
 
@@ -940,7 +924,7 @@ mod tests {
             .send((vote_packets.clone(), true))
             .unwrap();
 
-        let bank = forwarding_stage.root_bank_cache.root_bank();
+        let bank = forwarding_stage.root_bank.load();
         forwarding_stage.receive_and_buffer(&bank);
         if !packet_batch_sender.is_empty() {
             forwarding_stage.receive_and_buffer(&bank);
