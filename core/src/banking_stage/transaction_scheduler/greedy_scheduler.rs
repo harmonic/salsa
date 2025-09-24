@@ -1,5 +1,7 @@
+use crate::banking_stage::transaction_scheduler::scheduler_controller::slot::consume_slot;
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
+
 use {
     super::{
         scheduler::{PreLockFilterAction, Scheduler, SchedulingSummary},
@@ -135,7 +137,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for GreedyScheduler<Tx> {
                 .check_locks(transaction_state.transaction())
             {
                 self.working_account_set.clear();
-                num_sent += self.common.send_batches()?;
+                num_sent += self.common.send_batches(consume_slot())?;
             }
 
             // Now check if the transaction can actually be scheduled.
@@ -168,25 +170,20 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for GreedyScheduler<Tx> {
                     max_age,
                     cost,
                 }) => {
+                    info!("schduler: scheduling {}", transaction.signature());
                     assert!(
                         self.working_account_set.take_locks(&transaction),
                         "locks must be available"
                     );
                     num_scheduled += 1;
-                    self.common.batches.add_transaction_to_batch(
-                        thread_id,
-                        id.id,
-                        transaction,
-                        max_age,
-                        cost,
-                    );
+                    self.common.batches.add_transaction_to_batch(thread_id, id.id, transaction, max_age, cost);
 
                     // If target batch size is reached, send all the batches
                     if self.common.batches.transactions()[thread_id].len()
                         >= self.config.target_transactions_per_batch
                     {
                         self.working_account_set.clear();
-                        num_sent += self.common.send_batches()?;
+                        num_sent += self.common.send_batches(consume_slot())?;
                     }
 
                     // if the thread is at target_cu_per_thread, remove it from the schedulable threads
@@ -205,7 +202,8 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for GreedyScheduler<Tx> {
         }
 
         self.working_account_set.clear();
-        num_sent += self.common.send_batches()?;
+        // Use zero here to avoid allocating since we are done with `Batches`.
+        num_sent += self.common.send_batches(consume_slot())?;
         let Saturating(num_scheduled) = num_scheduled;
         assert_eq!(
             num_scheduled, num_sent,

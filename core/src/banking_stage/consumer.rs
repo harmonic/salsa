@@ -486,7 +486,7 @@ impl Consumer {
 
         let (record_transactions_summary, record_us) = measure_us!(self
             .transaction_recorder
-            .record_transactions(bank.slot(), batches));
+            .record_transactions(bank.slot(), batches, false));
         execute_and_commit_timings.record_us = record_us;
 
         let RecordTransactionsSummary {

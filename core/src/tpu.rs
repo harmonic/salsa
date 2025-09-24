@@ -1,6 +1,8 @@
 //! The `tpu` module implements the Transaction Processing Unit, a
 //! multi-stage transaction processing pipeline in software.
 
+use std::time::SystemTime;
+
 pub use {
     crate::forwarding_stage::ForwardingClientOption, solana_streamer::quic::DEFAULT_TPU_COALESCE,
 };
@@ -193,6 +195,7 @@ impl Tpu {
         shred_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
         preallocated_bundle_cost: u64,
         bam_url: Arc<Mutex<Option<String>>>,
+        leader_window_receiver: tokio::sync::mpsc::Receiver<(SystemTime, u64)>,
     ) -> Self {
         let TpuSockets {
             transactions: transactions_sockets,
@@ -374,6 +377,7 @@ impl Tpu {
             &block_builder_fee_info,
             shredstream_receiver_address.clone(),
             bam_enabled.clone(),
+            leader_window_receiver,
         );
 
         let (heartbeat_tx, heartbeat_rx) = unbounded();

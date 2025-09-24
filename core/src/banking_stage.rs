@@ -800,8 +800,8 @@ impl BankingStage {
             .expect("non-vote context must be Some")
             .non_vote_exit_signal
             .store(true, Ordering::Relaxed);
-        for bank_thread_hdl in self.non_vote_thread_hdls {
-            bank_thread_hdl.join()?;
+        for non_vote_thread_hdl in self.non_vote_thread_hdls {
+            non_vote_thread_hdl.join()?;
         }
         Ok(())
     }
@@ -824,9 +824,12 @@ pub(crate) fn update_bank_forks_and_poh_recorder_for_new_tpu_bank(
     bank_forks: &RwLock<BankForks>,
     poh_recorder: &RwLock<PohRecorder>,
     tpu_bank: Bank,
-) {
+) -> Arc<Bank> {
     let tpu_bank = bank_forks.write().unwrap().insert(tpu_bank);
+    let tpu_bank_without_scheduler = tpu_bank.clone_without_scheduler();
     poh_recorder.write().unwrap().set_bank(tpu_bank);
+
+    tpu_bank_without_scheduler
 }
 
 #[cfg(test)]

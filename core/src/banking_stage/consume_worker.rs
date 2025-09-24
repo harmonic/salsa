@@ -115,6 +115,11 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
                 .fetch_add(get_bank_us, Ordering::Relaxed);
             return self.retry_drain(work);
         };
+
+        if work.slot != bank.slot() {
+            return self.retry_drain(work);
+        }
+
         self.metrics
             .timing_metrics
             .wait_for_bank_success_us
@@ -1216,6 +1221,7 @@ mod tests {
             revert_on_error: false,
             respond_with_extra_info: false,
             max_schedule_slot: None,
+            slot: bank.slot(),
         };
         consume_sender.send(work).unwrap();
         let consumed = consumed_receiver.recv().unwrap();
@@ -1268,6 +1274,7 @@ mod tests {
             revert_on_error: false,
             respond_with_extra_info: false,
             max_schedule_slot: None,
+            slot: bank.slot(),
         };
         consume_sender.send(work).unwrap();
         let consumed = consumed_receiver.recv().unwrap();
@@ -1323,6 +1330,7 @@ mod tests {
                 revert_on_error: false,
                 respond_with_extra_info: false,
                 max_schedule_slot: None,
+                slot: bank.slot(),
             })
             .unwrap();
 
@@ -1396,6 +1404,7 @@ mod tests {
                 revert_on_error: false,
                 respond_with_extra_info: false,
                 max_schedule_slot: None,
+                slot: bank.slot(),
             })
             .unwrap();
 
@@ -1408,6 +1417,7 @@ mod tests {
                 revert_on_error: false,
                 respond_with_extra_info: false,
                 max_schedule_slot: None,
+                slot: bank.slot(),
             })
             .unwrap();
         let consumed = consumed_receiver.recv().unwrap();
@@ -1549,6 +1559,7 @@ mod tests {
                 revert_on_error: false,
                 respond_with_extra_info: false,
                 max_schedule_slot: None,
+                slot: bank.slot(),
             })
             .unwrap();
 

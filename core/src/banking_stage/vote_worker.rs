@@ -128,7 +128,17 @@ impl VoteWorker {
         let metrics_action = slot_metrics_tracker.check_leader_slot_boundary(decision.bank());
         slot_metrics_tracker.increment_make_decision_us(make_decision_us);
 
-        // Take metrics action before processing packets (potentially resetting the
+        // mevanoxx: lets remove this for now but keep code here
+        //
+        // if let BufferedPacketsDecision::Consume(bank_start) = &decision {
+        //     const MAX_TICK_FOR_VOTING: u64 = 48;
+        //     let slot_tick_height = bank_start.working_bank.slot_tick_height();
+        //     if slot_tick_height >= MAX_TICK_FOR_VOTING {
+        //         decision = BufferedPacketsDecision::Hold;
+        //     };
+        // }
+
+        // Take metrics action before consume packets (potentially resetting the
         // slot metrics tracker to the next slot) so that we don't count the
         // packet processing metrics from the next slot towards the metrics
         // of the previous slot
@@ -230,6 +240,14 @@ impl VoteWorker {
         let mut reached_end_of_slot = false;
         let mut sanitized_transactions = Vec::with_capacity(UNPROCESSED_BUFFER_STEP_SIZE);
         let mut error_counters: TransactionErrorMetrics = TransactionErrorMetrics::default();
+        debug!(
+            "Processing {} vote packets, slot: {}, tick: {}, outstanding: {}",
+            all_vote_packets.len(),
+            bank.slot(),
+            bank.slots_per_year(),
+            self.storage.len()
+        );
+
         let mut vote_packets =
             ArrayVec::<Arc<ImmutableDeserializedPacket>, UNPROCESSED_BUFFER_STEP_SIZE>::new();
         for chunk in all_vote_packets.chunks(UNPROCESSED_BUFFER_STEP_SIZE) {
@@ -268,6 +286,12 @@ impl VoteWorker {
                 self.storage.reinsert_packets(vote_packets.drain(..));
             }
         }
+        debug!(
+            "Done processing slot: {}, tick: {}, outstanding: {}",
+            bank.slot(),
+            bank.slot_tick_height(),
+            self.storage.len()
+        );
 
         reached_end_of_slot
     }
@@ -393,6 +417,38 @@ impl VoteWorker {
         transactions: &[impl TransactionWithMeta],
         reservation_cb: &impl Fn(&Bank) -> u64,
     ) -> ProcessTransactionsSummary {
+        const MAX_TICK_FOR_VOTING: u64 = 48;
+
+        let bank_slot_tick_start = bank.max_tick_height().saturating_sub(bank.ticks_per_slot());
+        let bank_slot_tick_height = bank.tick_height().saturating_sub(bank_slot_tick_start);
+
+        debug!(
+            "process_transaction: slot: {} height: {} block_start: {}, tx_count: {}",
+            bank.slot(),
+            bank_slot_tick_height,
+            bank_slot_tick_start,
+            transactions.len(),
+        );
+
+        if bank_slot_tick_height > MAX_TICK_FOR_VOTING {
+            debug!(
+                "process transactions: max tick height reached slot: {} height: {} block_start: {}, tx_count: {}",
+                bank.slot(),
+                bank_slot_tick_start,
+                bank_slot_tick_height,
+                transactions.len(),
+            );
+            return ProcessTransactionsSummary {
+                reached_max_poh_height: true,
+                retryable_transaction_indexes: transactions
+                    .iter()
+                    .enumerate()
+                    .map(|(index, _)| index)
+                    .collect(),
+                ..Default::default()
+            };
+        }
+
         let process_transaction_batch_output = self.consumer.process_and_record_transactions(
             bank,
             transactions,
@@ -425,7 +481,7 @@ impl VoteWorker {
             should_bank_still_be_processing_txs,
         ) {
             (Err(PohRecorderError::MaxHeightReached), _) | (_, false) => {
-                info!(
+                debug!(
                     "process transactions: max height reached slot: {} height: {}",
                     bank.slot(),
                     bank.tick_height()

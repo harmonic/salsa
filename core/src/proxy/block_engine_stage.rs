@@ -22,7 +22,9 @@ use {
         auth::{auth_service_client::AuthServiceClient, Token},
         block_engine::{
             self, block_engine_validator_client::BlockEngineValidatorClient,
-            BlockBuilderFeeInfoRequest, BlockEngineEndpoint, GetBlockEngineEndpointRequest,
+            BlockBuilderFeeInfoRequest, BlockBuilderFeeInfoRequest, BlockEngineEndpoint,
+            GetBlockEngineEndpointRequest, GetBlockEngineEndpointRequest,
+            SubmitLeaderWindowInfoRequest,
         },
     },
     solana_gossip::cluster_info::ClusterInfo,
@@ -40,7 +42,7 @@ use {
             Arc, Mutex,
         },
         thread::{self, Builder, JoinHandle},
-        time::{Duration, Instant},
+        time::{Duration, SystemTime},
     },
     thiserror::Error,
     tokio::{
@@ -132,6 +134,7 @@ impl BlockEngineStage {
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         shredstream_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
         bam_enabled: Arc<AtomicBool>,
+        leader_window_receiver: tokio::sync::mpsc::Receiver<(SystemTime, u64)>,
     ) -> Self {
         let block_builder_fee_info = block_builder_fee_info.clone();
 
@@ -152,6 +155,7 @@ impl BlockEngineStage {
                     block_builder_fee_info,
                     shredstream_receiver_address,
                     bam_enabled,
+                    leader_window_receiver,
                 ));
             })
             .unwrap();
@@ -179,6 +183,7 @@ impl BlockEngineStage {
         block_builder_fee_info: Arc<Mutex<BlockBuilderFeeInfo>>,
         shredstream_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
         bam_enabled: Arc<AtomicBool>,
+        mut leader_window_receiver: tokio::sync::mpsc::Receiver<(SystemTime, u64)>,
     ) {
         let mut error_count: u64 = 0;
 
@@ -204,6 +209,8 @@ impl BlockEngineStage {
                 &shredstream_receiver_address,
                 &local_block_engine_config,
                 &bam_enabled,
+                &CONNECTION_TIMEOUT,
+                &mut leader_window_receiver,
             )
             .await
             {
@@ -473,6 +480,7 @@ impl BlockEngineStage {
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         connection_timeout: &Duration,
         bam_enabled: &Arc<AtomicBool>,
+        leader_window_receiver: &mut tokio::sync::mpsc::Receiver<(SystemTime, u64)>,
     ) -> crate::proxy::Result<()> {
         // Get a copy of configs here in case they have changed at runtime
         let keypair = cluster_info.keypair().clone();
@@ -535,6 +543,7 @@ impl BlockEngineStage {
             cluster_info,
             &backend_url,
             bam_enabled,
+            leader_window_receiver,
         )
         .await
     }
@@ -723,6 +732,7 @@ impl BlockEngineStage {
         cluster_info: &Arc<ClusterInfo>,
         block_engine_url: &str,
         bam_enabled: &Arc<AtomicBool>,
+        leader_window_receiver: &mut tokio::sync::mpsc::Receiver<(SystemTime, u64)>,
     ) -> crate::proxy::Result<()> {
         let subscribe_packets_stream = timeout(
             *connection_timeout,
@@ -733,6 +743,8 @@ impl BlockEngineStage {
         .map_err(|e| ProxyError::MethodError(e.to_string()))?
         .into_inner();
 
+        debug!("subscribing to block engine bundles");
+
         let subscribe_bundles_stream = timeout(
             *connection_timeout,
             client.subscribe_bundles(block_engine::SubscribeBundlesRequest {}),
@@ -741,6 +753,8 @@ impl BlockEngineStage {
         .map_err(|_| ProxyError::MethodTimeout("subscribe_bundles".to_string()))?
         .map_err(|e| ProxyError::MethodError(e.to_string()))?
         .into_inner();
+
+        debug!("Succesfully subscribed to block engine bundles");
 
         let block_builder_info = timeout(
             *connection_timeout,
@@ -782,6 +796,7 @@ impl BlockEngineStage {
             connection_timeout,
             block_engine_url,
             bam_enabled,
+            leader_window_receiver,
         )
         .await
     }
@@ -808,6 +823,7 @@ impl BlockEngineStage {
         connection_timeout: &Duration,
         block_engine_url: &str,
         bam_enabled: &Arc<AtomicBool>,
+        leader_window_receiver: &mut tokio::sync::mpsc::Receiver<(SystemTime, u64)>,
     ) -> crate::proxy::Result<()> {
         const METRICS_TICK: Duration = Duration::from_secs(1);
         const MAINTENANCE_TICK: Duration = Duration::from_secs(10 * 60);
@@ -834,6 +850,10 @@ impl BlockEngineStage {
                 }
                 maybe_bundles = bundle_stream.message() => {
                     Self::handle_block_engine_maybe_bundles(maybe_bundles, bundle_tx, &mut block_engine_stats)?;
+                }
+                maybe_leader_window_notification = leader_window_receiver.recv() => {
+                    // TODO: Maybe figure out how to do this async
+                    Self::handle_leader_window_notification(maybe_leader_window_notification, &mut client).await?;
                 }
                 _ = metrics_and_auth_tick.tick() => {
                     block_engine_stats.report();
@@ -902,6 +922,31 @@ impl BlockEngineStage {
         Ok(())
     }
 
+    async fn handle_leader_window_notification(
+        notification: Option<(SystemTime, u64)>,
+        client: &mut BlockEngineValidatorClient<InterceptedService<Channel, AuthInterceptor>>,
+    ) -> crate::proxy::Result<()> {
+        info!("Received leader window notification");
+        if let Some((time, slot)) = notification {
+            info!("Handling leader window notification ({:?}, {})", time, slot);
+
+            if let Err(e) = client
+                .submit_leader_window_info(SubmitLeaderWindowInfoRequest {
+                    start_timestamp: Some(prost_types::Timestamp::from(time)),
+                    slot,
+                })
+                .await
+            {
+                warn!("failed to notify leader window to block engine: {}", e);
+                // TODO: Should respond with an error, and abort waiting for an external block
+            } else {
+                info!("Successfully notified leader window to block engine");
+            }
+        }
+
+        Ok(())
+    }
+
     fn handle_block_engine_maybe_bundles(
         maybe_bundles_response: Result<Option<block_engine::SubscribeBundlesResponse>, Status>,
         bundle_sender: &Sender<Vec<PacketBundle>>,
@@ -912,6 +957,17 @@ impl BlockEngineStage {
             .bundles
             .into_iter()
             .filter_map(|bundle| {
+                let Ok(slot) = u64::from_str(&bundle.uuid) else {
+                    warn!("invalid bundle slot: {}", bundle.uuid);
+                    return None;
+                };
+
+                info!(
+                    "Received bundle {} slot, {} packets",
+                    slot,
+                    bundle.bundle.as_ref().map_or(0, |b| b.packets.len())
+                );
+
                 Some(PacketBundle {
                     batch: PacketBatch::from(
                         bundle
@@ -921,10 +977,13 @@ impl BlockEngineStage {
                             .map(proto_packet_to_packet)
                             .collect::<Vec<BytesPacket>>(),
                     ),
-                    bundle_id: bundle.uuid,
+                    slot,
                 })
             })
             .collect();
+
+        info!("Received {} bundles", bundles.len());
+
         block_engine_stats
             .num_bundles
             .add_assign(bundles.len() as u64);

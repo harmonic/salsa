@@ -16,8 +16,10 @@ use {
         proxy::block_engine_stage::BlockBuilderFeeInfo,
         tip_manager::TipManager,
     },
+    rayon::{ThreadPool, ThreadPoolBuilder},
     solana_bundle::{
-        bundle_execution::{load_and_execute_bundle, BundleExecutionMetrics},
+        bundle_execution::{parallel_load_and_execute_bundle, BundleExecutionMetrics},
+        scheduler::Scheduler,
         BundleExecutionError, BundleExecutionResult, SanitizedBundle, TipError,
     },
     solana_clock::{Slot, MAX_PROCESSING_AGE},
@@ -25,8 +27,11 @@ use {
     solana_entry::entry::hash_transactions,
     solana_gossip::cluster_info::ClusterInfo,
     solana_measure::measure_us,
-    solana_poh::transaction_recorder::{
-        RecordTransactionsSummary, RecordTransactionsTimings, TransactionRecorder,
+    solana_poh::{
+        poh_service::reset_reserve_hashes,
+        transaction_recorder::{
+            RecordTransactionsSummary, RecordTransactionsTimings, TransactionRecorder,
+        },
     },
     solana_pubkey::Pubkey,
     solana_runtime::bank::Bank,
@@ -41,6 +46,9 @@ use {
         time::{Duration, Instant},
     },
 };
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+use solana_bundle::timer;
 
 type ReserveBundleBlockspaceResult<'a> = BundleExecutionResult<(
     Vec<TransactionResult<TransactionCost<'a, RuntimeTransaction<SanitizedTransaction>>>>,
@@ -75,9 +83,16 @@ pub struct BundleConsumer {
     max_bundle_retry_duration: Duration,
 
     cluster_info: Arc<ClusterInfo>,
+
+    // For use in the parallel_load_and_execute_bundle function
+    scheduler: Scheduler,
+    thread_pool: ThreadPool,
 }
 
 impl BundleConsumer {
+    /// Number of threads to run in the bundle consumer thread pool
+    const NUM_THREADS: usize = 8;
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         committer: Committer,
@@ -91,6 +106,10 @@ impl BundleConsumer {
         cluster_info: Arc<ClusterInfo>,
     ) -> Self {
         let blacklisted_accounts = HashSet::from_iter([tip_manager.tip_payment_program_id()]);
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        {
+            timer::memoize_ticks_per_us_and_invariant_tsc_check()
+        }
         Self {
             committer,
             transaction_recorder,
@@ -104,6 +123,11 @@ impl BundleConsumer {
             block_builder_fee_info,
             max_bundle_retry_duration,
             cluster_info,
+            scheduler: Scheduler::new(),
+            thread_pool: ThreadPoolBuilder::new()
+                .num_threads(Self::NUM_THREADS)
+                .build()
+                .expect("Failed to build thread pool"),
         }
     }
 
@@ -149,6 +173,8 @@ impl BundleConsumer {
                     bundles,
                     bank,
                     bundle_stage_leader_metrics,
+                    &mut self.scheduler,
+                    &self.thread_pool,
                 )
             },
         );
@@ -175,6 +201,8 @@ impl BundleConsumer {
         bundles: &[(ImmutableDeserializedBundle, SanitizedBundle)],
         bank: &Arc<Bank>,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
+        scheduler: &mut Scheduler,
+        thread_pool: &ThreadPool,
     ) -> Vec<Result<(), BundleExecutionError>> {
         // BundleAccountLocker holds RW locks for ALL accounts in ALL transactions within a single bundle.
         // By pre-locking bundles before they're ready to be processed, it will prevent BankingStage from
@@ -210,6 +238,8 @@ impl BundleConsumer {
                             &locked_bundle,
                             bank,
                             bundle_stage_leader_metrics,
+                            scheduler,
+                            thread_pool,
                         ));
                         bundle_stage_leader_metrics
                             .leader_slot_metrics_tracker()
@@ -249,17 +279,16 @@ impl BundleConsumer {
         locked_bundle: &LockedBundle,
         bank: &Arc<Bank>,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
+        scheduler: &mut Scheduler,
+        thread_pool: &ThreadPool,
     ) -> Result<(), BundleExecutionError> {
         if bank.is_complete() {
             return Err(BundleExecutionError::BankProcessingTimeLimitReached);
         }
 
-        if bank.slot() != *last_tip_updated_slot
-            && Self::bundle_touches_tip_pdas(
-                locked_bundle.sanitized_bundle(),
-                &tip_manager.get_tip_accounts(),
-            )
-        {
+        let new_slot = bank.slot() != *last_tip_updated_slot;
+        let touches_tip_pdas = true;
+        if new_slot && touches_tip_pdas {
             let start = Instant::now();
             let result = Self::handle_tip_programs(
                 bundle_account_locker,
@@ -273,6 +302,8 @@ impl BundleConsumer {
                 max_bundle_retry_duration,
                 bank,
                 bundle_stage_leader_metrics,
+                scheduler,
+                thread_pool,
             );
 
             bundle_stage_leader_metrics
@@ -293,6 +324,9 @@ impl BundleConsumer {
             locked_bundle.sanitized_bundle(),
             bank,
             bundle_stage_leader_metrics,
+            true,
+            scheduler,
+            thread_pool,
         )?;
 
         Ok(())
@@ -312,6 +346,8 @@ impl BundleConsumer {
         max_bundle_retry_duration: Duration,
         bank: &Arc<Bank>,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
+        scheduler: &mut Scheduler,
+        thread_pool: &ThreadPool,
     ) -> Result<(), BundleExecutionError> {
         debug!("handle_tip_programs");
 
@@ -325,7 +361,7 @@ impl BundleConsumer {
             debug!(
                 "initializing tip programs with {} transactions, bundle id: {}",
                 bundle.transactions.len(),
-                bundle.bundle_id
+                bundle.slot
             );
 
             let locked_init_tip_programs_bundle = bundle_account_locker
@@ -341,6 +377,9 @@ impl BundleConsumer {
                 locked_init_tip_programs_bundle.sanitized_bundle(),
                 bank,
                 bundle_stage_leader_metrics,
+                false,
+                scheduler,
+                thread_pool,
             )
             .map_err(|e| {
                 bundle_stage_leader_metrics
@@ -348,7 +387,7 @@ impl BundleConsumer {
                     .increment_num_init_tip_account_errors(1);
                 error!(
                     "bundle: {} error initializing tip programs: {:?}",
-                    locked_init_tip_programs_bundle.sanitized_bundle().bundle_id,
+                    locked_init_tip_programs_bundle.sanitized_bundle().slot,
                     e
                 );
                 BundleExecutionError::TipError(TipError::InitializeProgramsError)
@@ -376,7 +415,7 @@ impl BundleConsumer {
         if let Some(bundle) = tip_crank_bundle {
             info!(
                 "bundle id: {} cranking tip programs with {} transactions",
-                bundle.bundle_id,
+                bundle.slot,
                 bundle.transactions.len()
             );
 
@@ -393,6 +432,9 @@ impl BundleConsumer {
                 locked_tip_crank_bundle.sanitized_bundle(),
                 bank,
                 bundle_stage_leader_metrics,
+                false,
+                scheduler,
+                thread_pool,
             )
             .map_err(|e| {
                 bundle_stage_leader_metrics
@@ -400,7 +442,7 @@ impl BundleConsumer {
                     .increment_num_change_tip_receiver_errors(1);
                 error!(
                     "bundle: {} error cranking tip programs: {:?}",
-                    locked_tip_crank_bundle.sanitized_bundle().bundle_id,
+                    locked_tip_crank_bundle.sanitized_bundle().slot,
                     e
                 );
                 BundleExecutionError::TipError(TipError::CrankTipError)
@@ -451,10 +493,13 @@ impl BundleConsumer {
         sanitized_bundle: &SanitizedBundle,
         bank: &Arc<Bank>,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
+        should_reset_reserve_hash: bool,
+        scheduler: &mut Scheduler,
+        thread_pool: &ThreadPool,
     ) -> BundleExecutionResult<()> {
         debug!(
             "bundle: {} reserving blockspace for {} transactions",
-            sanitized_bundle.bundle_id,
+            sanitized_bundle.slot,
             sanitized_bundle.transactions.len()
         );
 
@@ -469,7 +514,7 @@ impl BundleConsumer {
 
         debug!(
             "bundle: {} executing, recording, and committing",
-            sanitized_bundle.bundle_id
+            sanitized_bundle.slot
         );
 
         let (result, process_transactions_us) = measure_us!(Self::execute_record_commit_bundle(
@@ -479,6 +524,9 @@ impl BundleConsumer {
             max_bundle_retry_duration,
             sanitized_bundle,
             bank,
+            should_reset_reserve_hash,
+            scheduler,
+            thread_pool,
         ));
 
         bundle_stage_leader_metrics
@@ -558,14 +606,17 @@ impl BundleConsumer {
         max_bundle_retry_duration: Duration,
         sanitized_bundle: &SanitizedBundle,
         bank: &Arc<Bank>,
+        should_reset_reserve_hash: bool,
+        scheduler: &mut Scheduler,
+        thread_pool: &ThreadPool,
     ) -> ExecuteRecordCommitResult {
         let transaction_status_sender_enabled = committer.transaction_status_sender_enabled();
 
         let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
 
-        debug!("bundle: {} executing", sanitized_bundle.bundle_id);
+        debug!("bundle: {} executing", sanitized_bundle.slot);
         let default_accounts = vec![None; sanitized_bundle.transactions.len()];
-        let bundle_execution_results = load_and_execute_bundle(
+        let bundle_execution_results = parallel_load_and_execute_bundle(
             bank,
             sanitized_bundle,
             MAX_PROCESSING_AGE,
@@ -576,6 +627,8 @@ impl BundleConsumer {
             None,
             &default_accounts,
             &default_accounts,
+            scheduler,
+            thread_pool,
         );
 
         let execution_metrics = bundle_execution_results.metrics.clone();
@@ -588,12 +641,19 @@ impl BundleConsumer {
 
         debug!(
             "bundle: {} executed, is_ok: {}",
-            sanitized_bundle.bundle_id,
+            sanitized_bundle.slot,
             bundle_execution_results.result.is_ok()
         );
 
         // don't commit bundle if failure executing any part of the bundle
         if let Err(e) = bundle_execution_results.result {
+            if should_reset_reserve_hash {
+                bank
+                    .write_cost_tracker()
+                    .unwrap()
+                    .restore_nonvote_cost_limits();
+                reset_reserve_hashes();
+            }
             return ExecuteRecordCommitResult {
                 commit_transaction_details: vec![],
                 result: Err(e.clone().into()),
@@ -612,7 +672,7 @@ impl BundleConsumer {
 
         debug!(
             "bundle: {} recording {} batches of {:?} transactions",
-            sanitized_bundle.bundle_id,
+            sanitized_bundle.slot,
             executed_batches.len(),
             executed_batches
                 .iter()
@@ -627,8 +687,19 @@ impl BundleConsumer {
             .iter()
             .map(|txs| hash_transactions(txs))
             .collect());
-        let (starting_index, poh_record_us) =
-            measure_us!(recorder.record(bank.slot(), hashes, executed_batches));
+        let (starting_index, poh_record_us) = measure_us!(recorder.record(
+            bank.slot(),
+            hashes,
+            executed_batches,
+            should_reset_reserve_hash,
+        ));
+        if should_reset_reserve_hash {
+            bank
+                .write_cost_tracker()
+                .unwrap()
+                .restore_nonvote_cost_limits();
+            reset_reserve_hashes();
+        }
 
         let RecordTransactionsSummary {
             record_transactions_timings,
@@ -664,7 +735,7 @@ impl BundleConsumer {
 
         debug!(
             "bundle: {} record result: {}",
-            sanitized_bundle.bundle_id,
+            sanitized_bundle.slot,
             record_transactions_result.is_ok()
         );
 
@@ -705,7 +776,7 @@ impl BundleConsumer {
             .collect();
         debug!(
             "bundle: {} commit details: {:?}",
-            sanitized_bundle.bundle_id, commit_transaction_details
+            sanitized_bundle.slot, commit_transaction_details
         );
 
         ExecuteRecordCommitResult {
@@ -718,6 +789,7 @@ impl BundleConsumer {
     }
 
     /// Returns true if any of the transactions in a bundle mention one of the tip PDAs
+    #[allow(dead_code)]
     fn bundle_touches_tip_pdas(bundle: &SanitizedBundle, tip_pdas: &HashSet<Pubkey>) -> bool {
         bundle.transactions.iter().any(|tx| {
             tx.message()
@@ -740,19 +812,18 @@ mod tests {
             },
             packet_bundle::PacketBundle,
             proxy::block_engine_stage::BlockBuilderFeeInfo,
-            tip_manager::{
-                derive_tip_distribution_account_address, TipDistributionAccountConfig, TipManager,
-                TipManagerConfig,
-            },
+            tip_manager::{TipDistributionAccountConfig, TipManager, TipManagerConfig},
         },
         crossbeam_channel::{unbounded, Receiver},
+        jito_tip_distribution::sdk::derive_tip_distribution_account_address,
         rand::{thread_rng, RngCore},
-        solana_bundle::SanitizedBundle,
+        rayon::ThreadPoolBuilder,
+        solana_bundle::{scheduler::Scheduler, SanitizedBundle},
         solana_bundle_sdk::derive_bundle_id,
         solana_clock::MAX_PROCESSING_AGE,
-        solana_cluster_type::ClusterType,
         solana_cost_model::cost_model::CostModel,
         solana_fee_calculator::{FeeRateGovernor, DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE},
+        solana_genesis_config::ClusterType,
         solana_gossip::{cluster_info::ClusterInfo, contact_info::ContactInfo},
         solana_hash::Hash,
         solana_keypair::Keypair,
@@ -977,7 +1048,7 @@ mod tests {
                             .map(|tx| BytesPacket::from_data(None, tx).unwrap())
                             .collect::<Vec<_>>(),
                     ),
-                    bundle_id,
+                    slot: 0,
                 }
             })
             .collect::<Vec<_>>()
@@ -1193,7 +1264,7 @@ mod tests {
                 ),
             )
             .unwrap()]),
-            bundle_id: "test_transfer".to_string(),
+            slot: 0,
         };
 
         let deserialized_bundle =
@@ -1321,7 +1392,12 @@ mod tests {
             SocketAddrSpace::new(true),
         ));
 
-        let working_bank = poh_recorder.read().unwrap().bank().unwrap();
+        let bank_start = poh_recorder.read().unwrap().bank_start().unwrap();
+        let mut scheduler = Scheduler::new();
+        let thread_pool = ThreadPoolBuilder::new()
+            .num_threads(BundleConsumer::NUM_THREADS)
+            .build()
+            .expect("Failed to build thread pool");
 
         let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(1);
         assert_matches!(
@@ -1335,8 +1411,10 @@ mod tests {
                 &QosService::new(1),
                 &None,
                 Duration::from_secs(10),
-                &working_bank,
-                &mut bundle_stage_leader_metrics
+                &bank_start,
+                &mut bundle_stage_leader_metrics,
+                &mut scheduler,
+                &thread_pool,
             ),
             Ok(())
         );
@@ -1416,7 +1494,7 @@ mod tests {
         ));
         let sanitized_bundle = SanitizedBundle {
             transactions: vec![transfer_tx],
-            bundle_id: String::default(),
+            slot: 0,
         };
 
         let transfer_cost =
@@ -1454,7 +1532,7 @@ mod tests {
         ));
         let sanitized_bundle = SanitizedBundle {
             transactions: vec![transfer_tx1, transfer_tx2],
-            bundle_id: String::default(),
+            slot: 0,
         };
 
         // set block cost limit to 1 transfer transaction, try to process 2, should return an error

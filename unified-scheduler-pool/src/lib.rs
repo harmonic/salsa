@@ -1121,6 +1121,7 @@ impl TaskHandler for DefaultTaskHandler {
                     .record_transactions(
                         bank.slot(),
                         vec![vec![transaction.to_versioned_transaction()]],
+                        false,
                     );
                 match result {
                     Ok(()) => Ok(starting_transaction_index),

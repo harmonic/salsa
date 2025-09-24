@@ -6,14 +6,17 @@ use {
         receive_and_buffer::{DisconnectedError, ReceiveAndBuffer},
         scheduler::{PreLockFilterAction, Scheduler},
         scheduler_error::SchedulerError,
-        scheduler_metrics::{SchedulerCountMetrics, SchedulerTimingMetrics, SchedulingDetails},
+        scheduler_metrics::{
+            SchedulerCountMetrics, SchedulerTimingMetrics,
+            SchedulingDetails,
+        },
     },
     crate::banking_stage::{
         consume_worker::ConsumeWorkerMetrics,
         consumer::Consumer,
         decision_maker::{BufferedPacketsDecision, DecisionMaker},
         transaction_scheduler::{
-            receive_and_buffer::ReceivingStats, transaction_state_container::StateContainer,
+            receive_and_buffer::ReceivingStats, scheduler_controller::slot::set_consume_slot, transaction_state_container::StateContainer
         },
         TOTAL_BUFFERED_PACKETS,
     },
@@ -23,10 +26,7 @@ use {
     solana_svm::transaction_error_metrics::TransactionErrorMetrics,
     std::{
         num::Saturating,
-        sync::{
-            atomic::{AtomicBool, Ordering},
-            Arc, RwLock,
-        },
+        sync::{atomic::{AtomicBool, Ordering}, Arc, RwLock},
     },
 };
 
@@ -147,16 +147,19 @@ where
         &mut self,
         decision: &BufferedPacketsDecision,
     ) -> Result<(), SchedulerError> {
+        let decision = DecisionMaker::maybe_consume::<true /* vanilla */>(decision.clone());
+
         match decision {
             BufferedPacketsDecision::Consume(bank) => {
                 if !self.scheduling_enabled() {
                     return Ok(());
                 }
+                set_consume_slot(bank.slot());
 
                 let (scheduling_summary, schedule_time_us) = measure_us!(self.scheduler.schedule(
                     &mut self.container,
                     |txs, results| {
-                        Self::pre_graph_filter(txs, results, bank, MAX_PROCESSING_AGE)
+                        Self::pre_graph_filter(txs, results, &bank, MAX_PROCESSING_AGE)
                     },
                     |_| PreLockFilterAction::AttemptToSchedule // no pre-lock filter for now
                 )?);
@@ -330,8 +333,7 @@ where
         &mut self,
         decision: &BufferedPacketsDecision,
     ) -> Result<ReceivingStats, DisconnectedError> {
-        let receiving_stats = self
-            .receive_and_buffer
+        let receiving_stats = self.receive_and_buffer
             .receive_and_buffer_packets(&mut self.container, decision)?;
 
         self.count_metrics.update(|count_metrics| {
@@ -379,9 +381,24 @@ where
     }
 }
 
+pub(crate) mod slot {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static CONSUME_SLOT: AtomicU64 = AtomicU64::new(0);
+
+    #[inline]
+    pub(crate) fn consume_slot() -> u64 {
+        CONSUME_SLOT.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub(crate) fn set_consume_slot(slot: u64) {
+        CONSUME_SLOT.store(slot, Ordering::Relaxed);
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
     use {
         super::*,
         crate::banking_stage::{
@@ -610,6 +627,7 @@ mod tests {
                     revert_on_error: false,
                     respond_with_extra_info: false,
                     max_schedule_slot: None,
+                    slot: 0,
                 },
                 retryable_indexes: vec![],
                 extra_info: None,

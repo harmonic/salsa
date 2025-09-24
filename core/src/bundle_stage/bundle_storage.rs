@@ -1,12 +1,13 @@
 use {
     crate::{
         bundle_stage::bundle_stage_leader_metrics::BundleStageLeaderMetrics,
-        immutable_deserialized_bundle::ImmutableDeserializedBundle,
+        immutable_deserialized_bundle::ImmutableDeserializedBundle, scheduler_synchronization,
     },
     solana_bundle::{
         bundle_execution::LoadAndExecuteBundleError, BundleExecutionError, SanitizedBundle,
     },
     solana_clock::Slot,
+    solana_poh::poh_service::reset_reserve_hashes,
     solana_pubkey::Pubkey,
     solana_runtime::bank::Bank,
     solana_svm::transaction_error_metrics::TransactionErrorMetrics,
@@ -28,7 +29,8 @@ pub struct InsertPacketBundlesSummary {
 #[derive(Debug)]
 pub struct BundleStorage {
     last_update_slot: Slot,
-    unprocessed_bundle_storage: VecDeque<ImmutableDeserializedBundle>,
+    pub(crate) unprocessed_bundle_storage: VecDeque<ImmutableDeserializedBundle>,
+    attempted_slot: Option<Slot>,
     // Storage for bundles that exceeded the cost model for the slot they were last attempted
     // execution on
     cost_model_buffered_bundle_storage: VecDeque<ImmutableDeserializedBundle>,
@@ -42,12 +44,17 @@ impl Default for BundleStorage {
             cost_model_buffered_bundle_storage: VecDeque::with_capacity(
                 Self::BUNDLE_STORAGE_CAPACITY,
             ),
+            attempted_slot: None,
         }
     }
 }
 
 impl BundleStorage {
     pub const BUNDLE_STORAGE_CAPACITY: usize = 1000;
+
+    pub fn consumed_for_slot(&self, slot: Slot) -> bool {
+        self.attempted_slot.is_some_and(|s| s == slot)
+    }
 
     pub fn is_empty(&self) -> bool {
         self.unprocessed_bundle_storage.is_empty()
@@ -175,11 +182,35 @@ impl BundleStorage {
             &mut BundleStageLeaderMetrics,
         ) -> Vec<Result<(), BundleExecutionError>>,
     {
-        let sanitized_bundles = self.drain_and_sanitize_bundles(
-            bank,
+        let slot = bank.slot();
+
+        if self.attempted_slot.is_some_and(|s| s == slot) {
+            debug!("charity: should not have entered here...");
+            return true;
+        }
+
+        self.attempted_slot = Some(slot);
+
+        let mut sanitized_bundles = self.drain_and_sanitize_bundles(
+            bank.clone(),
             bundle_stage_leader_metrics,
             blacklisted_accounts,
         );
+
+        // charity: (paranoia) only retain up to one block for this slot
+        sanitized_bundles.retain(|(_, b)| b.slot == slot);
+        sanitized_bundles.truncate(1);
+
+        let have_block = sanitized_bundles.len() == 1;
+        if !have_block {
+            info!("no block to process for slot {}", slot);
+            bank.write_cost_tracker()
+                .unwrap()
+                .restore_nonvote_cost_limits();
+            scheduler_synchronization::block_failed(slot);
+            reset_reserve_hashes();
+            return true;
+        }
 
         debug!("processing {} bundles", sanitized_bundles.len());
         let bundle_execution_results =
@@ -187,7 +218,8 @@ impl BundleStorage {
 
         let mut is_slot_over = false;
 
-        let mut rebuffered_bundles = Vec::new();
+        let rebuffered_bundles = Vec::new();
+        let mut bundle_success = false;
 
         sanitized_bundles
             .into_iter()
@@ -195,61 +227,70 @@ impl BundleStorage {
             .for_each(
                 |((deserialized_bundle, sanitized_bundle), result)| match result {
                     Ok(_) => {
-                        debug!("bundle={} executed ok", sanitized_bundle.bundle_id);
+                        warn!("bundle={} executed ok", sanitized_bundle.slot);
+                        bundle_success = true;
                         // yippee
                     }
                     Err(BundleExecutionError::PohRecordError(e)) => {
                         // buffer the bundle to the front of the queue to be attempted next slot
-                        debug!(
-                            "bundle={} poh record error: {e:?}",
-                            sanitized_bundle.bundle_id
-                        );
-                        rebuffered_bundles.push(deserialized_bundle);
+                        warn!("bundle={} poh record error: {e:?}", sanitized_bundle.slot);
+                        // rebuffered_bundles.push(deserialized_bundle);
                         is_slot_over = true;
                     }
                     Err(BundleExecutionError::BankProcessingTimeLimitReached) => {
                         // buffer the bundle to the front of the queue to be attempted next slot
-                        debug!("bundle={} bank processing done", sanitized_bundle.bundle_id);
-                        rebuffered_bundles.push(deserialized_bundle);
+                        warn!("bundle={} bank processing done", sanitized_bundle.slot);
+                        // rebuffered_bundles.push(deserialized_bundle);
                         is_slot_over = true;
                     }
                     Err(BundleExecutionError::ExceedsCostModel) => {
                         // cost model buffered bundles contain most recent bundles at the front of the queue
-                        debug!(
+                        warn!(
                             "bundle={} exceeds cost model, rebuffering",
-                            sanitized_bundle.bundle_id
+                            sanitized_bundle.slot
                         );
-                        self.push_back_cost_model_buffered_bundles(vec![deserialized_bundle]);
+                        // self.push_back_cost_model_buffered_bundles(vec![deserialized_bundle]);
                     }
                     Err(BundleExecutionError::TransactionFailure(
                         LoadAndExecuteBundleError::ProcessingTimeExceeded(_),
                     )) => {
                         // these are treated the same as exceeds cost model and are rebuferred to be completed
                         // at the beginning of the next slot
-                        debug!(
+                        warn!(
                             "bundle={} processing time exceeded, rebuffering",
-                            sanitized_bundle.bundle_id
+                            sanitized_bundle.slot
                         );
                         self.push_back_cost_model_buffered_bundles(vec![deserialized_bundle]);
                     }
                     Err(BundleExecutionError::TransactionFailure(e)) => {
-                        debug!(
-                            "bundle={} execution error: {:?}",
-                            sanitized_bundle.bundle_id, e
-                        );
+                        warn!("bundle={} execution error: {:?}", sanitized_bundle.slot, e);
                         // do nothing
                     }
                     Err(BundleExecutionError::TipError(e)) => {
-                        debug!("bundle={} tip error: {}", sanitized_bundle.bundle_id, e);
+                        warn!("bundle={} tip error: {}", sanitized_bundle.slot, e);
                         // Tip errors are _typically_ due to misconfiguration (except for poh record error, bank processing error, exceeds cost model)
                         // in order to prevent buffering too many bundles, we'll just drop the bundle
                     }
                     Err(BundleExecutionError::LockError) => {
                         // lock errors are irrecoverable due to malformed transactions
-                        debug!("bundle={} lock error", sanitized_bundle.bundle_id);
+                        warn!("bundle={} lock error", sanitized_bundle.slot);
+                    }
+                    Err(BundleExecutionError::OldBundle) => {
+                        info!(
+                            "charity: bundle={} not for current slot!! current slot {}",
+                            sanitized_bundle.slot, slot
+                        );
                     }
                 },
             );
+
+        if !bundle_success {
+            info!("block failed {}", slot);
+            bank.write_cost_tracker()
+                .unwrap()
+                .restore_nonvote_cost_limits();
+            scheduler_synchronization::block_failed(slot);
+        }
 
         // rebuffered bundles are pushed onto deque in reverse order so the first bundle is at the front
         for bundle in rebuffered_bundles.into_iter().rev() {
@@ -274,33 +315,7 @@ impl BundleStorage {
 
         // on new slot, drain anything that was buffered from last slot
         if bank.slot() != self.last_update_slot {
-            sanitized_bundles.extend(
-                self.cost_model_buffered_bundle_storage
-                    .drain(..)
-                    .filter_map(|packet_bundle| {
-                        let r = packet_bundle.build_sanitized_bundle(
-                            &bank,
-                            blacklisted_accounts,
-                            &mut error_metrics,
-                        );
-                        bundle_stage_leader_metrics
-                            .bundle_stage_metrics_tracker()
-                            .increment_sanitize_transaction_result(&r);
-
-                        match r {
-                            Ok(sanitized_bundle) => Some((packet_bundle, sanitized_bundle)),
-                            Err(e) => {
-                                debug!(
-                                    "bundle id: {} error sanitizing: {}",
-                                    packet_bundle.bundle_id(),
-                                    e
-                                );
-                                None
-                            }
-                        }
-                    }),
-            );
-
+            // mevanoxx todo: if this is not used for anything else remove last_update_slot
             self.last_update_slot = bank.slot();
         }
 
@@ -317,9 +332,9 @@ impl BundleStorage {
                 match r {
                     Ok(sanitized_bundle) => Some((packet_bundle, sanitized_bundle)),
                     Err(e) => {
-                        debug!(
-                            "bundle id: {} error sanitizing: {}",
-                            packet_bundle.bundle_id(),
+                        info!(
+                            "bundle slot: {} error sanitizing: {}",
+                            packet_bundle.slot(),
                             e
                         );
                         None
