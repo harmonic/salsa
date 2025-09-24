@@ -1,5 +1,7 @@
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
+use crate::banking_stage::transaction_scheduler::scheduler_controller::slot::consume_slot;
+
 use {
     super::{
         scheduler::{PreLockFilterAction, Scheduler, SchedulingSummary},
@@ -270,7 +272,10 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
                         if self.common.batches.transactions()[thread_id].len()
                             >= self.config.target_transactions_per_batch
                         {
-                            num_sent += self.common.send_batch(thread_id)?;
+                            num_sent += self.common.send_batch(
+                                thread_id,
+                                consume_slot()
+                            )?;
                         }
 
                         // if the thread is at max_cu_per_thread, remove it from the schedulable threads
@@ -293,7 +298,9 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
             }
 
             // Send all non-empty batches
-            num_sent += self.common.send_batches()?;
+            num_sent += self
+                .common
+                .send_batches(consume_slot())?;
 
             // Refresh window budget and do chunked pops
             window_budget += unblock_this_batch.len();
@@ -306,7 +313,9 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
         }
 
         // Send batches for any remaining transactions
-        num_sent += self.common.send_batches()?;
+        num_sent += self
+            .common
+            .send_batches(consume_slot())?;
 
         // Push unschedulable ids back into the container
         container.push_ids_into_queue(unschedulable_ids.into_iter());

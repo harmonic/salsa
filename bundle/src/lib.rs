@@ -1,9 +1,7 @@
 use {
     crate::bundle_execution::LoadAndExecuteBundleError,
     anchor_lang::error::Error,
-    itertools::Itertools,
     serde::{Deserialize, Serialize},
-    sha2::{Digest, Sha256},
     solana_poh::poh_recorder::PohRecorderError,
     solana_pubkey::Pubkey,
     solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
@@ -12,6 +10,8 @@ use {
 };
 
 pub mod bundle_execution;
+pub mod scheduler;
+pub mod timer;
 
 #[derive(Error, Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum TipError {
@@ -61,18 +61,13 @@ pub enum BundleExecutionError {
 
     #[error("Tip payment error {0}")]
     TipError(#[from] TipError),
+
+    #[error("Old bundle")]
+    OldBundle,
 }
 
 #[derive(Debug)]
 pub struct SanitizedBundle {
     pub transactions: Vec<RuntimeTransaction<SanitizedTransaction>>,
-    pub bundle_id: String,
-}
-
-pub fn derive_bundle_id_from_sanitized_transactions(
-    transactions: &[RuntimeTransaction<SanitizedTransaction>],
-) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(transactions.iter().map(|tx| tx.signature()).join(","));
-    format!("{:x}", hasher.finalize())
+    pub slot: u64,
 }

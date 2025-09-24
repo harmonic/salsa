@@ -1535,6 +1535,8 @@ impl Validator {
             None
         };
 
+        let (leader_window_tx, leader_window_rx) = tokio::sync::mpsc::channel(128);
+
         let tvu = Tvu::new(
             vote_account,
             authorized_voter_keypairs,
@@ -1598,6 +1600,7 @@ impl Validator {
             slot_status_notifier,
             vote_connection_cache,
             config.shred_retransmit_receiver_address.clone(),
+            leader_window_tx,
         )
         .map_err(ValidatorError::Other)?;
 
@@ -1696,6 +1699,7 @@ impl Validator {
             config.tip_manager_config.clone(),
             config.shred_receiver_address.clone(),
             config.preallocated_bundle_cost,
+            leader_window_rx
         );
 
         datapoint_info!(

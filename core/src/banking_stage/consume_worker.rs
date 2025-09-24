@@ -83,6 +83,11 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
                 .fetch_add(get_bank_us, Ordering::Relaxed);
             return self.retry_drain(work);
         };
+
+        if work.slot != bank.slot() {
+            return self.retry_drain(work);
+        }
+
         self.metrics
             .timing_metrics
             .wait_for_bank_success_us
@@ -951,6 +956,7 @@ mod tests {
             ids: vec![id],
             transactions,
             max_ages: vec![max_age],
+            slot: bank.slot(),
         };
         consume_sender.send(work).unwrap();
         let consumed = consumed_receiver.recv().unwrap();
@@ -1000,6 +1006,7 @@ mod tests {
             ids: vec![id],
             transactions,
             max_ages: vec![max_age],
+            slot: bank.slot(),
         };
         consume_sender.send(work).unwrap();
         let consumed = consumed_receiver.recv().unwrap();
@@ -1052,6 +1059,7 @@ mod tests {
                 ids: vec![id1, id2],
                 transactions: txs,
                 max_ages: vec![max_age, max_age],
+                slot: bank.slot(),
             })
             .unwrap();
 
@@ -1122,6 +1130,7 @@ mod tests {
                 ids: vec![id1],
                 transactions: txs1,
                 max_ages: vec![max_age],
+                slot: bank.slot(),
             })
             .unwrap();
 
@@ -1131,6 +1140,7 @@ mod tests {
                 ids: vec![id2],
                 transactions: txs2,
                 max_ages: vec![max_age],
+                slot: bank.slot(),
             })
             .unwrap();
         let consumed = consumed_receiver.recv().unwrap();
@@ -1269,6 +1279,7 @@ mod tests {
                         alt_invalidation_slot: bank.slot() + 1,
                     },
                 ],
+                slot: bank.slot(),
             })
             .unwrap();
 

@@ -80,7 +80,7 @@ impl BundleReceiver {
             Duration::from_millis(0)
         } else {
             // BundleStage should pick up a working_bank as fast as possible
-            Duration::from_millis(100)
+            Duration::from_millis(1)
         }
     }
 
@@ -101,7 +101,7 @@ impl BundleReceiver {
         bundle_stage_stats.increment_num_packets_received(packet_count as u64);
         bundle_stage_stats.increment_num_bundles_dropped(num_dropped_bundles.0 as u64);
 
-        debug!(
+        info!(
             "@{:?} bundles: {} txs: {} id: {}",
             timestamp(),
             bundle_count,
@@ -123,6 +123,7 @@ impl BundleReceiver {
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
         bundle_stage_stats: &mut BundleStageLoopMetrics,
     ) {
+        info!("Inserting {} unprocessed bundles into storage", deserialized_bundles.len());
         if !deserialized_bundles.is_empty() {
             // bundles get pushed onto the back of the unprocessed bundle queue
             let insert_bundles_summary =
@@ -206,7 +207,7 @@ mod tests {
                             .map(|tx| BytesPacket::from_data(None, tx).unwrap())
                             .collect::<Vec<_>>(),
                     ),
-                    bundle_id,
+                    slot: 0
                 }
             })
             .collect()
