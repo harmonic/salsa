@@ -27,8 +27,11 @@ use {
     solana_entry::entry::hash_transactions,
     solana_gossip::cluster_info::ClusterInfo,
     solana_measure::measure_us,
-    solana_poh::transaction_recorder::{
-        RecordTransactionsSummary, RecordTransactionsTimings, TransactionRecorder,
+    solana_poh::{
+        poh_service::reset_reserve_hashes,
+        transaction_recorder::{
+            RecordTransactionsSummary, RecordTransactionsTimings, TransactionRecorder,
+        },
     },
     solana_pubkey::Pubkey,
     solana_runtime::bank::Bank,

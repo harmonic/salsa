@@ -7,6 +7,7 @@ use {
         bundle_execution::LoadAndExecuteBundleError, BundleExecutionError, SanitizedBundle,
     },
     solana_clock::Slot,
+    solana_poh::poh_service::reset_reserve_hashes,
     solana_pubkey::Pubkey,
     solana_runtime::bank::Bank,
     solana_svm::transaction_error_metrics::TransactionErrorMetrics,

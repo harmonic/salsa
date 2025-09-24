@@ -14,14 +14,10 @@ use {
     solana_runtime::bank::Bank,
     solana_runtime_transaction::{
         runtime_transaction::RuntimeTransaction, transaction_meta::StaticMeta,
-    },
-    solana_svm::transaction_error_metrics::TransactionErrorMetrics,
-    solana_transaction::sanitized::SanitizedTransaction,
-    std::{
+    }, solana_svm::transaction_error_metrics::TransactionErrorMetrics, solana_transaction::sanitized::SanitizedTransaction, std::{
         collections::{hash_map::RandomState, HashSet},
         iter::repeat_n,
-    },
-    thiserror::Error,
+    }, thiserror::Error
 };
 
 #[derive(Debug, Error)]
