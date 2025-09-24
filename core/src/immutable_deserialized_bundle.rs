@@ -4,23 +4,12 @@ use {
             DeserializedPacketError, ImmutableDeserializedPacket,
         },
         packet_bundle::PacketBundle,
-    },
-    solana_accounts_db::account_locks::validate_account_locks,
-    solana_bundle::SanitizedBundle,
-    solana_clock::MAX_PROCESSING_AGE,
-    solana_perf::sigverify::verify_packet,
-    solana_pubkey::Pubkey,
-    solana_runtime::bank::Bank,
-    solana_runtime_transaction::{
+    }, rayon::prelude::*, solana_accounts_db::account_locks::validate_account_locks, solana_bundle::SanitizedBundle, solana_clock::MAX_PROCESSING_AGE, solana_perf::sigverify::verify_packet, solana_pubkey::Pubkey, solana_runtime::bank::Bank, solana_runtime_transaction::{
         runtime_transaction::RuntimeTransaction, transaction_meta::StaticMeta,
-    },
-    solana_svm::transaction_error_metrics::TransactionErrorMetrics,
-    solana_transaction::sanitized::SanitizedTransaction,
-    std::{
+    }, solana_svm::transaction_error_metrics::TransactionErrorMetrics, solana_transaction::sanitized::SanitizedTransaction, std::{
         collections::{hash_map::RandomState, HashSet},
         iter::repeat_n,
-    },
-    thiserror::Error,
+    }, thiserror::Error
 };
 
 #[derive(Debug, Error)]
@@ -67,8 +56,8 @@ pub enum DeserializedBundleError {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ImmutableDeserializedBundle {
-    bundle_id: String,
     packets: Vec<ImmutableDeserializedPacket>,
+    slot: u64,
 }
 
 impl ImmutableDeserializedBundle {
@@ -76,25 +65,36 @@ impl ImmutableDeserializedBundle {
         bundle: &mut PacketBundle,
         max_len: Option<usize>,
     ) -> Result<Self, DeserializedBundleError> {
+        info!(
+            "Received bundle with {} packets to process",
+            bundle.batch.len()
+        );
         // Checks: non-zero, less than some length, marked for discard, signature verification failed, failed to sanitize to
         // ImmutableDeserializedPacket
         if bundle.batch.is_empty() {
+            error!("Received empty bundle");
             return Err(DeserializedBundleError::EmptyBatch);
         }
         if max_len
             .map(|max_len| bundle.batch.len() > max_len)
             .unwrap_or(false)
         {
+            error!(
+                "Received bundle with too many packets: {}",
+                bundle.batch.len()
+            );
             return Err(DeserializedBundleError::TooManyPackets);
         }
         if bundle.batch.iter().any(|p| p.meta().discard()) {
+            error!("Received bundle marked for discard");
             return Err(DeserializedBundleError::MarkedDiscard);
         }
         if bundle
             .batch
-            .iter_mut()
+            .par_iter_mut()
             .any(|mut p| !verify_packet(&mut p, false))
         {
+            error!("Received bundle with invalid packet");
             return Err(DeserializedBundleError::SignatureVerificationFailure);
         }
 
@@ -104,8 +104,13 @@ impl ImmutableDeserializedBundle {
             immutable_packets.push(immutable_packet);
         }
 
+        info!(
+            "Successfully deserialized bundle with {} packets",
+            immutable_packets.len()
+        );
+
         Ok(Self {
-            bundle_id: bundle.bundle_id.clone(),
+            slot: bundle.slot,
             packets: immutable_packets,
         })
     }
@@ -115,8 +120,8 @@ impl ImmutableDeserializedBundle {
         self.packets.len()
     }
 
-    pub fn bundle_id(&self) -> &str {
-        &self.bundle_id
+    pub fn slot(&self) -> u64 {
+        self.slot
     }
 
     /// A bundle has the following requirements:
@@ -190,7 +195,7 @@ impl ImmutableDeserializedBundle {
 
         Ok(SanitizedBundle {
             transactions,
-            bundle_id: self.bundle_id.clone(),
+            slot: self.slot,
         })
     }
 }
@@ -240,7 +245,7 @@ mod tests {
                     BytesPacket::from_data(None, &tx0).unwrap(),
                     BytesPacket::from_data(None, &tx1).unwrap(),
                 ]),
-                bundle_id: String::default(),
+                slot: 0,
             },
             None,
         )
@@ -267,7 +272,7 @@ mod tests {
             ImmutableDeserializedBundle::new(
                 &mut PacketBundle {
                     batch: PacketBatch::from(vec![]),
-                    bundle_id: String::default(),
+                    slot: 0,
                 },
                 None,
             ),
@@ -293,7 +298,7 @@ mod tests {
                             })
                             .collect::<Vec<_>>(),
                     ),
-                    bundle_id: String::default(),
+                    slot: 0,
                 },
                 Some(5),
             ),
@@ -314,7 +319,7 @@ mod tests {
             ImmutableDeserializedBundle::new(
                 &mut PacketBundle {
                     batch: PacketBatch::from(vec![packet]),
-                    bundle_id: String::default(),
+                    slot: 0,
                 },
                 Some(5),
             ),
@@ -335,7 +340,7 @@ mod tests {
             ImmutableDeserializedBundle::new(
                 &mut PacketBundle {
                     batch: PacketBatch::from(vec![BytesPacket::from_data(None, tx0).unwrap()]),
-                    bundle_id: String::default(),
+                    slot: 0,
                 },
                 None,
             ),
@@ -367,7 +372,7 @@ mod tests {
         let bundle = ImmutableDeserializedBundle::new(
             &mut PacketBundle {
                 batch: PacketBatch::from(vec![BytesPacket::from_data(None, tx0).unwrap()]),
-                bundle_id: String::default(),
+                slot: 0,
             },
             None,
         )
@@ -403,7 +408,7 @@ mod tests {
                     BytesPacket::from_data(None, &tx0).unwrap(),
                     BytesPacket::from_data(None, &tx0).unwrap(),
                 ]),
-                bundle_id: String::default(),
+                slot: 0,
             },
             None,
         )
@@ -432,7 +437,7 @@ mod tests {
         let bundle = ImmutableDeserializedBundle::new(
             &mut PacketBundle {
                 batch: PacketBatch::from(vec![BytesPacket::from_data(None, tx0).unwrap()]),
-                bundle_id: String::default(),
+                slot: 0,
             },
             None,
         )
@@ -467,7 +472,7 @@ mod tests {
         let bundle = ImmutableDeserializedBundle::new(
             &mut PacketBundle {
                 batch: PacketBatch::from(vec![BytesPacket::from_data(None, tx0).unwrap()]),
-                bundle_id: String::default(),
+                slot: 0,
             },
             None,
         )
@@ -496,7 +501,7 @@ mod tests {
         let bundle = ImmutableDeserializedBundle::new(
             &mut PacketBundle {
                 batch: PacketBatch::from(vec![BytesPacket::from_data(None, tx0).unwrap()]),
-                bundle_id: String::default(),
+                slot: 0,
             },
             None,
         )

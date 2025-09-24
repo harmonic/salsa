@@ -53,7 +53,7 @@ use {
         net::{SocketAddr, UdpSocket},
         num::NonZeroUsize,
         sync::{atomic::AtomicBool, Arc, RwLock},
-        thread::{self, JoinHandle},
+        thread::{self, JoinHandle}, time::SystemTime,
     },
     tokio::sync::mpsc::Sender as AsyncSender,
 };
@@ -174,6 +174,7 @@ impl Tvu {
         slot_status_notifier: Option<SlotStatusNotifier>,
         vote_connection_cache: Arc<ConnectionCache>,
         shred_receiver_addr: Arc<RwLock<Option<SocketAddr>>>,
+        leader_window_sender: tokio::sync::mpsc::Sender<(SystemTime, u64)>,
     ) -> Result<Self, String> {
         let in_wen_restart = wen_restart_repair_slots.is_some();
 
@@ -313,6 +314,7 @@ impl Tvu {
             drop_bank_sender,
             block_metadata_notifier,
             dumped_slots_sender,
+            leader_window_sender,
         };
 
         let replay_receivers = ReplayReceivers {
@@ -548,6 +550,8 @@ pub mod tests {
             )
         };
 
+        let (leader_window_tx, _) = tokio::sync::mpsc::channel(1);
+
         let tvu = Tvu::new(
             &vote_keypair.pubkey(),
             Arc::new(RwLock::new(vec![Arc::new(vote_keypair)])),
@@ -609,6 +613,7 @@ pub mod tests {
             None,
             Arc::new(connection_cache),
             Arc::new(RwLock::new(None)),
+            leader_window_tx,
         )
         .expect("assume success");
         if enable_wen_restart {

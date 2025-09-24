@@ -1,4 +1,5 @@
 use {
+    crate::scheduler_synchronization,
     solana_clock::{
         DEFAULT_TICKS_PER_SLOT, FORWARD_TRANSACTIONS_TO_LEADER_AT_SLOT_OFFSET,
         HOLD_TRANSACTIONS_SLOT_OFFSET,
@@ -8,9 +9,8 @@ use {
     },
     solana_runtime::bank::Bank,
     solana_unified_scheduler_pool::{BankingStageMonitor, BankingStageStatus},
-    std::sync::{
-        atomic::{AtomicBool, Ordering::Relaxed},
-        Arc,
+    std::{
+        sync::{atomic::{AtomicBool, Ordering}, Arc},
     },
 };
 
@@ -86,6 +86,68 @@ impl DecisionMaker {
             BufferedPacketsDecision::Forward
         }
     }
+
+    /// mevanoxx:
+    ///
+    /// vanilla: consume if we are in fallback period with no external signal.
+    ///          there are no other preconditions
+    /// block: consume if we are in delegation period.
+    ///        preconditions: there is a bundle (for this slot) to consume
+    pub(crate) fn maybe_consume<const VANILLA: bool>(
+        decision: BufferedPacketsDecision,
+    ) -> BufferedPacketsDecision {
+        debug!("mevanoxx: maybe_consume VANILLA {VANILLA:?} decision {decision:?}");
+        let BufferedPacketsDecision::Consume(bank) = decision else {
+            return decision;
+        };
+
+        let current_tick_height = bank.tick_height();
+        let max_tick_height = bank.max_tick_height();
+        let bank_ticks_per_slot = bank.ticks_per_slot();
+        let start_tick = max_tick_height - bank_ticks_per_slot;
+        let ticks_info_slot = current_tick_height - start_tick;
+        let delegation_period_length = bank_ticks_per_slot * 15 / 16;
+        let in_delegation_period = ticks_info_slot < delegation_period_length;
+
+        debug!("mevanoxx: maybe_consume current_tick_height {current_tick_height} max_tick_height {max_tick_height} bank_ticks_per_slot {bank_ticks_per_slot} start_tick {start_tick} ticks_info_slot {ticks_info_slot} delegation_period_length {delegation_period_length} in_delegation_period {in_delegation_period}");
+
+        let current_slot = bank.slot();
+
+        // Check if we have a cached decision
+        CACHED_DECISION.with_borrow_mut(|cached_decision| {
+            // Use cached decision if there is one for this slot
+            if let Some((cached_slot, cached_decision)) = cached_decision {
+                debug!("mevanoxx: maybe_consume cached_decision {cached_decision:?} cached_slot {cached_slot:?} current_slot {current_slot}");
+                if current_slot.eq(cached_slot) {
+                    return cached_decision
+                        // Consume if cached_decision = true
+                        .then_some(BufferedPacketsDecision::Consume(bank))
+                        // Hold if cached_decision = false
+                        .unwrap_or(BufferedPacketsDecision::Hold);
+                }
+            }
+
+            // No cached decision. Try to update cached decision
+            let should_schedule: fn(u64, bool) -> Option<bool> = if VANILLA {
+                scheduler_synchronization::vanilla_should_schedule
+            } else {
+                scheduler_synchronization::block_should_schedule
+            };
+
+            match should_schedule(current_slot, in_delegation_period) {
+                Some(decision) => {
+                    debug!("mevanoxx: maybe_consume updating cached_decision {decision:?} for slot {current_slot}");
+                    *cached_decision = Some((current_slot, decision));
+                    decision
+                        // Consume if cached_decision = true
+                        .then_some(BufferedPacketsDecision::Consume(bank))
+                        // Hold if cached_decision = false
+                        .unwrap_or(BufferedPacketsDecision::Hold)
+                }
+                None => return BufferedPacketsDecision::Hold,
+            }
+        })
+    }
 }
 
 impl From<&PohRecorder> for DecisionMaker {
@@ -115,7 +177,7 @@ impl DecisionMakerWrapper {
 
 impl BankingStageMonitor for DecisionMakerWrapper {
     fn status(&mut self) -> BankingStageStatus {
-        if self.is_exited.load(Relaxed) {
+        if self.is_exited.load(Ordering::Relaxed) {
             BankingStageStatus::Exited
         } else if matches!(
             self.decision_maker.make_consume_or_forward_decision(),
@@ -126,6 +188,10 @@ impl BankingStageMonitor for DecisionMakerWrapper {
             BankingStageStatus::Active
         }
     }
+}
+
+thread_local! {
+    static CACHED_DECISION: std::cell::RefCell<Option<(u64, bool)>> = std::cell::RefCell::new(None);
 }
 
 #[cfg(test)]

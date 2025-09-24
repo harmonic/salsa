@@ -1408,6 +1408,14 @@ impl Bank {
             new.distribute_partitioned_epoch_rewards();
         });
 
+        // cavey unset limits. if we are proposer again this is set when we set_tpu_bank
+        let mut cost_tracker = new.cost_tracker.write().unwrap();
+        if cost_tracker.original_vote_cost_limit > 0 {
+            cost_tracker.vote_cost_limit = cost_tracker.original_vote_cost_limit;
+            cost_tracker.original_vote_cost_limit = 0;
+        }
+        drop(cost_tracker);
+
         let (_, cache_preparation_time_us) =
             measure_us!(new.prepare_program_cache_for_upcoming_feature_set());
 
@@ -3308,7 +3316,7 @@ impl Bank {
         &self,
         account_keys: &AccountKeys,
     ) -> AccountOverrides {
-        let mut account_overrides = AccountOverrides::default();
+        let account_overrides = AccountOverrides::default();
         let slot_history_id = sysvar::slot_history::id();
         if account_keys.iter().any(|pubkey| *pubkey == slot_history_id) {
             let current_account = self.get_account_with_fixed_root(&slot_history_id);
@@ -5032,6 +5040,13 @@ impl Bank {
         verified_accounts && verified_bank
     }
 
+    pub fn slot_tick_height(&self) -> u64 {
+        let slot_start_tick_height = self.max_tick_height.saturating_sub(self.ticks_per_slot);
+        self.tick_height
+            .load(Ordering::Relaxed)
+            .saturating_sub(slot_start_tick_height)
+    }
+
     /// Return the number of hashes per tick
     pub fn hashes_per_tick(&self) -> &Option<u64> {
         &self.hashes_per_tick
@@ -5742,6 +5757,13 @@ impl Bank {
     /// Sets the accounts lt hash, only to be used by SnapshotMinimizer
     pub fn set_accounts_lt_hash_for_snapshot_minimizer(&self, accounts_lt_hash: AccountsLtHash) {
         *self.accounts_lt_hash.lock().unwrap() = accounts_lt_hash;
+    }
+
+    pub fn cavey_set_proposer_limits(&self) {
+        // limit votes to 4M cost units
+        let mut cost_tracker = self.cost_tracker.write().unwrap();
+        cost_tracker.original_vote_cost_limit = cost_tracker.vote_cost_limit;
+        cost_tracker.vote_cost_limit = 4_000_000;
     }
 
     /// Return total transaction fee collected
