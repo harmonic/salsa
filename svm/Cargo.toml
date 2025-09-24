@@ -36,6 +36,7 @@ svm-internal = []
 
 [dependencies]
 ahash = { workspace = true }
+dashmap.workspace = true
 log = { workspace = true }
 percentage = { workspace = true }
 qualifier_attr = { workspace = true, optional = true }

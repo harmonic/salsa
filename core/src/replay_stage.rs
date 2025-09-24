@@ -85,7 +85,7 @@ use {
             Arc, RwLock,
         },
         thread::{self, Builder, JoinHandle},
-        time::{Duration, Instant},
+        time::{Duration, Instant, SystemTime},
     },
 };
 
@@ -303,6 +303,7 @@ pub struct ReplaySenders {
     pub drop_bank_sender: Sender<Vec<BankWithScheduler>>,
     pub block_metadata_notifier: Option<BlockMetadataNotifierArc>,
     pub dumped_slots_sender: Sender<Vec<(u64, Hash)>>,
+    pub leader_window_sender: tokio::sync::mpsc::Sender<(SystemTime, u64)>,
 }
 
 pub struct ReplayReceivers {
@@ -603,6 +604,7 @@ impl ReplayStage {
             drop_bank_sender,
             block_metadata_notifier,
             dumped_slots_sender,
+            leader_window_sender,
         } = senders;
 
         let ReplayReceivers {
@@ -1167,6 +1169,7 @@ impl ReplayStage {
                         &mut skipped_slots_info,
                         &banking_tracer,
                         has_new_vote_been_rooted,
+                        leader_window_sender.clone(),
                     );
 
                     let poh_bank = poh_recorder.read().unwrap().bank();
@@ -2086,6 +2089,7 @@ impl ReplayStage {
         skipped_slots_info: &mut SkippedSlotsInfo,
         banking_tracer: &Arc<BankingTracer>,
         has_new_vote_been_rooted: bool,
+        leader_window_sender: tokio::sync::mpsc::Sender<(SystemTime, u64)>,
     ) -> bool {
         // all the individual calls to poh_recorder.read() are designed to
         // increase granularity, decrease contention
@@ -2190,20 +2194,44 @@ impl ReplayStage {
                 false
             };
 
-            let tpu_bank = Self::new_bank_from_parent_with_notify(
+            let tpu_bank = Self::new_bank_from_parent(
                 parent.clone(),
                 poh_slot,
-                root_slot,
                 my_pubkey,
-                rpc_subscriptions,
-                slot_status_notifier,
                 NewBankOptions { vote_only_bank },
             );
+            tpu_bank.cavey_set_proposer_limits();
             // make sure parent is frozen for finalized hashes via the above
             // new()-ing of its child bank
             banking_tracer.hash_event(parent.slot(), &parent.last_blockhash(), &parent.hash());
 
-            update_bank_forks_and_poh_recorder_for_new_tpu_bank(bank_forks, poh_recorder, tpu_bank);
+            let tpu_bank = update_bank_forks_and_poh_recorder_for_new_tpu_bank(
+                bank_forks,
+                poh_recorder,
+                tpu_bank,
+            );
+
+            let slot = tpu_bank.slot();
+            if let Some(rpc_subscriptions) = rpc_subscriptions {
+                rpc_subscriptions.notify_slot(slot, tpu_bank.parent_slot(), root_slot);
+            }
+
+            let window_start_time = SystemTime::now();
+            info!(
+                "Sending leader window notification ({:?}, {})",
+                window_start_time, slot
+            );
+            if let Err(e) = leader_window_sender.blocking_send((window_start_time, slot)) {
+                error!("Failed to send leader window notification: {}", e);
+            }
+
+            if let Some(slot_status_notifier) = slot_status_notifier {
+                slot_status_notifier
+                    .read()
+                    .unwrap()
+                    .notify_created_bank(tpu_bank.slot(), tpu_bank.parent_slot());
+            }
+
             true
         } else {
             error!("{my_pubkey} No next leader found");
@@ -4158,13 +4186,10 @@ impl ReplayStage {
                     parent_slot,
                     forks.root()
                 );
-                let child_bank = Self::new_bank_from_parent_with_notify(
+                let child_bank = Self::new_bank_from_parent(
                     parent_bank.clone(),
                     child_slot,
-                    forks.root(),
                     &leader,
-                    rpc_subscriptions,
-                    slot_status_notifier,
                     NewBankOptions::default(),
                 );
                 blockstore_processor::set_alpenglow_ticks(&child_bank);
@@ -4184,9 +4209,11 @@ impl ReplayStage {
 
         let mut generate_new_bank_forks_write_lock =
             Measure::start("generate_new_bank_forks_write_lock");
+
         if !new_banks.is_empty() {
             let mut forks = bank_forks.write().unwrap();
             let root = forks.root();
+
             for (slot, bank) in new_banks {
                 if slot < root {
                     continue;
@@ -4194,7 +4221,17 @@ impl ReplayStage {
                 if forks.get(bank.parent_slot()).is_none() {
                     continue;
                 }
-                forks.insert(bank);
+
+                let bank = forks.insert(bank);
+                if let Some(rpc_subscriptions) = rpc_subscriptions {
+                    rpc_subscriptions.notify_slot(bank.slot(), bank.parent_slot(), forks.root());
+                }
+                if let Some(slot_status_notifier) = slot_status_notifier {
+                    slot_status_notifier
+                        .read()
+                        .unwrap()
+                        .notify_created_bank(bank.slot(), bank.parent_slot());
+                }
             }
         }
         generate_new_bank_forks_write_lock.stop();
@@ -4207,6 +4244,7 @@ impl ReplayStage {
             generate_new_bank_forks_write_lock.as_us();
     }
 
+    #[allow(dead_code)]
     fn new_bank_from_parent_with_notify(
         parent: Arc<Bank>,
         slot: u64,
@@ -4225,6 +4263,15 @@ impl ReplayStage {
                 .unwrap()
                 .notify_created_bank(slot, parent.slot());
         }
+        Bank::new_from_parent_with_options(parent, leader, slot, new_bank_options)
+    }
+
+    fn new_bank_from_parent(
+        parent: Arc<Bank>,
+        slot: u64,
+        leader: &Pubkey,
+        new_bank_options: NewBankOptions,
+    ) -> Bank {
         Bank::new_from_parent_with_options(parent, leader, slot, new_bank_options)
     }
 
@@ -8651,19 +8698,21 @@ pub(crate) mod tests {
         let has_new_vote_been_rooted = true;
 
         let rpc_subscriptions = Some(rpc_subscriptions);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
         assert!(!ReplayStage::maybe_start_leader(
             my_pubkey,
             bank_forks,
             &poh_recorder,
             &leader_schedule_cache,
-            rpc_subscriptions.as_deref(),
+            &rpc_subscriptions,
             &None,
             &mut progress,
             &retransmit_slots_sender,
             &mut SkippedSlotsInfo::default(),
             &banking_tracer,
             has_new_vote_been_rooted,
+            tx
         ));
     }
 
@@ -9311,6 +9360,7 @@ pub(crate) mod tests {
             poh_recorder.read().unwrap().reached_leader_slot(&my_pubkey),
             PohLeaderStatus::NotReached
         );
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         assert!(!ReplayStage::maybe_start_leader(
             &my_pubkey,
             &bank_forks,
@@ -9323,6 +9373,7 @@ pub(crate) mod tests {
             &mut SkippedSlotsInfo::default(),
             &banking_tracer,
             has_new_vote_been_rooted,
+            tx
         ));
 
         // Register another slots worth of ticks  with PoH recorder
@@ -9337,6 +9388,7 @@ pub(crate) mod tests {
 
         // We should now start leader for dummy_slot + 1
         let good_slot = dummy_slot + 1;
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         assert!(ReplayStage::maybe_start_leader(
             &my_pubkey,
             &bank_forks,
@@ -9349,6 +9401,7 @@ pub(crate) mod tests {
             &mut SkippedSlotsInfo::default(),
             &banking_tracer,
             has_new_vote_been_rooted,
+            tx
         ));
         // Get the new working bank, which is also the new leader bank/slot
         let working_bank = bank_forks.read().unwrap().working_bank();

@@ -41,6 +41,7 @@ pub struct ConsumeWork<Tx> {
     pub ids: Vec<TransactionId>,
     pub transactions: Vec<Tx>,
     pub max_ages: Vec<MaxAge>,
+    pub slot: Slot,
 }
 
 /// Message: [Worker -> Scheduler]

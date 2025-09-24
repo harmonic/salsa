@@ -65,7 +65,11 @@ pub struct UpdatedCosts {
 pub struct CostTracker {
     account_cost_limit: u64,
     block_cost_limit: u64,
-    vote_cost_limit: u64,
+    // cavey was here
+    pub vote_cost_limit: u64,
+    pub original_vote_cost_limit: u64,
+    pub original_account_cost_limit: u64,
+    pub original_block_cost_limit: u64,
     cost_by_writable_accounts: HashMap<Pubkey, u64, ahash::RandomState>,
     block_cost: u64,
     vote_cost: u64,
@@ -93,6 +97,9 @@ impl Default for CostTracker {
             account_cost_limit: MAX_WRITABLE_ACCOUNT_UNITS,
             block_cost_limit: MAX_BLOCK_UNITS,
             vote_cost_limit: MAX_VOTE_UNITS,
+            original_vote_cost_limit: 0,
+            original_account_cost_limit: 0,
+            original_block_cost_limit: 0,
             cost_by_writable_accounts: HashMap::with_capacity_and_hasher(
                 WRITABLE_ACCOUNTS_PER_BLOCK,
                 ahash::RandomState::new(),
@@ -113,6 +120,8 @@ impl Default for CostTracker {
 impl CostTracker {
     pub fn new_from_parent_limits(&self) -> Self {
         let mut new = Self::default();
+        // cavey was here
+        new.original_vote_cost_limit = self.original_vote_cost_limit;
         new.set_limits(
             self.account_cost_limit,
             self.block_cost_limit,
@@ -428,6 +437,18 @@ impl CostTracker {
             .values()
             .filter(|units| **units > 0)
             .count()
+    }
+
+    pub fn save_nonvote_cost_limits(&mut self) {
+        self.original_account_cost_limit = self.account_cost_limit;
+        self.original_block_cost_limit = self.block_cost_limit;
+        self.account_cost_limit = u64::MAX;
+        self.block_cost_limit = u64::MAX;
+    }
+
+    pub fn restore_nonvote_cost_limits(&mut self) {
+        self.account_cost_limit = self.original_account_cost_limit;
+        self.block_cost_limit = self.original_block_cost_limit;
     }
 }
 

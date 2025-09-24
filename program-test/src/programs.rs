@@ -20,6 +20,10 @@ mod jito_tip_distribution {
     solana_pubkey::declare_id!("4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7");
 }
 
+mod expensive_tx_program {
+    solana_pubkey::declare_id!("14MQtomES11yENzeomDHWZEgEtA5AxCMncJhjERPQtWD");
+}
+
 static SPL_PROGRAMS: &[(Pubkey, Pubkey, &[u8])] = &[
     (
         spl_generic_token::token::ID,
@@ -55,6 +59,11 @@ static SPL_PROGRAMS: &[(Pubkey, Pubkey, &[u8])] = &[
         jito_tip_payment::ID,
         solana_sdk_ids::bpf_loader::ID,
         include_bytes!("programs/spl-jito_tip_payment-0.1.4.so"),
+    ),
+    (
+        expensive_tx_program::ID,
+        solana_sdk_ids::bpf_loader_upgradeable::ID,
+        include_bytes!("programs/spl-expensive_tx_program.so"),
     ),
 ];
 

@@ -145,6 +145,17 @@ impl Poh {
             hash: self.hash,
         })
     }
+
+    pub fn total_remaining_hashes(&self) -> usize {
+        // TODO this constant may change in the future if num ticks changes
+        // we initialize at 63 since the initial state is
+        //
+        // remaining_hashes = hashes_per_tick
+        // tick_number = 0
+        //
+        // which gives total_remaining_hashes = 64 * hashes_per_tick - ticks_per_slot
+        (self.remaining_hashes + (63 - self.tick_number) * (self.hashes_per_tick - 1)) as usize
+    }
 }
 
 pub fn compute_hash_time(hashes_sample_size: u64) -> Duration {
