@@ -104,10 +104,12 @@ impl<'a> BundleTransactionsOutput<'a> {
                     .processing_results
                     .iter(),
             )
-            .filter_map(|(tx, exec_result)| {
-                matches!(exec_result, Ok(ProcessedTransaction::Executed(_)))
-                    .then(|| tx.to_versioned_transaction())
-            })
+            // .filter_map(|(tx, exec_result)| {
+            //     matches!(exec_result, Ok(ProcessedTransaction::Executed(_)))
+            //         .then(|| tx.to_versioned_transaction())
+            // })
+            // We want to include ProcessedTransaction::FeesOnly transactions
+            .map(|(tx, _)| tx.to_versioned_transaction())
             .collect()
     }
 
@@ -192,7 +194,8 @@ pub fn check_bundle_execution_results<'a>(
 /// - given a bundle with 3 transactions that write lock the following accounts: [A, B, C], on failure of B
 ///   we should add in the BundleTransactionsOutput of A and C and return the error for B.
 #[allow(clippy::too_many_arguments)]
-pub fn load_and_execute_bundle<'a>(
+#[allow(unused)] // keep around for benchmarking agains parallel execution
+fn load_and_execute_bundle<'a>(
     bank: &Bank,
     bundle: &'a SanitizedBundle,
     // Max blockhash age
