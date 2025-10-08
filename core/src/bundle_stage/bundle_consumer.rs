@@ -614,6 +614,38 @@ impl BundleConsumer {
 
         let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
 
+        let (record_batches, record_batches_us) = measure_us!(sanitized_bundle
+            .transactions
+            .iter()
+            .map(|br| vec![br.to_versioned_transaction()])
+            .collect::<Vec<Vec<VersionedTransaction>>>());
+
+        debug!(
+            "bundle: {} recording {} batches",
+            sanitized_bundle.slot,
+            record_batches.len()
+        );
+
+        let (freeze_lock, freeze_lock_us) = measure_us!(bank.freeze_lock());
+        execute_and_commit_timings.freeze_lock_us = freeze_lock_us;
+
+        let (hashes, hash_us) = measure_us!(record_batches
+            .iter()
+            .map(|txs| hash_transactions(txs))
+            .collect());
+        let (starting_index, poh_record_us) = measure_us!(recorder.record(
+            bank.slot(),
+            hashes,
+            record_batches,
+            should_reset_reserve_hash,
+        ));
+        if should_reset_reserve_hash {
+            bank.write_cost_tracker()
+                .unwrap()
+                .restore_nonvote_cost_limits();
+            reset_reserve_hashes();
+        }
+
         debug!("bundle: {} executing", sanitized_bundle.slot);
         let default_accounts = vec![None; sanitized_bundle.transactions.len()];
         let bundle_execution_results = parallel_load_and_execute_bundle(
@@ -631,6 +663,11 @@ impl BundleConsumer {
             thread_pool,
         );
 
+        info!(
+            "bundle: {} executed, is_ok: {}",
+            sanitized_bundle.slot,
+            bundle_execution_results.result.is_ok()
+        );
         let execution_metrics = bundle_execution_results.metrics.clone();
 
         execute_and_commit_timings.load_execute_us = execution_metrics.load_execute_us.0;
@@ -639,66 +676,22 @@ impl BundleConsumer {
             .accumulate(&execution_metrics.execute_timings);
         let transaction_error_counter = execution_metrics.errors.clone();
 
-        debug!(
-            "bundle: {} executed, is_ok: {}",
-            sanitized_bundle.slot,
-            bundle_execution_results.result.is_ok()
-        );
-
         // don't commit bundle if failure executing any part of the bundle
-        if let Err(e) = bundle_execution_results.result {
+        if let Err(e) = &bundle_execution_results.result {
             if should_reset_reserve_hash {
-                bank
-                    .write_cost_tracker()
+                bank.write_cost_tracker()
                     .unwrap()
                     .restore_nonvote_cost_limits();
-                reset_reserve_hashes();
+                // reset_reserve_hashes();
             }
-            return ExecuteRecordCommitResult {
-                commit_transaction_details: vec![],
-                result: Err(e.clone().into()),
-                execution_metrics,
-                execute_and_commit_timings,
-                transaction_error_counter,
-            };
-        }
-
-        let (executed_batches, execution_results_to_transactions_us) =
-            measure_us!(bundle_execution_results
-                .bundle_transaction_results
-                .iter()
-                .map(|br| br.executed_versioned_transactions())
-                .collect::<Vec<Vec<VersionedTransaction>>>());
-
-        debug!(
-            "bundle: {} recording {} batches of {:?} transactions",
-            sanitized_bundle.slot,
-            executed_batches.len(),
-            executed_batches
-                .iter()
-                .map(|b| b.len())
-                .collect::<Vec<usize>>()
-        );
-
-        let (freeze_lock, freeze_lock_us) = measure_us!(bank.freeze_lock());
-        execute_and_commit_timings.freeze_lock_us = freeze_lock_us;
-
-        let (hashes, hash_us) = measure_us!(executed_batches
-            .iter()
-            .map(|txs| hash_transactions(txs))
-            .collect());
-        let (starting_index, poh_record_us) = measure_us!(recorder.record(
-            bank.slot(),
-            hashes,
-            executed_batches,
-            should_reset_reserve_hash,
-        ));
-        if should_reset_reserve_hash {
-            bank
-                .write_cost_tracker()
-                .unwrap()
-                .restore_nonvote_cost_limits();
-            reset_reserve_hashes();
+            info!("mevanoxx: bundle execution failed with {e:?}");
+            // return ExecuteRecordCommitResult {
+            //     commit_transaction_details: vec![],
+            //     result: Err(e.clone().into()),
+            //     execution_metrics,
+            //     execute_and_commit_timings,
+            //     transaction_error_counter,
+            // };
         }
 
         let RecordTransactionsSummary {
@@ -730,8 +723,7 @@ impl BundleConsumer {
         execute_and_commit_timings.record_transactions_timings = record_transactions_timings;
         execute_and_commit_timings
             .record_transactions_timings
-            .processing_results_to_transactions_us =
-            Saturating(execution_results_to_transactions_us);
+            .processing_results_to_transactions_us = Saturating(record_batches_us);
 
         debug!(
             "bundle: {} record result: {}",
@@ -741,6 +733,12 @@ impl BundleConsumer {
 
         // don't commit bundle if failed to record
         if let Err(e) = record_transactions_result {
+            if should_reset_reserve_hash {
+                bank.write_cost_tracker()
+                    .unwrap()
+                    .restore_nonvote_cost_limits();
+                reset_reserve_hashes();
+            }
             return ExecuteRecordCommitResult {
                 commit_transaction_details: vec![],
                 result: Err(e.into()),
