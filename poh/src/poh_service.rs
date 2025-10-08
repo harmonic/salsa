@@ -353,8 +353,7 @@ impl PohService {
                     // 2. record
                     //
                     // and do not hash
-                    if let Some(num) = reserve_hashes() {
-                        info!("CAVEY DEBUG: {num} hashes remain");
+                    if reserve_hashes().is_some() {
                         continue;
                     }
 
