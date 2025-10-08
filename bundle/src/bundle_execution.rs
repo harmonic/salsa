@@ -195,7 +195,7 @@ pub fn check_bundle_execution_results<'a>(
 ///   we should add in the BundleTransactionsOutput of A and C and return the error for B.
 #[allow(clippy::too_many_arguments)]
 #[allow(unused)] // keep around for benchmarking agains parallel execution
-fn load_and_execute_bundle<'a>(
+pub fn load_and_execute_bundle<'a>(
     bank: &Bank,
     bundle: &'a SanitizedBundle,
     // Max blockhash age
@@ -515,7 +515,10 @@ pub fn parallel_load_and_execute_bundle<'a>(
                     for pk in account_keys.iter() {
                         // Save on a disk read.
                         if account_overrides.get(pk).is_none() {
-                            account_overrides.set_account(pk, bank.get_account_shared_data(pk).map(|data| data.0));
+                            account_overrides.set_account(
+                                pk,
+                                bank.get_account_shared_data(pk).map(|data| data.0),
+                            );
                         }
                     }
                 }
@@ -703,9 +706,9 @@ mod tests {
             scheduler::Scheduler,
             SanitizedBundle,
         },
-        solana_clock::MAX_PROCESSING_AGE,
         assert_matches::assert_matches,
         rayon::ThreadPoolBuilder,
+        solana_clock::MAX_PROCESSING_AGE,
         solana_keypair::Keypair,
         solana_ledger::genesis_utils::create_genesis_config,
         solana_pubkey::Pubkey,
