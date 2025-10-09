@@ -685,6 +685,11 @@ impl BundleConsumer {
                 // reset_reserve_hashes();
             }
             info!("mevanoxx: bundle execution failed with {e:?}");
+            
+            // Mark bank execution as invalid since we recorded transactions before execution
+            // but the execution failed
+            bank.mark_execution_invalid();
+            
             // return ExecuteRecordCommitResult {
             //     commit_transaction_details: vec![],
             //     result: Err(e.clone().into()),
@@ -739,6 +744,10 @@ impl BundleConsumer {
                     .restore_nonvote_cost_limits();
                 reset_reserve_hashes();
             }
+            
+            // Mark bank execution as invalid since we recorded transactions but recording failed
+            bank.mark_execution_invalid();
+            
             return ExecuteRecordCommitResult {
                 commit_transaction_details: vec![],
                 result: Err(e.into()),

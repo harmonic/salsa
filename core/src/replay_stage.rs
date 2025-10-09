@@ -2125,13 +2125,27 @@ impl ReplayStage {
             return false;
         }
 
+        // For optimistic broadcasting: only use the parent if it executed successfully
+        // Wait for freeze lock to ensure bank is in stable state, then check validity
+        let effective_parent = {
+            let _freeze_lock = parent.freeze_lock();
+            // Now that we have the freeze lock, check if execution was valid
+            if parent.is_execution_valid() {
+                // Parent executed successfully, use it
+                parent.clone()
+            } else {
+                // Parent execution was invalid, use its parent instead
+                parent.parent().expect("Parent execution was invalid, but no grandparent available - this should not happen")
+            }
+        };
+
         if bank_forks.read().unwrap().get(poh_slot).is_some() {
             warn!("{my_pubkey} already have bank in forks at {poh_slot}?");
             return false;
         }
         trace!("{my_pubkey} poh_slot {poh_slot} parent_slot {parent_slot}");
 
-        if let Some(next_leader) = leader_schedule_cache.slot_leader_at(poh_slot, Some(&parent)) {
+        if let Some(next_leader) = leader_schedule_cache.slot_leader_at(poh_slot, Some(&effective_parent)) {
             if !has_new_vote_been_rooted {
                 info!("Haven't landed a vote, so skipping my leader slot");
                 return false;
@@ -2195,7 +2209,7 @@ impl ReplayStage {
             };
 
             let tpu_bank = Self::new_bank_from_parent(
-                parent.clone(),
+                effective_parent.clone(),
                 poh_slot,
                 my_pubkey,
                 NewBankOptions { vote_only_bank },
@@ -2203,7 +2217,7 @@ impl ReplayStage {
             tpu_bank.cavey_set_proposer_limits();
             // make sure parent is frozen for finalized hashes via the above
             // new()-ing of its child bank
-            banking_tracer.hash_event(parent.slot(), &parent.last_blockhash(), &parent.hash());
+            banking_tracer.hash_event(effective_parent.slot(), &effective_parent.last_blockhash(), &effective_parent.hash());
 
             let tpu_bank = update_bank_forks_and_poh_recorder_for_new_tpu_bank(
                 bank_forks,
