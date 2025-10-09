@@ -563,6 +563,7 @@ impl PartialEq for Bank {
             reserved_account_keys: _,
             drop_callback: _,
             freeze_started: _,
+            execution_valid: _,
             vote_only_bank: _,
             cost_tracker: _,
             accounts_data_size_initial: _,
@@ -867,6 +868,10 @@ pub struct Bank {
 
     pub freeze_started: AtomicBool,
 
+    /// Indicates whether this bank's execution was valid (defaults to true)
+    /// Set to false if execution fails or is incomplete
+    pub execution_valid: AtomicBool,
+
     vote_only_bank: bool,
 
     cost_tracker: RwLock<CostTracker>,
@@ -1107,6 +1112,7 @@ impl Bank {
             reserved_account_keys: Arc::<ReservedAccountKeys>::default(),
             drop_callback: RwLock::new(OptionalDropCallback(None)),
             freeze_started: AtomicBool::default(),
+            execution_valid: AtomicBool::new(true),
             vote_only_bank: false,
             cost_tracker: RwLock::<CostTracker>::default(),
             accounts_data_size_initial: 0,
@@ -1361,6 +1367,7 @@ impl Bank {
                     .map(|drop_callback| drop_callback.clone_box()),
             )),
             freeze_started: AtomicBool::new(false),
+            execution_valid: AtomicBool::new(true),
             cost_tracker: RwLock::new(parent.read_cost_tracker().unwrap().new_from_parent_limits()),
             accounts_data_size_initial,
             accounts_data_size_delta_on_chain: AtomicI64::new(0),
@@ -1827,6 +1834,7 @@ impl Bank {
             reserved_account_keys: Arc::<ReservedAccountKeys>::default(),
             drop_callback: RwLock::new(OptionalDropCallback(None)),
             freeze_started: AtomicBool::new(fields.hash != Hash::default()),
+            execution_valid: AtomicBool::new(true),
             vote_only_bank: false,
             cost_tracker: RwLock::new(CostTracker::default()),
             accounts_data_size_initial,
@@ -2975,6 +2983,14 @@ impl Bank {
 
     pub fn is_complete(&self) -> bool {
         self.tick_height() == self.max_tick_height()
+    }
+
+    pub fn is_execution_valid(&self) -> bool {
+        self.execution_valid.load(Relaxed)
+    }
+
+    pub fn mark_execution_invalid(&self) {
+        self.execution_valid.store(false, Relaxed);
     }
 
     pub fn is_block_boundary(&self, tick_height: u64) -> bool {
