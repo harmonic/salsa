@@ -27,11 +27,8 @@ use {
     solana_entry::entry::hash_transactions,
     solana_gossip::cluster_info::ClusterInfo,
     solana_measure::measure_us,
-    solana_poh::{
-        poh_service::reset_reserve_hashes,
-        transaction_recorder::{
-            RecordTransactionsSummary, RecordTransactionsTimings, TransactionRecorder,
-        },
+    solana_poh::transaction_recorder::{
+        RecordTransactionsSummary, RecordTransactionsTimings, TransactionRecorder,
     },
     solana_pubkey::Pubkey,
     solana_runtime::bank::Bank,
@@ -639,12 +636,6 @@ impl BundleConsumer {
             record_batches,
             should_reset_reserve_hash,
         ));
-        if should_reset_reserve_hash {
-            bank.write_cost_tracker()
-                .unwrap()
-                .restore_nonvote_cost_limits();
-            reset_reserve_hashes();
-        }
 
         debug!("bundle: {} executing", sanitized_bundle.slot);
         let default_accounts = vec![None; sanitized_bundle.transactions.len()];
@@ -662,6 +653,15 @@ impl BundleConsumer {
             scheduler,
             thread_pool,
         );
+        if should_reset_reserve_hash {
+            let exceeded_limit = bank
+                .write_cost_tracker()
+                .unwrap()
+                .restore_nonvote_cost_limits();
+            if exceeded_limit {
+                bank.mark_execution_invalid();
+            }
+        }
 
         info!(
             "bundle: {} executed, is_ok: {}",
@@ -676,27 +676,13 @@ impl BundleConsumer {
             .accumulate(&execution_metrics.execute_timings);
         let transaction_error_counter = execution_metrics.errors.clone();
 
-        // don't commit bundle if failure executing any part of the bundle
+        // we must commit everything regardless of result
         if let Err(e) = &bundle_execution_results.result {
-            if should_reset_reserve_hash {
-                bank.write_cost_tracker()
-                    .unwrap()
-                    .restore_nonvote_cost_limits();
-                // reset_reserve_hashes();
-            }
-            info!("mevanoxx: bundle execution failed with {e:?}");
-            
-            // Mark bank execution as invalid since we recorded transactions before execution
-            // but the execution failed
+            info!(
+                "mevanoxx: bundle execution failed with {e:?} for slot {}",
+                bank.slot()
+            );
             bank.mark_execution_invalid();
-            
-            // return ExecuteRecordCommitResult {
-            //     commit_transaction_details: vec![],
-            //     result: Err(e.clone().into()),
-            //     execution_metrics,
-            //     execute_and_commit_timings,
-            //     transaction_error_counter,
-            // };
         }
 
         let RecordTransactionsSummary {
@@ -737,24 +723,8 @@ impl BundleConsumer {
         );
 
         // don't commit bundle if failed to record
-        if let Err(e) = record_transactions_result {
-            if should_reset_reserve_hash {
-                bank.write_cost_tracker()
-                    .unwrap()
-                    .restore_nonvote_cost_limits();
-                reset_reserve_hashes();
-            }
-            
+        if let Err(_e) = record_transactions_result {
             // Mark bank execution as invalid since we recorded transactions but recording failed
-            bank.mark_execution_invalid();
-            
-            return ExecuteRecordCommitResult {
-                commit_transaction_details: vec![],
-                result: Err(e.into()),
-                execution_metrics,
-                execute_and_commit_timings,
-                transaction_error_counter,
-            };
         }
 
         // note: execute_and_commit_timings.commit_us handled inside this function

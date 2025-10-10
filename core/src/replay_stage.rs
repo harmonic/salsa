@@ -1170,6 +1170,7 @@ impl ReplayStage {
                         &banking_tracer,
                         has_new_vote_been_rooted,
                         leader_window_sender.clone(),
+                        &blockstore,
                     );
 
                     let poh_bank = poh_recorder.read().unwrap().bank();
@@ -2090,13 +2091,14 @@ impl ReplayStage {
         banking_tracer: &Arc<BankingTracer>,
         has_new_vote_been_rooted: bool,
         leader_window_sender: tokio::sync::mpsc::Sender<(SystemTime, u64)>,
+        blockstore: &Blockstore,
     ) -> bool {
         // all the individual calls to poh_recorder.read() are designed to
         // increase granularity, decrease contention
 
         assert!(!poh_recorder.read().unwrap().has_bank());
 
-        let (poh_slot, parent_slot) =
+        let (poh_slot, mut parent_slot) =
             match poh_recorder.read().unwrap().reached_leader_slot(my_pubkey) {
                 PohLeaderStatus::Reached {
                     poh_slot,
@@ -2118,8 +2120,6 @@ impl ReplayStage {
             return false;
         };
 
-        assert!(parent.is_frozen());
-
         if !parent.has_initial_accounts_hash_verification_completed() {
             info!("startup verification incomplete, so skipping my leader slot");
             return false;
@@ -2135,9 +2135,35 @@ impl ReplayStage {
                 parent.clone()
             } else {
                 // Parent execution was invalid, use its parent instead
+                info!(
+                    "CAVEY DEBUG: block for slot {} was invalid. using grandparent as parent",
+                    parent.slot()
+                );
                 parent.parent().expect("Parent execution was invalid, but no grandparent available - this should not happen")
             }
         };
+
+        if !effective_parent.is_frozen() {
+            info!("mevanoxx: maybe_start_leader. parent was not frozen. will freeze on next call to process_replay_results");
+            return false;
+        }
+        assert!(
+            effective_parent.is_frozen(),
+            "effective parent {} is not frozen",
+            effective_parent.slot()
+        );
+
+        if parent_slot != effective_parent.slot() {
+            parent_slot = effective_parent.slot();
+            info!("mevanoxx: special poh reset");
+            Self::reset_poh_recorder(
+                my_pubkey,
+                blockstore,
+                effective_parent.clone(),
+                poh_recorder,
+                leader_schedule_cache,
+            );
+        }
 
         if bank_forks.read().unwrap().get(poh_slot).is_some() {
             warn!("{my_pubkey} already have bank in forks at {poh_slot}?");
@@ -2145,7 +2171,9 @@ impl ReplayStage {
         }
         trace!("{my_pubkey} poh_slot {poh_slot} parent_slot {parent_slot}");
 
-        if let Some(next_leader) = leader_schedule_cache.slot_leader_at(poh_slot, Some(&effective_parent)) {
+        if let Some(next_leader) =
+            leader_schedule_cache.slot_leader_at(poh_slot, Some(&effective_parent))
+        {
             if !has_new_vote_been_rooted {
                 info!("Haven't landed a vote, so skipping my leader slot");
                 return false;
@@ -2217,7 +2245,11 @@ impl ReplayStage {
             tpu_bank.cavey_set_proposer_limits();
             // make sure parent is frozen for finalized hashes via the above
             // new()-ing of its child bank
-            banking_tracer.hash_event(effective_parent.slot(), &effective_parent.last_blockhash(), &effective_parent.hash());
+            banking_tracer.hash_event(
+                effective_parent.slot(),
+                &effective_parent.last_blockhash(),
+                &effective_parent.hash(),
+            );
 
             let tpu_bank = update_bank_forks_and_poh_recorder_for_new_tpu_bank(
                 bank_forks,
@@ -2866,6 +2898,7 @@ impl ReplayStage {
         }
     }
 
+    #[track_caller]
     fn reset_poh_recorder(
         my_pubkey: &Pubkey,
         blockstore: &Blockstore,
