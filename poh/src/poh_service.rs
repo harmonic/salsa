@@ -306,18 +306,36 @@ impl PohService {
                             .bank()
                             .is_some_and(|b| b.slot() == record.slot)
                         {
+                            if reserve_hashes.is_some_and(|h| h >= total_remaining_hashes) {
+                                // not enough space in this slot :,(
+                                let _ = record.sender.send(Err(PohRecorderError::MaxHeightReached));
+                            } else {
+                                // good to record
+                                should_record = true;
+                            }
+                            // whether or not there is space, we are good to reset after
+                            // checking b.slot = record slot
                             reset_reserve_hashes();
-                            should_record = true;
                         } else {
+                            // this is likely an old record for the prev slot. this should
+                            // be unreachable due to the freeze lock taken by block stage.
+                            // if we reach it (somehow...), we should not reset hashes as
+                            // we may reset the hashes for a newer slot.
                             let _ = record.sender.send(Err(PohRecorderError::MaxHeightReached));
                         }
-                        // If not remote (e.g. votes) we need to see if we have enough space for this
                     } else {
+                        /* not remote, vote or crank */
+
+                        // If not remote (e.g. votes) we need to see if we have enough space for this
                         if reserve_hashes
                             .is_some_and(|h| h >= total_remaining_hashes + record.mixins.len())
                         {
+                            // hashes have been reserved and the number of mixins exceeds the
+                            // remaining hashes. do not record.
                             let _ = record.sender.send(Err(PohRecorderError::MaxHeightReached));
                         } else {
+                            // either hashes have been reserve, and we have excess space, or there
+                            // are no reserved hashes yet. proceed to record.
                             should_record = true;
                         }
                     }
@@ -361,7 +379,7 @@ impl PohService {
                         break;
                     }
 
-                    // if there are reserve hashes, loop:
+                    // cavey: if there are reserve hashes, loop:
                     //
                     // 1. recv_record
                     // 2. record
