@@ -7,7 +7,6 @@ use {
         bundle_execution::LoadAndExecuteBundleError, BundleExecutionError, SanitizedBundle,
     },
     solana_clock::Slot,
-    solana_poh::poh_service::reset_reserve_hashes,
     solana_pubkey::Pubkey,
     solana_runtime::bank::Bank,
     solana_svm::transaction_error_metrics::TransactionErrorMetrics,
@@ -208,7 +207,6 @@ impl BundleStorage {
                 .unwrap()
                 .restore_nonvote_cost_limits();
             scheduler_synchronization::block_failed(slot);
-            reset_reserve_hashes();
             return true;
         }
 

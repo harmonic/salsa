@@ -1,7 +1,7 @@
 //! The `poh_service` module implements a service that records the passing of
 //! "ticks", a measure of time in the PoH stream
 use {
-    crate::poh_recorder::{PohRecorder, PohRecorderError, Record},
+    crate::poh_recorder::{PohRecorder, Record},
     crossbeam_channel::Receiver,
     log::*,
     solana_clock::DEFAULT_HASHES_PER_SECOND,
@@ -10,51 +10,13 @@ use {
     solana_poh_config::PohConfig,
     std::{
         sync::{
-            atomic::{AtomicBool, AtomicUsize, Ordering},
+            atomic::{AtomicBool, Ordering},
             Arc, Mutex, RwLock,
         },
         thread::{self, Builder, JoinHandle},
         time::{Duration, Instant},
     },
 };
-
-/// Reset before we emit auction signal (just in case), and after bundle record
-/// Update before we execute bundle
-///
-/// TIMELINE
-///
-/// 1. slot starts. unset then send auction signal. receive block. set. execution. execute. record. unset. slot ends.
-/// OR
-/// 2. slot starts. unset then send auction signal. slot ends.
-pub static RESERVE_HASHES: AtomicUsize = AtomicUsize::new(UNSET);
-const UNSET: usize = usize::MAX;
-
-#[inline(always)]
-#[track_caller]
-pub fn set_reserve_hashes(hashes: usize) -> usize {
-    info!(
-        "setting reserve hashes from {}",
-        std::panic::Location::caller()
-    );
-    RESERVE_HASHES.swap(hashes, Ordering::Release)
-}
-
-#[inline(always)]
-#[track_caller]
-pub fn reset_reserve_hashes() -> usize {
-    info!(
-        "resetting reserve hashes from {}",
-        std::panic::Location::caller()
-    );
-    RESERVE_HASHES.swap(UNSET, Ordering::Release)
-}
-
-#[inline(always)]
-fn reserve_hashes() -> Option<usize> {
-    let reserve_hashes = RESERVE_HASHES.load(Ordering::Acquire);
-
-    (reserve_hashes != UNSET).then_some(reserve_hashes)
-}
 
 pub struct PohService {
     tick_producer: JoinHandle<()>,
@@ -285,6 +247,8 @@ impl PohService {
         hashes_per_batch: u64,
         poh: &Arc<Mutex<Poh>>,
         target_ns_per_tick: u64,
+        slot: &mut u64,
+        block_received: &mut bool,
     ) -> bool {
         match next_record.take() {
             Some(mut record) => {
@@ -296,64 +260,30 @@ impl PohService {
                 timing.total_lock_time_ns += lock_time.as_ns();
                 let mut record_time = Measure::start("record");
                 loop {
-                    let total_remaining_hashes = poh.lock().unwrap().total_remaining_hashes();
-                    let reserve_hashes = reserve_hashes();
-
-                    let mut should_record = false;
+                    if let Some(s) = poh_recorder_l.bank().map(|b| b.slot()) {
+                        if *slot != s {
+                            info!("PohService transitioning to slot {s}");
+                            // Rolled over to a new slot, reset block_received
+                            *block_received = false;
+                            *slot = s
+                        }
+                    }
                     if record.remote {
-                        // If remote we need to see if the slot matches before decrementing
-                        if poh_recorder_l
-                            .bank()
-                            .is_some_and(|b| b.slot() == record.slot)
-                        {
-                            if reserve_hashes.is_some_and(|h| h >= total_remaining_hashes) {
-                                // not enough space in this slot :,(
-                                let _ = record.sender.send(Err(PohRecorderError::MaxHeightReached));
-                            } else {
-                                // good to record
-                                should_record = true;
-                            }
-                            // whether or not there is space, we are good to reset after
-                            // checking b.slot = record slot
-                            reset_reserve_hashes();
-                        } else {
-                            // this is likely an old record for the prev slot. this should
-                            // be unreachable due to the freeze lock taken by block stage.
-                            // if we reach it (somehow...), we should not reset hashes as
-                            // we may reset the hashes for a newer slot.
-                            let _ = record.sender.send(Err(PohRecorderError::MaxHeightReached));
-                        }
-                    } else {
-                        /* not remote, vote or crank */
-
-                        // If not remote (e.g. votes) we need to see if we have enough space for this
-                        if reserve_hashes
-                            .is_some_and(|h| h >= total_remaining_hashes + record.mixins.len())
-                        {
-                            // hashes have been reserved and the number of mixins exceeds the
-                            // remaining hashes. do not record.
-                            let _ = record.sender.send(Err(PohRecorderError::MaxHeightReached));
-                        } else {
-                            // either hashes have been reserve, and we have excess space, or there
-                            // are no reserved hashes yet. proceed to record.
-                            should_record = true;
-                        }
+                        // Received a block for this slot
+                        info!("PohService received block for slot {}", *slot);
+                        *block_received = true;
                     }
 
-                    if should_record {
-                        let res = poh_recorder_l.record(
-                            record.slot,
-                            record.mixins,
-                            std::mem::take(&mut record.transaction_batches),
-                        );
-                        let (send_res, send_record_result_us) =
-                            measure_us!(record.sender.send(res));
-                        debug_assert!(send_res.is_ok(), "Record wasn't sent.");
+                    let res = poh_recorder_l.record(
+                        record.slot,
+                        record.mixins,
+                        std::mem::take(&mut record.transaction_batches),
+                    );
+                    let (send_res, send_record_result_us) = measure_us!(record.sender.send(res));
+                    debug_assert!(send_res.is_ok(), "Record wasn't sent.");
 
-                        timing.total_send_record_result_us += send_record_result_us;
-                        timing.num_hashes += 1; // note: may have also ticked inside record
-                    }
-
+                    timing.total_send_record_result_us += send_record_result_us;
+                    timing.num_hashes += 1; // note: may have also ticked inside record
                     if let Ok(new_record) = record_receiver.try_recv() {
                         // we already have second request to record, so record again while we still have the mutex
                         record = new_record;
@@ -372,23 +302,6 @@ impl PohService {
                 lock_time.stop();
                 timing.total_lock_time_ns += lock_time.as_ns();
                 loop {
-                    // check to see if a record request has been sent
-                    if let Ok(record) = record_receiver.try_recv() {
-                        // remember the record we just received as the next record to occur
-                        *next_record = Some(record);
-                        break;
-                    }
-
-                    // cavey: if there are reserve hashes, loop:
-                    //
-                    // 1. recv_record
-                    // 2. record
-                    //
-                    // and do not hash
-                    if reserve_hashes().is_some() {
-                        continue;
-                    }
-
                     timing.num_hashes += hashes_per_batch;
                     let mut hash_time = Measure::start("hash");
                     let should_tick = poh_l.hash(hashes_per_batch);
@@ -399,7 +312,12 @@ impl PohService {
                         // nothing else can be done. tick required.
                         return true;
                     }
-
+                    // check to see if a record request has been sent
+                    if let Ok(record) = record_receiver.try_recv() {
+                        // remember the record we just received as the next record to occur
+                        *next_record = Some(record);
+                        break;
+                    }
                     // check to see if we need to wait to catch up to ideal
                     let wait_start = Instant::now();
                     if ideal_time <= wait_start {
@@ -431,8 +349,20 @@ impl PohService {
         ticks_per_slot: u64,
         hashes_per_batch: u64,
         record_receiver: Receiver<Record>,
-        target_ns_per_tick: u64,
+        mut target_ns_per_tick: u64,
     ) {
+        // The current slot we are tracking a block for
+        // Kept here for retention across calls to record_or_hash
+        let mut slot = 0;
+        // Whether or not we have a block for the current slot
+        let mut block_received = false;
+        // Target ns_per_tick during normal window
+        let default_target_ns_per_tick = target_ns_per_tick;
+        // Target ns_per_tick during leader window while waiting for a block
+        let extended_target_ns_per_tick =
+            // Extend the slot by 100 ms = 100_000_000 ns
+            target_ns_per_tick + 100_000_000 / poh_recorder.read().unwrap().ticks_per_slot();
+
         let poh = poh_recorder.read().unwrap().poh.clone();
         let mut timing = PohTiming::new();
         let mut next_record = None;
@@ -445,7 +375,25 @@ impl PohService {
                 hashes_per_batch,
                 &poh,
                 target_ns_per_tick,
+                &mut slot,
+                &mut block_received,
             );
+
+            target_ns_per_tick =
+                // If we haven't received a block and we are leader, extend the slot
+                if !block_received && poh_recorder.read().unwrap().would_be_leader(0) {
+                    if target_ns_per_tick != extended_target_ns_per_tick {
+                        info!("PohService extending target ns per tick");
+                    }
+                    extended_target_ns_per_tick
+                } else {
+                    if target_ns_per_tick != default_target_ns_per_tick {
+                        info!("PohService restoring target ns per tick");
+                    }
+                    // If we aren't leader or we have a block, use the normal slot timing
+                    default_target_ns_per_tick
+                };
+
             if should_tick {
                 // Lock PohRecorder only for the final hash. record_or_hash will lock PohRecorder for record calls but not for hashing.
                 {
