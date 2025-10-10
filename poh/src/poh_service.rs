@@ -343,6 +343,8 @@ impl PohService {
         false // should_tick = false for all code that reaches here
     }
 
+    const WINDOW_EXTENSION: u64 = Duration::from_millis(100).as_nanos() as u64;
+
     fn tick_producer(
         poh_recorder: Arc<RwLock<PohRecorder>>,
         poh_exit: &AtomicBool,
@@ -361,7 +363,7 @@ impl PohService {
         // Target ns_per_tick during leader window while waiting for a block
         let extended_target_ns_per_tick =
             // Extend the slot by 100 ms = 100_000_000 ns
-            target_ns_per_tick + 100_000_000 / poh_recorder.read().unwrap().ticks_per_slot();
+            target_ns_per_tick + (Self::WINDOW_EXTENSION / poh_recorder.read().unwrap().ticks_per_slot());
 
         let poh = poh_recorder.read().unwrap().poh.clone();
         let mut timing = PohTiming::new();
