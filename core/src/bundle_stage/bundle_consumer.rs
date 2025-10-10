@@ -123,6 +123,7 @@ impl BundleConsumer {
             scheduler: Scheduler::new(),
             thread_pool: ThreadPoolBuilder::new()
                 .num_threads(Self::NUM_THREADS)
+                .thread_name(|i| format!("TxnExct{i}"))
                 .build()
                 .expect("Failed to build thread pool"),
         }
@@ -490,7 +491,7 @@ impl BundleConsumer {
         sanitized_bundle: &SanitizedBundle,
         bank: &Arc<Bank>,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
-        should_reset_reserve_hash: bool,
+        is_remote_block: bool,
         scheduler: &mut Scheduler,
         thread_pool: &ThreadPool,
     ) -> BundleExecutionResult<()> {
@@ -521,7 +522,7 @@ impl BundleConsumer {
             max_bundle_retry_duration,
             sanitized_bundle,
             bank,
-            should_reset_reserve_hash,
+            is_remote_block,
             scheduler,
             thread_pool,
         ));
@@ -603,7 +604,7 @@ impl BundleConsumer {
         max_bundle_retry_duration: Duration,
         sanitized_bundle: &SanitizedBundle,
         bank: &Arc<Bank>,
-        should_reset_reserve_hash: bool,
+        is_remote_block: bool,
         scheduler: &mut Scheduler,
         thread_pool: &ThreadPool,
     ) -> ExecuteRecordCommitResult {
@@ -630,12 +631,8 @@ impl BundleConsumer {
             .iter()
             .map(|txs| hash_transactions(txs))
             .collect());
-        let (starting_index, poh_record_us) = measure_us!(recorder.record(
-            bank.slot(),
-            hashes,
-            record_batches,
-            should_reset_reserve_hash,
-        ));
+        let (starting_index, poh_record_us) =
+            measure_us!(recorder.record(bank.slot(), hashes, record_batches, is_remote_block));
 
         debug!("bundle: {} executing", sanitized_bundle.slot);
         let default_accounts = vec![None; sanitized_bundle.transactions.len()];
@@ -653,7 +650,7 @@ impl BundleConsumer {
             scheduler,
             thread_pool,
         );
-        if should_reset_reserve_hash {
+        if is_remote_block {
             let exceeded_limit = bank
                 .write_cost_tracker()
                 .unwrap()
@@ -725,6 +722,7 @@ impl BundleConsumer {
         // don't commit bundle if failed to record
         if let Err(_e) = record_transactions_result {
             // Mark bank execution as invalid since we recorded transactions but recording failed
+            bank.mark_execution_invalid();
         }
 
         // note: execute_and_commit_timings.commit_us handled inside this function
