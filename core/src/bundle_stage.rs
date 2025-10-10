@@ -21,10 +21,7 @@ use {
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::blockstore_processor::TransactionStatusSender,
     solana_measure::measure_us,
-    solana_poh::{
-        poh_recorder::PohRecorder, poh_service::set_reserve_hashes,
-        transaction_recorder::TransactionRecorder,
-    },
+    solana_poh::{poh_recorder::PohRecorder, transaction_recorder::TransactionRecorder},
     solana_runtime::{
         prioritization_fee_cache::PrioritizationFeeCache, vote_sender_types::ReplayVoteSender,
     },
@@ -370,16 +367,14 @@ impl BundleStage {
             .leader_slot_metrics_tracker()
             .increment_make_decision_us(make_decision_time_us);
 
-        let mut this_slot_block_len = None;
         let decision = if let Some(bank) = decision.bank() {
             // let consumed_for_slot =
             //     unprocessed_bundle_storage.consumed_for_slot(bank_start.working_bank.slot());
 
-            let consumed_for_slot =
-                bundle_storage.consumed_for_slot(bank.slot());
+            let consumed_for_slot = bundle_storage.consumed_for_slot(bank.slot());
 
             // Check if we have a block for this slot
-            this_slot_block_len = bundle_storage
+            let this_slot_block_len = bundle_storage
                 .unprocessed_bundle_storage
                 .iter()
                 .find(|b| b.slot() == bank.slot())
@@ -407,9 +402,7 @@ impl BundleStage {
                 bundle_stage_leader_metrics
                     .apply_action(metrics_action, banking_stage_metrics_action);
 
-                set_reserve_hashes(this_slot_block_len.expect("only consumes if some"));
-                bank
-                    .write_cost_tracker()
+                bank.write_cost_tracker()
                     .unwrap()
                     .save_nonvote_cost_limits();
                 let (_, consume_buffered_packets_time_us) = measure_us!(consumer
