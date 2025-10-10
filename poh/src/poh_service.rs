@@ -1,7 +1,7 @@
 //! The `poh_service` module implements a service that records the passing of
 //! "ticks", a measure of time in the PoH stream
 use {
-    crate::poh_recorder::{PohRecorder, PohRecorderError, Record},
+    crate::poh_recorder::{PohRecorder, Record},
     crossbeam_channel::Receiver,
     log::*,
     solana_clock::DEFAULT_HASHES_PER_SECOND,
@@ -10,51 +10,13 @@ use {
     solana_poh_config::PohConfig,
     std::{
         sync::{
-            atomic::{AtomicBool, AtomicUsize, Ordering},
+            atomic::{AtomicBool, Ordering},
             Arc, Mutex, RwLock,
         },
         thread::{self, Builder, JoinHandle},
         time::{Duration, Instant},
     },
 };
-
-/// Reset before we emit auction signal (just in case), and after bundle record
-/// Update before we execute bundle
-///
-/// TIMELINE
-///
-/// 1. slot starts. unset then send auction signal. receive block. set. execution. execute. record. unset. slot ends.
-/// OR
-/// 2. slot starts. unset then send auction signal. slot ends.
-pub static RESERVE_HASHES: AtomicUsize = AtomicUsize::new(UNSET);
-const UNSET: usize = usize::MAX;
-
-#[inline(always)]
-#[track_caller]
-pub fn set_reserve_hashes(hashes: usize) -> usize {
-    info!(
-        "setting reserve hashes from {}",
-        std::panic::Location::caller()
-    );
-    RESERVE_HASHES.swap(hashes, Ordering::Release)
-}
-
-#[inline(always)]
-#[track_caller]
-pub fn reset_reserve_hashes() -> usize {
-    info!(
-        "resetting reserve hashes from {}",
-        std::panic::Location::caller()
-    );
-    RESERVE_HASHES.swap(UNSET, Ordering::Release)
-}
-
-#[inline(always)]
-fn reserve_hashes() -> Option<usize> {
-    let reserve_hashes = RESERVE_HASHES.load(Ordering::Acquire);
-
-    (reserve_hashes != UNSET).then_some(reserve_hashes)
-}
 
 pub struct PohService {
     tick_producer: JoinHandle<()>,
@@ -322,6 +284,8 @@ impl PohService {
                     let (send_res, send_record_result_us) = measure_us!(record.sender.send(res));
                     debug_assert!(send_res.is_ok(), "Record wasn't sent.");
 
+                    timing.total_send_record_result_us += send_record_result_us;
+                    timing.num_hashes += 1; // note: may have also ticked inside record
                     if let Ok(new_record) = record_receiver.try_recv() {
                         // we already have second request to record, so record again while we still have the mutex
                         record = new_record;
@@ -340,23 +304,6 @@ impl PohService {
                 lock_time.stop();
                 timing.total_lock_time_ns += lock_time.as_ns();
                 loop {
-                    // check to see if a record request has been sent
-                    if let Ok(record) = record_receiver.try_recv() {
-                        // remember the record we just received as the next record to occur
-                        *next_record = Some(record);
-                        break;
-                    }
-
-                    // cavey: if there are reserve hashes, loop:
-                    //
-                    // 1. recv_record
-                    // 2. record
-                    //
-                    // and do not hash
-                    if reserve_hashes().is_some() {
-                        continue;
-                    }
-
                     timing.num_hashes += hashes_per_batch;
                     let mut hash_time = Measure::start("hash");
                     let should_tick = poh_l.hash(hashes_per_batch);

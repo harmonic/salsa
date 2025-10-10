@@ -700,7 +700,7 @@ impl BundleConsumer {
             scheduler,
             thread_pool,
         );
-        if should_reset_reserve_hash {
+        if is_remote_block {
             let exceeded_limit = bank
                 .write_cost_tracker()
                 .unwrap()
