@@ -4,12 +4,24 @@ use {
             DeserializedPacketError, ImmutableDeserializedPacket,
         },
         packet_bundle::PacketBundle,
-    }, rayon::prelude::*, solana_accounts_db::account_locks::validate_account_locks, solana_bundle::SanitizedBundle, solana_clock::MAX_PROCESSING_AGE, solana_perf::sigverify::verify_packet, solana_pubkey::Pubkey, solana_runtime::bank::Bank, solana_runtime_transaction::{
+    },
+    rayon::prelude::*,
+    solana_accounts_db::account_locks::validate_account_locks,
+    solana_bundle::SanitizedBundle,
+    solana_clock::MAX_PROCESSING_AGE,
+    solana_perf::sigverify::verify_packet,
+    solana_pubkey::Pubkey,
+    solana_runtime::bank::Bank,
+    solana_runtime_transaction::{
         runtime_transaction::RuntimeTransaction, transaction_meta::StaticMeta,
-    }, solana_svm::transaction_error_metrics::TransactionErrorMetrics, solana_transaction::sanitized::SanitizedTransaction, std::{
+    },
+    solana_svm::transaction_error_metrics::TransactionErrorMetrics,
+    solana_transaction::sanitized::SanitizedTransaction,
+    std::{
         collections::{hash_map::RandomState, HashSet},
         iter::repeat_n,
-    }, thiserror::Error
+    },
+    thiserror::Error,
 };
 
 #[derive(Debug, Error)]
@@ -189,7 +201,8 @@ impl ImmutableDeserializedBundle {
             transaction_error_metrics,
         );
 
-        if check_results.iter().any(|r| r.is_err()) {
+        if let Some(e) = check_results.iter().find(|r| r.is_err()) {
+            info!("mevanoxx: txn in block failed sanitation: {e:?}");
             return Err(DeserializedBundleError::FailedCheckTransactions);
         }
 
