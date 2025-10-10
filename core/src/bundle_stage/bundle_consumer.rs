@@ -27,11 +27,8 @@ use {
     solana_entry::entry::hash_transactions,
     solana_gossip::cluster_info::ClusterInfo,
     solana_measure::measure_us,
-    solana_poh::{
-        poh_service::reset_reserve_hashes,
-        transaction_recorder::{
-            RecordTransactionsSummary, RecordTransactionsTimings, TransactionRecorder,
-        },
+    solana_poh::transaction_recorder::{
+        RecordTransactionsSummary, RecordTransactionsTimings, TransactionRecorder,
     },
     solana_pubkey::Pubkey,
     solana_runtime::bank::Bank,
@@ -703,6 +700,15 @@ impl BundleConsumer {
             scheduler,
             thread_pool,
         );
+        if should_reset_reserve_hash {
+            let exceeded_limit = bank
+                .write_cost_tracker()
+                .unwrap()
+                .restore_nonvote_cost_limits();
+            if exceeded_limit {
+                bank.mark_execution_invalid();
+            }
+        }
 
         info!(
             "bundle: {} executed, is_ok: {}",
