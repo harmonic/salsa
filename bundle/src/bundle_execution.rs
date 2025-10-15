@@ -319,7 +319,7 @@ fn load_and_execute_chunk<'a>(
         if start_time.elapsed_us() > max_processing_time.as_micros() as u64 {
             trace!("bundle: {} took too long to execute", bundle.slot);
             return Err(LoadAndExecuteBundleError::ProcessingTimeExceeded(
-                Duration::from_millis(start_time.elapsed_us()),
+                Duration::from_micros(start_time.elapsed_us()),
             ));
         }
 
