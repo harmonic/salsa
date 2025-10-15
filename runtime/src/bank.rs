@@ -1994,6 +1994,10 @@ impl Bank {
         self.hash.read().unwrap()
     }
 
+    pub fn cavey_bh_lock(&self) -> RwLockReadGuard<BlockhashQueue> {
+        self.blockhash_queue.read().unwrap()
+    }
+
     pub fn hash(&self) -> Hash {
         *self.hash.read().unwrap()
     }
@@ -2534,7 +2538,14 @@ impl Bank {
         // BankingStage doesn't release this hash lock until both
         // record and commit are finished, those transactions will be
         // committed before this write lock can be obtained here.
-        let mut hash = self.hash.write().unwrap();
+        // NOTE: (mevanoxx) This RwLock is fair, so calling self.hash.write()
+        // will queue a write lock, potentially interrupting transaction
+        // execution. Instead, we use try_write() here.
+        let mut hash = loop {
+            if let Ok(lock) = self.hash.try_write() {
+                break lock;
+            }
+        };
         if *hash == Hash::default() {
             // finish up any deferred changes to account state
             self.distribute_transaction_fee_details();

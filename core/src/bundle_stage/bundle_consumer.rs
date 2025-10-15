@@ -575,7 +575,7 @@ impl BundleConsumer {
                 error_counters: result.transaction_error_counter,
             });
 
-        match result.result {
+        let res = match result.result {
             Ok(_) => {
                 QosService::remove_or_update_costs(
                     transaction_qos_cost_results.iter(),
@@ -594,7 +594,25 @@ impl BundleConsumer {
 
                 Err(e)
             }
+        };
+
+        // mark as invalid, but we still want to commit :,(
+        // we do not have to do this for crank bc crank will go first
+        if is_remote_block {
+            let exceeded_limit = bank
+                .write_cost_tracker()
+                .unwrap()
+                .restore_nonvote_cost_limits();
+            if exceeded_limit {
+                info!(
+                    "exceeded a cost limit, marking execution invalid for slot {}",
+                    bank.slot()
+                );
+                bank.mark_execution_invalid();
+            }
         }
+
+        res
     }
 
     fn execute_record_commit_bundle(
@@ -624,7 +642,10 @@ impl BundleConsumer {
             record_batches.len()
         );
 
+        // mevanoxx: Have to lock the bank freeze and blockhash queue to avoid
+        // moving on to the next slot after recording transactions optimistically
         let (freeze_lock, freeze_lock_us) = measure_us!(bank.freeze_lock());
+        let bh_lock = bank.cavey_bh_lock();
         execute_and_commit_timings.freeze_lock_us = freeze_lock_us;
 
         let (hashes, hash_us) = measure_us!(record_batches
@@ -633,6 +654,35 @@ impl BundleConsumer {
             .collect());
         let (starting_index, poh_record_us) =
             measure_us!(recorder.record(bank.slot(), hashes, record_batches, is_remote_block));
+
+        // mevanoxx: recording is synchronous. on failure, we are good to
+        // revert and have vanilla scheduler build a fallback block
+        let RecordTransactionsSummary {
+            record_transactions_timings,
+            result: record_transactions_result,
+            starting_transaction_index,
+        } = match starting_index {
+            Ok(starting_index) => RecordTransactionsSummary {
+                record_transactions_timings: RecordTransactionsTimings {
+                    processing_results_to_transactions_us: Saturating(0),
+                    hash_us: Saturating(hash_us),
+                    poh_record_us: Saturating(poh_record_us),
+                },
+                result: Ok(()),
+                starting_transaction_index: starting_index,
+            },
+
+            // return early with error so we can build fallback
+            Err(e) => {
+                return ExecuteRecordCommitResult {
+                    commit_transaction_details: vec![],
+                    result: Err(BundleExecutionError::PohRecordError(e)),
+                    execution_metrics: BundleExecutionMetrics::default(),
+                    execute_and_commit_timings,
+                    transaction_error_counter: TransactionErrorMetrics::default(),
+                }
+            }
+        };
 
         debug!("bundle: {} executing", sanitized_bundle.slot);
         let default_accounts = vec![None; sanitized_bundle.transactions.len()];
@@ -650,15 +700,6 @@ impl BundleConsumer {
             scheduler,
             thread_pool,
         );
-        if is_remote_block {
-            let exceeded_limit = bank
-                .write_cost_tracker()
-                .unwrap()
-                .restore_nonvote_cost_limits();
-            if exceeded_limit {
-                bank.mark_execution_invalid();
-            }
-        }
 
         info!(
             "bundle: {} executed, is_ok: {}",
@@ -682,31 +723,6 @@ impl BundleConsumer {
             bank.mark_execution_invalid();
         }
 
-        let RecordTransactionsSummary {
-            record_transactions_timings,
-            result: record_transactions_result,
-            starting_transaction_index,
-        } = match starting_index {
-            Ok(starting_transaction_index) => RecordTransactionsSummary {
-                record_transactions_timings: RecordTransactionsTimings {
-                    processing_results_to_transactions_us: Saturating(0), // TODO (LB)
-                    hash_us: Saturating(hash_us),
-                    poh_record_us: Saturating(poh_record_us),
-                },
-                result: Ok(()),
-                starting_transaction_index,
-            },
-            Err(e) => RecordTransactionsSummary {
-                record_transactions_timings: RecordTransactionsTimings {
-                    processing_results_to_transactions_us: Saturating(0), // TODO (LB)
-                    hash_us: Saturating(hash_us),
-                    poh_record_us: Saturating(poh_record_us),
-                },
-                result: Err(e),
-                starting_transaction_index: None,
-            },
-        };
-
         execute_and_commit_timings.record_us = record_transactions_timings.poh_record_us.0;
         execute_and_commit_timings.record_transactions_timings = record_transactions_timings;
         execute_and_commit_timings
@@ -719,12 +735,6 @@ impl BundleConsumer {
             record_transactions_result.is_ok()
         );
 
-        // don't commit bundle if failed to record
-        if let Err(_e) = record_transactions_result {
-            // Mark bank execution as invalid since we recorded transactions but recording failed
-            bank.mark_execution_invalid();
-        }
-
         // note: execute_and_commit_timings.commit_us handled inside this function
         let (commit_us, commit_bundle_details) = committer.commit_bundle(
             bundle_execution_results,
@@ -735,6 +745,7 @@ impl BundleConsumer {
         execute_and_commit_timings.commit_us = commit_us;
 
         drop(freeze_lock);
+        drop(bh_lock);
 
         // commit_bundle_details contains transactions that were and were not committed
         // given the current implementation only executes, records, and commits bundles
