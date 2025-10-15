@@ -119,7 +119,8 @@ impl DecisionMaker {
             // Use cached decision if there is one for this slot
             if let Some((cached_slot, cached_decision)) = cached_decision {
                 debug!("mevanoxx: maybe_consume cached_decision {cached_decision:?} cached_slot {cached_slot:?} current_slot {current_slot}");
-                if current_slot.eq(cached_slot) {
+                // Also check the last slot scheduled is equal to the cached slot in case a block was attempted and reverted
+                if current_slot.eq(cached_slot) && scheduler_synchronization::last_slot_scheduled().eq(cached_slot) {
                     return cached_decision
                         // Consume if cached_decision = true
                         .then_some(BufferedPacketsDecision::Consume(bank))

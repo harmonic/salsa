@@ -130,6 +130,10 @@ pub(crate) mod scheduler_synchronization {
     static LAST_SLOT_SCHEDULED: AtomicU64 = AtomicU64::new(SENTINEL);
     const SENTINEL: u64 = u64::MAX;
 
+    pub fn last_slot_scheduled() -> u64 {
+        LAST_SLOT_SCHEDULED.load(Ordering::Acquire)
+    }
+
     /// If vanilla should schedule, the internal private atomic is
     /// updated so that the block scheduler does not schedule.
     ///
