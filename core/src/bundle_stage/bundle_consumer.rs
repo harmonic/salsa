@@ -700,15 +700,6 @@ impl BundleConsumer {
             scheduler,
             thread_pool,
         );
-        if is_remote_block {
-            let exceeded_limit = bank
-                .write_cost_tracker()
-                .unwrap()
-                .restore_nonvote_cost_limits();
-            if exceeded_limit {
-                bank.mark_execution_invalid();
-            }
-        }
 
         info!(
             "bundle: {} executed, is_ok: {}",
