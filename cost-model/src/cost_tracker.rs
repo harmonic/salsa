@@ -449,9 +449,23 @@ impl CostTracker {
     /// cavey: returns true if we exceeded
     pub fn restore_nonvote_cost_limits(&mut self) -> bool {
         // check if we exceeded
-        let exceeded_account_cost_limit =
-            self.find_costliest_account().1 > self.original_account_cost_limit;
+        let max_account_cost = self.find_costliest_account().1;
+        let exceeded_account_cost_limit = max_account_cost > self.original_account_cost_limit;
         let exceeded_block_cost_limit = self.block_cost > self.original_block_cost_limit;
+
+        if exceeded_account_cost_limit {
+            log::info!(
+                "mevanoxx: exceeded account cost limit {max_account_cost} > {}",
+                self.original_account_cost_limit
+            );
+        }
+        if exceeded_block_cost_limit {
+            log::info!(
+                "mevanoxx: exceeded block cost limit {} > {}",
+                self.block_cost,
+                self.original_block_cost_limit
+            );
+        }
 
         // restore limits for correct limit inhertiance on child bank
         self.account_cost_limit = self.original_account_cost_limit;
