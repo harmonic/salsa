@@ -392,20 +392,12 @@ fn load_and_execute_chunk<'a>(
             .load_execute_us
             .add_assign(Saturating(load_execute_us));
 
-        // for (transaction, result) in batch
-        //     .sanitized_transactions()
-        //     .iter()
-        //     .zip(load_and_execute_transactions_output.processing_results)
-        // {
-        //     info!("bundle: executed {} {:?}", transaction.signature(), result);
-        // }
-
-        // If none of the transactions were executed, most likely an AccountInUse error
-        // need to retry to ensure that all transactions in the bundle are executed.
-        if !load_and_execute_transactions_output
+        // If we get an AccountInUse error, we need to retry.
+        // Most likely account contention from a vote processing thread.
+        if load_and_execute_transactions_output
             .processing_results
             .iter()
-            .any(|r| r.is_ok())
+            .any(|r| matches!(r, Err(TransactionError::AccountInUse)))
         {
             metrics.num_retries.add_assign(Saturating(1));
             debug!("bundle: {} no transaction executed, retrying", bundle.slot);
