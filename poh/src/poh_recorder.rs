@@ -326,6 +326,7 @@ impl PohRecorder {
         let ((), report_metrics_us) = measure_us!(self.metrics.report(bank_slot));
         self.metrics.report_metrics_us += report_metrics_us;
 
+        // DEVIN
         // Ensure that we can fit all the mixins in this slot before recording anything
         // At current block sizes, this should never be an issue, but for correctness
         // check it anyway
@@ -334,11 +335,16 @@ impl PohRecorder {
             .as_mut()
             .ok_or(PohRecorderError::MaxHeightReached)?;
         let poh_lock = self.poh.lock().unwrap();
-        let remaining_ticks = working_bank.bank.max_tick_height() - self.tick_height();
-        // The last hash in each tick is reserved for the tick itself, so have to -1 per tick
-        let tick_remaining_hashes = poh_lock.remaining_hashes() - 1;
-        let total_remaining_hashes =
-            tick_remaining_hashes + (remaining_ticks * (poh_lock.hashes_per_tick() - 1));
+        let remaining_ticks = working_bank
+            .bank
+            .max_tick_height()
+            // +1 here to ignore the current tick window, which is covered by remaining_hashes
+            .saturating_sub(self.tick_height() + 1);
+        // The last hash in each tick is reserved for the tick itself, so have to -1 hash per tick
+        let tick_remaining_hashes = poh_lock.remaining_hashes().saturating_sub(1);
+        let total_remaining_hashes = tick_remaining_hashes.saturating_add(
+            remaining_ticks.saturating_mul(poh_lock.hashes_per_tick().saturating_sub(1)),
+        );
         if mixins.len() as u64 > total_remaining_hashes {
             info!(
                 "Insufficient hashes remaining: {} mixins > {} remaining hashes",
@@ -1127,7 +1133,7 @@ mod tests {
     use {
         super::*,
         crossbeam_channel::bounded,
-        solana_clock::DEFAULT_TICKS_PER_SLOT,
+        solana_clock::{DEFAULT_HASHES_PER_TICK, DEFAULT_TICKS_PER_SLOT},
         solana_ledger::{
             blockstore::Blockstore,
             blockstore_meta::SlotMeta,
@@ -2363,5 +2369,71 @@ mod tests {
             PohRecorder::compute_leader_slot_tick_heights(Some((6, 7)), 4),
             (Some(25), 32, 4)
         );
+    }
+
+    #[test]
+    /// DEVIN
+    fn test_poh_recorder_record_mixins_not_enough_hashes() {
+        solana_logger::setup();
+        let ledger_path = get_tmp_ledger_path_auto_delete!();
+        let blockstore = Blockstore::open(ledger_path.path())
+            .expect("Expected to be able to open database ledger");
+        let GenesisConfigInfo {
+            mut genesis_config, ..
+        } = create_genesis_config(2);
+        genesis_config.poh_config.hashes_per_tick = Some(DEFAULT_HASHES_PER_TICK);
+        let bank = Arc::new(Bank::new_for_tests(&genesis_config));
+        let (mut poh_recorder, _entry_receiver) = PohRecorder::new(
+            0,
+            Hash::default(),
+            bank.clone(),
+            Some((4, 4)),
+            DEFAULT_TICKS_PER_SLOT,
+            Arc::new(blockstore),
+            &Arc::new(LeaderScheduleCache::default()),
+            &genesis_config.poh_config,
+            Arc::new(AtomicBool::default()),
+        );
+        poh_recorder.set_bank_for_test(bank.clone());
+
+        // This should be too many transactions to fit before the final tick
+        let n = ((bank.hashes_per_tick().unwrap() - 1) * (bank.ticks_per_slot())) as usize + 1;
+        let transaction_batches = vec![vec![test_tx().into()]; n];
+        let mixins = vec![Hash::new_unique(); n];
+        let result = poh_recorder.record(bank.slot(), mixins, transaction_batches);
+        assert_matches!(result, Err(PohRecorderError::NotEnoughHashes));
+    }
+
+    #[test]
+    /// DEVIN
+    fn test_poh_recorder_record_mixins_across_ticks() {
+        solana_logger::setup();
+        let ledger_path = get_tmp_ledger_path_auto_delete!();
+        let blockstore = Blockstore::open(ledger_path.path())
+            .expect("Expected to be able to open database ledger");
+        let GenesisConfigInfo {
+            mut genesis_config, ..
+        } = create_genesis_config(2);
+        genesis_config.poh_config.hashes_per_tick = Some(DEFAULT_HASHES_PER_TICK);
+        let bank = Arc::new(Bank::new_for_tests(&genesis_config));
+        let (mut poh_recorder, _entry_receiver) = PohRecorder::new(
+            0,
+            Hash::default(),
+            bank.clone(),
+            Some((4, 4)),
+            DEFAULT_TICKS_PER_SLOT,
+            Arc::new(blockstore),
+            &Arc::new(LeaderScheduleCache::default()),
+            &genesis_config.poh_config,
+            Arc::new(AtomicBool::default()),
+        );
+        poh_recorder.set_bank_for_test(bank.clone());
+
+        // This is a a lot of transactions to fit in, but they should all fit
+        let n = ((bank.hashes_per_tick().unwrap() - 1) * (bank.ticks_per_slot())) as usize;
+        let transaction_batches = vec![vec![test_tx().into()]; n];
+        let mixins = vec![Hash::new_unique(); n];
+        let result = poh_recorder.record(bank.slot(), mixins, transaction_batches);
+        assert!(result.is_ok());
     }
 }
