@@ -2893,7 +2893,15 @@ impl Bank {
         // Only acquire the write lock for the blockhash queue on block boundaries because
         // readers can starve this write lock acquisition and ticks would be slowed down too
         // much if the write lock is acquired for each tick.
-        let mut w_blockhash_queue = self.blockhash_queue.write().unwrap();
+        let mut w_blockhash_queue = loop {
+            // cavey: block stage holds one read lock throughout execution and individual block
+            // stage execution threads take a read lock to check for valid blockhashes. this
+            // was changed from a write() to try_write() because this is a fair rwlock and the
+            // interleaved r/w requests cause a deadlock
+            if let Ok(lock) = self.blockhash_queue.try_write() {
+                break lock;
+            }
+        };
 
         #[cfg(feature = "dev-context-only-utils")]
         let blockhash_override = self
