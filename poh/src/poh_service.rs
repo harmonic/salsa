@@ -307,37 +307,43 @@ impl PohService {
                     timing.num_hashes += hashes_per_batch;
                     let mut hash_time = Measure::start("hash");
                     let should_tick = poh_l.hash(hashes_per_batch);
-                    let ideal_time = poh_l.target_poh_time(target_ns_per_tick);
                     hash_time.stop();
                     timing.total_hash_time_ns += hash_time.as_ns();
                     if should_tick {
                         // nothing else can be done. tick required.
                         return true;
                     }
+
                     // check to see if a record request has been sent
                     if let Ok(record) = record_receiver.try_recv() {
                         // remember the record we just received as the next record to occur
                         *next_record = Some(record);
                         break;
                     }
-                    // check to see if we need to wait to catch up to ideal
-                    let wait_start = Instant::now();
-                    if ideal_time <= wait_start {
-                        // no, keep hashing. We still hold the lock.
-                        continue;
-                    }
 
-                    // busy wait, polling for new records and after dropping poh lock (reset can occur, for example)
-                    drop(poh_l);
-                    while ideal_time > Instant::now() {
-                        // check to see if a record request has been sent
-                        if let Ok(record) = record_receiver.try_recv() {
-                            // remember the record we just received as the next record to occur
-                            *next_record = Some(record);
-                            break;
+                    // Don't even bother with this busy polling if we are speed
+                    // running the slot
+                    if target_ns_per_tick != 1 {
+                        let ideal_time = poh_l.target_poh_time(target_ns_per_tick);
+                        // check to see if we need to wait to catch up to ideal
+                        let wait_start = Instant::now();
+                        if ideal_time <= wait_start {
+                            // no, keep hashing. We still hold the lock.
+                            continue;
                         }
+
+                        // busy wait, polling for new records and after dropping poh lock (reset can occur, for example)
+                        drop(poh_l);
+                        while ideal_time > Instant::now() {
+                            // check to see if a record request has been sent
+                            if let Ok(record) = record_receiver.try_recv() {
+                                // remember the record we just received as the next record to occur
+                                *next_record = Some(record);
+                                break;
+                            }
+                        }
+                        timing.total_sleep_us += wait_start.elapsed().as_micros() as u64;
                     }
-                    timing.total_sleep_us += wait_start.elapsed().as_micros() as u64;
                     break;
                 }
             }
