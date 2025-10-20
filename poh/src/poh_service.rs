@@ -249,6 +249,7 @@ impl PohService {
         target_ns_per_tick: u64,
         slot: &mut u64,
         block_received: &mut bool,
+        max_tick_height: &mut u64,
     ) -> bool {
         match next_record.take() {
             Some(mut record) => {
@@ -260,12 +261,13 @@ impl PohService {
                 timing.total_lock_time_ns += lock_time.as_ns();
                 let mut record_time = Measure::start("record");
                 loop {
-                    if let Some(s) = poh_recorder_l.bank().map(|b| b.slot()) {
-                        if *slot != s {
-                            info!("PohService transitioning to slot {s}");
+                    if let Some(bank) = poh_recorder_l.bank() {
+                        if *slot != bank.slot() {
+                            info!("PohService transitioning to slot {}", bank.slot());
                             // Rolled over to a new slot, reset block_received
                             *block_received = false;
-                            *slot = s
+                            *slot = bank.slot();
+                            *max_tick_height = bank.max_tick_height()
                         }
                     }
                     if record.remote {
@@ -343,8 +345,6 @@ impl PohService {
         false // should_tick = false for all code that reaches here
     }
 
-    const WINDOW_EXTENSION: u64 = Duration::from_millis(100).as_nanos() as u64;
-
     fn tick_producer(
         poh_recorder: Arc<RwLock<PohRecorder>>,
         poh_exit: &AtomicBool,
@@ -358,12 +358,14 @@ impl PohService {
         let mut slot = 0;
         // Whether or not we have a block for the current slot
         let mut block_received = false;
-        // Target ns_per_tick during normal window
-        let default_target_ns_per_tick = target_ns_per_tick;
-        // Target ns_per_tick during leader window while waiting for a block
+        // The max tick height for a received leader slot
+        // Used as a flag to know when we have exited the slot
+        let mut max_tick_height = 0;
+        // The target ns per tick when waiting for a block to arrive
         let extended_target_ns_per_tick =
-            // Extend the slot by 100 ms = 100_000_000 ns
-            target_ns_per_tick + (Self::WINDOW_EXTENSION / poh_recorder.read().unwrap().ticks_per_slot());
+            Duration::from_millis(430).as_nanos() as u64 / ticks_per_slot;
+        // The target ns per tick after a block has arrived
+        let shortened_target_ns_per_tick = 1;
 
         let poh = poh_recorder.read().unwrap().poh.clone();
         let mut timing = PohTiming::new();
@@ -379,22 +381,33 @@ impl PohService {
                 target_ns_per_tick,
                 &mut slot,
                 &mut block_received,
+                &mut max_tick_height,
             );
 
-            target_ns_per_tick =
-                // If we haven't received a block and we are leader, extend the slot
-                if !block_received && poh_recorder.read().unwrap().would_be_leader(0) {
-                    if target_ns_per_tick != extended_target_ns_per_tick {
-                        info!("PohService extending target ns per tick");
+            target_ns_per_tick = {
+                let poh_recorder = poh_recorder.read().unwrap();
+                if poh_recorder.tick_height() < max_tick_height {
+                    if block_received {
+                        if target_ns_per_tick != shortened_target_ns_per_tick {
+                            info!("PohService shortening target ns per tick");
+                        }
+                        // We have received a block - speedrun the rest of the slot
+                        shortened_target_ns_per_tick
+                    } else {
+                        if target_ns_per_tick != extended_target_ns_per_tick {
+                            info!("PohService extending target ns per tick");
+                        }
+                        // We are waiting for a block - delay in case the block is held up
+                        extended_target_ns_per_tick
                     }
-                    extended_target_ns_per_tick
                 } else {
-                    if target_ns_per_tick != default_target_ns_per_tick {
+                    if target_ns_per_tick != poh_recorder.target_ns_per_tick {
                         info!("PohService restoring target ns per tick");
                     }
                     // If we aren't leader or we have a block, use the normal slot timing
-                    default_target_ns_per_tick
-                };
+                    poh_recorder.target_ns_per_tick
+                }
+            };
 
             if should_tick {
                 // Lock PohRecorder only for the final hash. record_or_hash will lock PohRecorder for record calls but not for hashing.
