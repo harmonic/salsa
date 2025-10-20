@@ -505,6 +505,16 @@ impl PohRecorder {
             }
         }
 
+        /* cavey */
+        let parent = working_bank.bank.parent();
+        let parent_was_our_leader_prev_slot = parent.as_ref().is_some_and(|p| {
+            p.collector_id() == working_bank.bank.collector_id()
+                && p.slot() + 1 == working_bank.bank.slot()
+        });
+        if parent_was_our_leader_prev_slot {
+            self.cavey_set_start_time(parent.unwrap().cavey_next_time);
+        }
+
         // `shared_working_bank` and `working_bank` must be kept consistent.
         self.shared_working_bank.store(working_bank.bank.clone());
         self.working_bank = Some(working_bank);
@@ -943,6 +953,10 @@ impl PohRecorder {
 
     pub fn get_blockstore(&self) -> Arc<Blockstore> {
         self.blockstore.clone()
+    }
+
+    pub fn cavey_set_start_time(&self, start_time: Instant) {
+        self.poh.lock().unwrap().cavey_set_start_time(start_time);
     }
 }
 
