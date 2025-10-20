@@ -50,6 +50,7 @@ use {
 
 const CONNECTION_TIMEOUT_S: u64 = 10;
 const CONNECTION_BACKOFF_S: u64 = 5;
+const MAX_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
 
 #[derive(Default)]
 struct BlockEngineStageStats {
@@ -273,7 +274,9 @@ impl BlockEngineStage {
         let block_engine_client = BlockEngineValidatorClient::with_interceptor(
             block_engine_channel,
             AuthInterceptor::new(access_token.clone()),
-        );
+        )
+        .max_encoding_message_size(MAX_MESSAGE_SIZE)
+        .max_decoding_message_size(MAX_MESSAGE_SIZE);
 
         Self::start_consuming_block_engine_bundles_and_packets(
             bundle_tx,
