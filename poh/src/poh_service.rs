@@ -351,8 +351,6 @@ impl PohService {
         false // should_tick = false for all code that reaches here
     }
 
-    const WINDOW_EXTENSION: u64 = Duration::from_millis(100).as_nanos() as u64;
-
     fn tick_producer(
         poh_recorder: Arc<RwLock<PohRecorder>>,
         poh_exit: &AtomicBool,
