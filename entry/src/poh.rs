@@ -149,6 +149,16 @@ impl Poh {
             hash: self.hash,
         })
     }
+
+    #[inline]
+    pub fn cavey_set_start_time(&mut self, start_time: Instant) {
+        // slot start time was already reset. we choose the earlier time
+        info!(
+            "CAVEY DEBUG: set start time. slot start_time {:?}; start_time {:?}",
+            self.slot_start_time, start_time
+        );
+        self.slot_start_time = self.slot_start_time.min(start_time);
+    }
 }
 
 pub fn compute_hash_time(hashes_sample_size: u64) -> Duration {
