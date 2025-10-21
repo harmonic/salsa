@@ -2266,7 +2266,7 @@ impl ReplayStage {
                 == tpu_bank.collector_id()
                 && parent_slot + 1 == slot;
             let window_start_time = if parent_was_our_leader_prev_slot {
-                effective_parent.cavey_next_time.1
+                effective_parent.cavey_next_time.1.min(SystemTime::now())
             } else {
                 SystemTime::now()
             };
