@@ -512,7 +512,7 @@ impl PohRecorder {
                 && p.slot() + 1 == working_bank.bank.slot()
         });
         if parent_was_our_leader_prev_slot {
-            self.cavey_set_start_time(parent.unwrap().cavey_next_time);
+            self.cavey_set_start_time(parent.unwrap().cavey_next_time.0);
         }
 
         // `shared_working_bank` and `working_bank` must be kept consistent.
@@ -957,6 +957,10 @@ impl PohRecorder {
 
     pub fn cavey_set_start_time(&self, start_time: Instant) {
         self.poh.lock().unwrap().cavey_set_start_time(start_time);
+    }
+
+    pub fn cavey_start_time(&self) -> Instant {
+        self.poh.lock().unwrap().cavey_start_time()
     }
 }
 

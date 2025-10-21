@@ -159,6 +159,11 @@ impl Poh {
         );
         self.slot_start_time = self.slot_start_time.min(start_time);
     }
+
+    #[inline]
+    pub fn cavey_start_time(&self) -> Instant {
+        self.slot_start_time
+    }
 }
 
 pub fn compute_hash_time(hashes_sample_size: u64) -> Duration {

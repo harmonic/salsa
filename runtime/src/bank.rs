@@ -937,7 +937,7 @@ pub struct Bank {
     /// The hashmap is keyed by parent_hash.
     epoch_rewards_calculation_cache: Arc<Mutex<HashMap<Hash, Arc<PartitionedRewardsCalculation>>>>,
 
-    pub cavey_next_time: Instant,
+    pub cavey_next_time: (Instant, std::time::SystemTime),
 }
 
 #[derive(Debug)]
@@ -1136,7 +1136,10 @@ impl Bank {
             block_id: RwLock::new(None),
             bank_hash_stats: AtomicBankHashStats::default(),
             epoch_rewards_calculation_cache: Arc::new(Mutex::new(HashMap::default())),
-            cavey_next_time: Instant::now(),
+            cavey_next_time: (
+                Instant::now() + Duration::from_millis(400),
+                std::time::SystemTime::now() + Duration::from_millis(400),
+            ),
         };
 
         bank.transaction_processor =
@@ -1311,7 +1314,10 @@ impl Bank {
             bank_id,
             epoch,
             blockhash_queue,
-            cavey_next_time: Instant::now() + Duration::from_millis(400),
+            cavey_next_time: (
+                Instant::now() + Duration::from_millis(400),
+                std::time::SystemTime::now() + Duration::from_millis(400),
+            ),
 
             // TODO: clean this up, so much special-case copying...
             hashes_per_tick: parent.hashes_per_tick,
@@ -1861,7 +1867,10 @@ impl Bank {
             block_id: RwLock::new(None),
             bank_hash_stats: AtomicBankHashStats::new(&fields.bank_hash_stats),
             epoch_rewards_calculation_cache: Arc::new(Mutex::new(HashMap::default())),
-            cavey_next_time: Instant::now() + Duration::from_millis(400),
+            cavey_next_time: (
+                Instant::now() + Duration::from_millis(400),
+                std::time::SystemTime::now() + Duration::from_millis(400),
+            ),
         };
 
         // Sanity assertions between bank snapshot and genesis config
