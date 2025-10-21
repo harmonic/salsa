@@ -2262,7 +2262,14 @@ impl ReplayStage {
                 rpc_subscriptions.notify_slot(slot, tpu_bank.parent_slot(), root_slot);
             }
 
-            let window_start_time = SystemTime::now();
+            let parent_was_our_leader_prev_slot = effective_parent.collector_id()
+                == tpu_bank.collector_id()
+                && parent_slot + 1 == slot;
+            let window_start_time = if parent_was_our_leader_prev_slot {
+                effective_parent.cavey_next_time.1
+            } else {
+                SystemTime::now()
+            };
             info!(
                 "Sending leader window notification ({:?}, {})",
                 window_start_time, slot
