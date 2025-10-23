@@ -22,8 +22,7 @@ use {
         auth::{auth_service_client::AuthServiceClient, Token},
         block_engine::{
             self, block_engine_validator_client::BlockEngineValidatorClient,
-            BlockBuilderFeeInfoRequest, BlockBuilderFeeInfoRequest, BlockEngineEndpoint,
-            GetBlockEngineEndpointRequest, GetBlockEngineEndpointRequest,
+            BlockBuilderFeeInfoRequest, BlockEngineEndpoint, GetBlockEngineEndpointRequest,
             SubmitLeaderWindowInfoRequest,
         },
     },
@@ -42,7 +41,7 @@ use {
             Arc, Mutex,
         },
         thread::{self, Builder, JoinHandle},
-        time::{Duration, SystemTime},
+        time::{Duration, Instant, SystemTime},
     },
     thiserror::Error,
     tokio::{
@@ -205,7 +204,6 @@ impl BlockEngineStage {
                 &block_builder_fee_info,
                 &shredstream_receiver_address,
                 &local_block_engine_config,
-                &CONNECTION_TIMEOUT,
                 &mut leader_window_receiver,
             )
             .await
@@ -239,6 +237,7 @@ impl BlockEngineStage {
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         _shredstream_receiver_address: &Arc<ArcSwap<Option<SocketAddr>>>,
         local_block_engine_config: &BlockEngineConfig,
+        leader_window_receiver: &mut tokio::sync::mpsc::Receiver<(SystemTime, u64)>,
     ) -> crate::proxy::Result<()> {
         let endpoint = Self::get_endpoint(&local_block_engine_config.block_engine_url)?;
         // if !local_block_engine_config.disable_block_engine_autoconfig {
@@ -287,6 +286,7 @@ impl BlockEngineStage {
             exit,
             block_builder_fee_info,
             &Self::CONNECTION_TIMEOUT,
+            leader_window_receiver,
         )
         .await
         .inspect(|_| {
@@ -312,6 +312,7 @@ impl BlockEngineStage {
         exit: &Arc<AtomicBool>,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         shredstream_receiver_address: &Arc<ArcSwap<Option<SocketAddr>>>,
+        leader_window_receiver: &mut tokio::sync::mpsc::Receiver<(SystemTime, u64)>,
     ) -> crate::proxy::Result<()> {
         let candidates = Self::get_ranked_endpoints(&endpoint).await?;
 
@@ -344,6 +345,7 @@ impl BlockEngineStage {
                 exit,
                 block_builder_fee_info,
                 &Self::CONNECTION_TIMEOUT,
+                leader_window_receiver,
             )
             .await
             {
