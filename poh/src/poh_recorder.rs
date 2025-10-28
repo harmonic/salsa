@@ -53,9 +53,6 @@ pub enum PohRecorderError {
 
     #[error("send WorkingBankEntry error")]
     SendError(#[from] SendError<WorkingBankEntry>),
-
-    #[error("insufficient hashes remaining for mixins")]
-    NotEnoughHashes,
 }
 
 pub(crate) type Result<T> = std::result::Result<T, PohRecorderError>;
@@ -351,10 +348,11 @@ impl PohRecorder {
                 mixins.len(),
                 total_remaining_hashes
             );
-            return Err(PohRecorderError::NotEnoughHashes);
+            return Err(PohRecorderError::MaxHeightReached);
         }
         drop(poh_lock);
 
+        let mut starting_transaction_index = None;
         loop {
             let (flush_cache_res, flush_cache_us) = measure_us!(self.flush_cache(false));
             self.metrics.flush_cache_no_tick_us += flush_cache_us;
@@ -374,10 +372,13 @@ impl PohRecorder {
 
             // Process mixins in batches,
             let batch_len = std::cmp::min((poh_lock.remaining_hashes() - 1) as usize, mixins.len());
-            let (mixed_in, record_mixin_us) =
-                measure_us!(poh_lock.record_batches(&mixins[..batch_len], &mut self.entries));
+            let (mixed_in, record_mixin_us) = if batch_len == 0 {
+                // Don't record mixins on tick boundary, just tick
+                (false, 0)
+            } else {
+                measure_us!(poh_lock.record_batches(&mixins[..batch_len], &mut self.entries))
+            };
             self.metrics.record_us += record_mixin_us;
-
             drop(poh_lock);
 
             if mixed_in {
@@ -407,12 +408,13 @@ impl PohRecorder {
                     send_entry_res?;
                 }
 
-                let starting_transaction_index =
-                    working_bank.transaction_index.inspect(|transaction_index| {
+                starting_transaction_index = starting_transaction_index.or(working_bank
+                    .transaction_index
+                    .inspect(|transaction_index| {
                         let next_starting_transaction_index =
                             transaction_index.saturating_add(num_transactions);
                         working_bank.transaction_index = Some(next_starting_transaction_index);
-                    });
+                    }));
 
                 drop(mixins.drain(..batch_len));
                 // mevanoxx: we should always eventually get to empty, because
@@ -420,10 +422,6 @@ impl PohRecorder {
                 if mixins.is_empty() {
                     return Ok(starting_transaction_index);
                 }
-            } else {
-                // This should never happen, because we check the size of the
-                // mixins before calling record_batches()
-                error!("mevanoxx: Failed to record_batches");
             }
 
             // record() might fail if the next PoH hash needs to be a tick.  But that's ok, tick()
@@ -2419,7 +2417,7 @@ mod tests {
         let transaction_batches = vec![vec![test_tx().into()]; n];
         let mixins = vec![Hash::new_unique(); n];
         let result = poh_recorder.record(bank.slot(), mixins, transaction_batches);
-        assert_matches!(result, Err(PohRecorderError::NotEnoughHashes));
+        assert_matches!(result, Err(PohRecorderError::MaxHeightReached));
     }
 
     #[test]
