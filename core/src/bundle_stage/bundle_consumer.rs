@@ -608,8 +608,7 @@ impl BundleConsumer {
                     "exceeded a cost limit, marking execution invalid for slot {}",
                     bank.slot()
                 );
-                // TODO: DEVIN - restore this once the cost mismatch bug is fixed
-                // bank.mark_execution_invalid();
+                bank.mark_execution_invalid();
             }
         }
 
