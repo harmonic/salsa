@@ -622,7 +622,8 @@ pub fn parallel_load_and_execute_bundle<'a>(
                         start,
                         end,
                     )) => {
-                        indexed_bundle_transaction_results.push((start, bundle_transaction_output));
+                        indexed_bundle_transaction_results
+                            .push((range.start, bundle_transaction_output));
                         metrics.accumulate(&transaction_metrics);
                         scheduler.finish(range.clone(), &bundle.transactions);
                         per_thread_execution_times[index].push((range, start, end));
