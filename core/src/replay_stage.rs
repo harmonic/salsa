@@ -2274,8 +2274,8 @@ impl ReplayStage {
                 "Sending leader window notification ({:?}, {})",
                 window_start_time, slot
             );
-            if let Err(e) = leader_window_sender.blocking_send((window_start_time, slot)) {
-                error!("Failed to send leader window notification: {}", e);
+            if let Err(e) = leader_window_sender.try_send((window_start_time, slot)) {
+                error!("Failed to send leader window notification. is consumer thread connected to the block auction house? error: {}", e);
             }
 
             if let Some(slot_status_notifier) = slot_status_notifier {
