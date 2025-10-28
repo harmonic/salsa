@@ -519,7 +519,7 @@ pub fn parallel_load_and_execute_bundle<'a>(
 
     // Make this immutable so that we can use it across threads
     let account_overrides: &AccountOverrides = account_overrides;
-    let mut bundle_transaction_results = Vec::new();
+    let mut indexed_bundle_transaction_results = Vec::new();
     let mut metrics = BundleExecutionMetrics::default();
 
     let start_time = Timer::new();
@@ -622,12 +622,18 @@ pub fn parallel_load_and_execute_bundle<'a>(
                         start,
                         end,
                     )) => {
-                        bundle_transaction_results.push(bundle_transaction_output);
+                        indexed_bundle_transaction_results.push((start, bundle_transaction_output));
                         metrics.accumulate(&transaction_metrics);
                         scheduler.finish(range.clone(), &bundle.transactions);
                         per_thread_execution_times[index].push((range, start, end));
                     }
                     Err(e) => {
+                        indexed_bundle_transaction_results.sort_by_key(|r| r.0);
+                        let bundle_transaction_results = indexed_bundle_transaction_results
+                            .into_iter()
+                            .map(|r| r.1)
+                            .collect();
+
                         // Send exit heartbeat signal to the threads
                         start_channels.into_iter().for_each(|tx| tx.beat());
                         return LoadAndExecuteBundleOutput {
@@ -653,6 +659,11 @@ pub fn parallel_load_and_execute_bundle<'a>(
             max_queue_depth, per_thread_transaction_count
         );
         info!("runtimes per thread: {:?}", per_thread_execution_times);
+        indexed_bundle_transaction_results.sort_by_key(|r| r.0);
+        let bundle_transaction_results = indexed_bundle_transaction_results
+            .into_iter()
+            .map(|r| r.1)
+            .collect();
         LoadAndExecuteBundleOutput {
             bundle_transaction_results,
             metrics,
