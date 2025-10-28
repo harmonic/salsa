@@ -53,9 +53,6 @@ pub enum PohRecorderError {
 
     #[error("send WorkingBankEntry error")]
     SendError(#[from] SendError<WorkingBankEntry>),
-
-    #[error("insufficient hashes remaining for mixins")]
-    NotEnoughHashes,
 }
 
 pub(crate) type Result<T> = std::result::Result<T, PohRecorderError>;
