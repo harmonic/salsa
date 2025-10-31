@@ -374,6 +374,7 @@ impl BlockEngineStage {
 
                         if RelayerStage::is_valid_relayer_config(&relayer_config) {
                             *config_lock = relayer_config;
+                            info!("Updated relayer url to {ha_tpu_url} in relayer config: {relayer_config:?}");
                         } else {
                             error!("Invalid relayer config, failed to set the relayer url to {ha_tpu_url}, config: {relayer_config:?}");
                         }
