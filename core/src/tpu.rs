@@ -371,6 +371,7 @@ impl Tpu {
             &block_builder_fee_info,
             shredstream_receiver_address.clone(),
             leader_window_receiver,
+            relayer_config.clone(),
         );
 
         let (heartbeat_tx, heartbeat_rx) = unbounded();

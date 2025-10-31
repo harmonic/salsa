@@ -11,6 +11,7 @@ use {
         proto_packet_to_packet,
         proxy::{
             auth::{generate_auth_tokens, maybe_refresh_auth_tokens, AuthInterceptor},
+            relayer_stage::{RelayerConfig, RelayerStage},
             ProxyError,
         },
     },
@@ -45,7 +46,7 @@ use {
     },
     thiserror::Error,
     tokio::{
-        task,
+        task::{self, spawn_blocking},
         time::{interval, sleep, timeout},
     },
     tonic::{
@@ -133,6 +134,7 @@ impl BlockEngineStage {
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         shredstream_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
         leader_window_receiver: tokio::sync::mpsc::Receiver<(SystemTime, u64)>,
+        relayer_config: Arc<Mutex<RelayerConfig>>,
     ) -> Self {
         let block_builder_fee_info = block_builder_fee_info.clone();
 
@@ -153,6 +155,7 @@ impl BlockEngineStage {
                     block_builder_fee_info,
                     shredstream_receiver_address,
                     leader_window_receiver,
+                    relayer_config,
                 ));
             })
             .unwrap();
@@ -180,6 +183,7 @@ impl BlockEngineStage {
         block_builder_fee_info: Arc<Mutex<BlockBuilderFeeInfo>>,
         shredstream_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
         mut leader_window_receiver: tokio::sync::mpsc::Receiver<(SystemTime, u64)>,
+        relayer_config: Arc<Mutex<RelayerConfig>>,
     ) {
         let mut error_count: u64 = 0;
 
@@ -205,6 +209,7 @@ impl BlockEngineStage {
                 &shredstream_receiver_address,
                 &local_block_engine_config,
                 &mut leader_window_receiver,
+                &relayer_config,
             )
             .await
             {
@@ -235,40 +240,43 @@ impl BlockEngineStage {
         banking_packet_sender: &BankingPacketSender,
         exit: &Arc<AtomicBool>,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
-        _shredstream_receiver_address: &Arc<ArcSwap<Option<SocketAddr>>>,
+        shredstream_receiver_address: &Arc<ArcSwap<Option<SocketAddr>>>,
         local_block_engine_config: &BlockEngineConfig,
         leader_window_receiver: &mut tokio::sync::mpsc::Receiver<(SystemTime, u64)>,
+        relayer_config: &Arc<Mutex<RelayerConfig>>,
     ) -> crate::proxy::Result<()> {
         let endpoint = Self::get_endpoint(&local_block_engine_config.block_engine_url)?;
-        // if !local_block_engine_config.disable_block_engine_autoconfig {
-        //     datapoint_info!(
-        //         "block_engine_stage-connect",
-        //         "type" => "autoconfig",
-        //         ("count", 1, i64),
-        //     );
-        //     return Self::connect_auth_and_stream_autoconfig(
-        //         endpoint,
-        //         local_block_engine_config,
-        //         block_engine_config,
-        //         cluster_info,
-        //         bundle_tx,
-        //         packet_tx,
-        //         banking_packet_sender,
-        //         exit,
-        //         block_builder_fee_info,
-        //         shredstream_receiver_address,
-        //     )
-        //     .await;
-        // }
+        if !local_block_engine_config.disable_block_engine_autoconfig {
+            datapoint_info!(
+                "block_engine_stage-connect",
+                "type" => "autoconfig",
+                ("count", 1, i64),
+            );
+            return Self::connect_auth_and_stream_autoconfig(
+                endpoint,
+                local_block_engine_config,
+                block_engine_config,
+                cluster_info,
+                bundle_tx,
+                packet_tx,
+                banking_packet_sender,
+                exit,
+                block_builder_fee_info,
+                shredstream_receiver_address,
+                leader_window_receiver,
+                relayer_config,
+            )
+            .await;
+        }
 
-        // if let Some((_best_url, (best_socket, _best_latency_us))) =
-        //     Self::get_ranked_endpoints(&endpoint)
-        //         .await?
-        //         .into_iter()
-        //         .min_by_key(|(_url, (_socket, latency_us))| *latency_us)
-        // {
-        //     shredstream_receiver_address.store(Arc::new(Some(best_socket))); // no else branch needed since we'll still send to shred_receiver_address
-        // }
+        if let Some((_best_url, (best_socket, _, _best_latency_us))) =
+            Self::get_ranked_endpoints(&endpoint)
+                .await?
+                .into_iter()
+                .min_by_key(|(_url, (_socket, _, latency_us))| *latency_us)
+        {
+            shredstream_receiver_address.store(Arc::new(Some(best_socket))); // no else branch needed since we'll still send to shred_receiver_address
+        }
 
         datapoint_info!(
             "block_engine_stage-connect",
@@ -299,7 +307,6 @@ impl BlockEngineStage {
         })
     }
 
-    #[allow(dead_code)]
     #[allow(clippy::too_many_arguments)]
     async fn connect_auth_and_stream_autoconfig(
         endpoint: Endpoint,
@@ -313,6 +320,7 @@ impl BlockEngineStage {
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         shredstream_receiver_address: &Arc<ArcSwap<Option<SocketAddr>>>,
         leader_window_receiver: &mut tokio::sync::mpsc::Receiver<(SystemTime, u64)>,
+        relayer_config: &Arc<Mutex<RelayerConfig>>,
     ) -> crate::proxy::Result<()> {
         let candidates = Self::get_ranked_endpoints(&endpoint).await?;
 
@@ -320,9 +328,9 @@ impl BlockEngineStage {
         let mut attempted = false;
         let mut backend_endpoint = endpoint.clone();
         let endpoint_count = candidates.len();
-        for (block_engine_url, (shredstream_socket, latency_us)) in candidates
+        for (block_engine_url, (shredstream_socket, ha_tpu_url, latency_us)) in candidates
             .into_iter()
-            .sorted_unstable_by_key(|(_endpoint, (_shredstream_socket, latency_us))| *latency_us)
+            .sorted_unstable_by_key(|(_endpoint, (_shredstream_socket, _, latency_us))| *latency_us)
         {
             if block_engine_url != local_block_engine_config.block_engine_url {
                 info!("Selected best Block Engine url: {block_engine_url}, Shredstream socket: {shredstream_socket}, ping: ({:?})",
@@ -356,6 +364,25 @@ impl BlockEngineStage {
                         ("url", backend_endpoint.uri().to_string(), String),
                         ("count", 1, i64),
                     );
+
+                    let relayer_config_arc_clone = relayer_config.clone();
+                    let update_relayer_fut = spawn_blocking(move || {
+                        let mut config_lock = relayer_config_arc_clone.lock().unwrap();
+
+                        let mut relayer_config = config_lock.clone();
+                        relayer_config.relayer_url = ha_tpu_url.clone();
+
+                        if RelayerStage::is_valid_relayer_config(&relayer_config) {
+                            *config_lock = relayer_config;
+                        } else {
+                            error!("Invalid relayer config, failed to set the relayer url to {ha_tpu_url}, config: {relayer_config:?}");
+                        }
+                    });
+
+                    update_relayer_fut.await.unwrap();
+
+                    shredstream_receiver_address.store(Arc::new(Some(shredstream_socket)));
+
                     return Ok(());
                 }
                 Err(e) => {
@@ -403,6 +430,7 @@ impl BlockEngineStage {
             String, /* block engine url */
             (
                 SocketAddr, /* shredstream receiver */
+                String,     /* ha: tpu url */
                 u64,        /* latency us */
             ),
         >,
@@ -450,7 +478,7 @@ impl BlockEngineStage {
 
             return Ok(ahash::HashMap::from_iter([(
                 global.block_engine_url,
-                (ss, u64::MAX),
+                (ss, global.tpu_url, u64::MAX),
             )]));
         }
 
@@ -607,6 +635,7 @@ impl BlockEngineStage {
         String, /* block engine url */
         (
             SocketAddr, /* shredstream receiver */
+            String,     /* ha: tpu url */
             u64,        /* latency us */
         ),
     > {
@@ -641,6 +670,7 @@ impl BlockEngineStage {
             String, /* block engine url */
             (
                 SocketAddr, /* shredstream receiver */
+                String,     /* ha: tpu url */
                 u64,        /* latency us */
             ),
         > = ahash::HashMap::with_capacity(endpoints.len());
@@ -660,10 +690,12 @@ impl BlockEngineStage {
                 );
                 match agg_endpoints.entry(endpoint.block_engine_url.clone()) {
                     Entry::Occupied(mut ent) => {
-                        let (_shredstream_socket, best_ping_us) = ent.get_mut();
+                        let (_shredstream_socket, tpu_url, best_ping_us) = ent.get_mut();
                         if latency_us <= best_ping_us {
                             *best_ping_us = *latency_us;
                         }
+
+                        *tpu_url = endpoint.tpu_url.clone();
                     }
                     Entry::Vacant(entry) => {
                         let Some(shredstream_socket) = endpoint
@@ -680,7 +712,7 @@ impl BlockEngineStage {
                         else {
                             return;
                         };
-                        entry.insert((shredstream_socket, *latency_us));
+                        entry.insert((shredstream_socket, endpoint.tpu_url.clone(), *latency_us));
                     }
                 };
             },
