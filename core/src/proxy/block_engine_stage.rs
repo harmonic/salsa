@@ -333,7 +333,7 @@ impl BlockEngineStage {
             .sorted_unstable_by_key(|(_endpoint, (_shredstream_socket, _, latency_us))| *latency_us)
         {
             if block_engine_url != local_block_engine_config.block_engine_url {
-                info!("Selected best Block Engine url: {block_engine_url}, Shredstream socket: {shredstream_socket}, ping: ({:?})",
+                info!("Selected best Block Engine url: {block_engine_url}, Shredstream socket: {shredstream_socket}, Relayer url: {ha_tpu_url}, ping: ({:?})",
                     Duration::from_micros(latency_us)
                 );
                 backend_endpoint = Self::get_endpoint(block_engine_url.as_str())?;
