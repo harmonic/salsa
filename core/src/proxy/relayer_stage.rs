@@ -210,7 +210,7 @@ impl RelayerStage {
                 })?;
         }
 
-        debug!("connecting to auth: {}", local_relayer_config.relayer_url);
+        info!("connecting to auth: {}", local_relayer_config.relayer_url);
         let auth_channel = timeout(*connection_timeout, backend_endpoint.connect())
             .await
             .map_err(|_| ProxyError::AuthenticationConnectionTimeout)?
