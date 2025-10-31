@@ -338,6 +338,29 @@ impl BlockEngineStage {
                 );
                 backend_endpoint = Self::get_endpoint(block_engine_url.as_str())?;
             }
+
+            {
+                let relayer_config_arc_clone = relayer_config.clone();
+                let update_relayer_fut = spawn_blocking(move || {
+                    let mut config_lock = relayer_config_arc_clone.lock().unwrap();
+
+                    let mut relayer_config = config_lock.clone();
+                    relayer_config.relayer_url = ha_tpu_url.clone();
+
+                    if RelayerStage::is_valid_relayer_config(&relayer_config) {
+                        info!(
+                            "Updated relayer url to {ha_tpu_url} in relayer config {:?}",
+                            relayer_config
+                        );
+                        *config_lock = relayer_config;
+                    } else {
+                        error!("Invalid relayer config, failed to set the relayer url to {ha_tpu_url}, config: {relayer_config:?}");
+                    }
+                });
+
+                update_relayer_fut.await.unwrap();
+            }
+
             // shredstream_receiver_address.store(Arc::new(Some(shredstream_socket)));
             shredstream_receiver_address.store(Arc::new(None));
             attempted = true;
@@ -364,23 +387,6 @@ impl BlockEngineStage {
                         ("url", backend_endpoint.uri().to_string(), String),
                         ("count", 1, i64),
                     );
-
-                    let relayer_config_arc_clone = relayer_config.clone();
-                    let update_relayer_fut = spawn_blocking(move || {
-                        let mut config_lock = relayer_config_arc_clone.lock().unwrap();
-
-                        let mut relayer_config = config_lock.clone();
-                        relayer_config.relayer_url = ha_tpu_url.clone();
-
-                        if RelayerStage::is_valid_relayer_config(&relayer_config) {
-                            info!("Updated relayer url to {ha_tpu_url} in relayer config {:?}", relayer_config);
-                            *config_lock = relayer_config;
-                        } else {
-                            error!("Invalid relayer config, failed to set the relayer url to {ha_tpu_url}, config: {relayer_config:?}");
-                        }
-                    });
-
-                    update_relayer_fut.await.unwrap();
 
                     shredstream_receiver_address.store(Arc::new(Some(shredstream_socket)));
 
