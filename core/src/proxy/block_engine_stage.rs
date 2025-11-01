@@ -385,8 +385,6 @@ impl BlockEngineStage {
                         ("count", 1, i64),
                     );
 
-                    shredstream_receiver_address.store(Arc::new(Some(shredstream_socket)));
-
                     return Ok(());
                 }
                 Err(e) => {
