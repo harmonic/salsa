@@ -328,12 +328,12 @@ impl BlockEngineStage {
         let mut attempted = false;
         let mut backend_endpoint = endpoint.clone();
         let endpoint_count = candidates.len();
-        for (block_engine_url, (shredstream_socket, ha_tpu_url, latency_us)) in candidates
+        for (block_engine_url, (shredstream_socket, relayer_url, latency_us)) in candidates
             .into_iter()
             .sorted_unstable_by_key(|(_endpoint, (_shredstream_socket, _, latency_us))| *latency_us)
         {
             if block_engine_url != local_block_engine_config.block_engine_url {
-                info!("Selected best Block Engine url: {block_engine_url}, Shredstream socket: {shredstream_socket}, Relayer url: {ha_tpu_url}, ping: ({:?})",
+                info!("Selected best Block Engine url: {block_engine_url}, Shredstream socket: {shredstream_socket}, Relayer url: {relayer_url}, ping: ({:?})",
                     Duration::from_micros(latency_us)
                 );
                 backend_endpoint = Self::get_endpoint(block_engine_url.as_str())?;
@@ -345,16 +345,16 @@ impl BlockEngineStage {
                     let mut config_lock = relayer_config_arc_clone.lock().unwrap();
 
                     let mut relayer_config = config_lock.clone();
-                    relayer_config.relayer_url = ha_tpu_url.clone();
+                    relayer_config.relayer_url = relayer_url.clone();
 
                     if RelayerStage::is_valid_relayer_config(&relayer_config) {
                         info!(
-                            "Updated relayer url to {ha_tpu_url} in relayer config {:?}",
+                            "Updated relayer url to {relayer_url} in relayer config {:?}",
                             relayer_config
                         );
                         *config_lock = relayer_config;
                     } else {
-                        error!("Invalid relayer config, failed to set the relayer url to {ha_tpu_url}, config: {relayer_config:?}");
+                        error!("Invalid relayer config, failed to set the relayer url to {relayer_url}, config: {relayer_config:?}");
                     }
                 });
 
