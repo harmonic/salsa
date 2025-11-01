@@ -10,9 +10,7 @@ use {
         packet_bundle::PacketBundle,
         proto_packet_to_packet,
         proxy::{
-            auth::{generate_auth_tokens, maybe_refresh_auth_tokens, AuthInterceptor},
-            relayer_stage::{RelayerConfig, RelayerStage},
-            ProxyError,
+            ProxyError, auth::{AuthInterceptor, generate_auth_tokens, maybe_refresh_auth_tokens}, relayer_stage::{RelayerConfig, RelayerStage}
         },
     },
     ahash::HashMapExt,
@@ -20,11 +18,9 @@ use {
     crossbeam_channel::Sender,
     itertools::Itertools,
     jito_protos::proto::{
-        auth::{auth_service_client::AuthServiceClient, Token},
+        auth::{Token, auth_service_client::AuthServiceClient},
         block_engine::{
-            self, block_engine_validator_client::BlockEngineValidatorClient,
-            BlockBuilderFeeInfoRequest, BlockEngineEndpoint, GetBlockEngineEndpointRequest,
-            SubmitLeaderWindowInfoRequest,
+            self, BlockBuilderFeeInfoRequest, BlockEngineEndpoint, GetBlockEngineEndpointRequest, SubmitLeaderWindowInfoRequest, block_engine_validator_client::BlockEngineValidatorClient
         },
     },
     solana_gossip::cluster_info::ClusterInfo,
@@ -38,21 +34,18 @@ use {
         ops::AddAssign,
         str::FromStr,
         sync::{
-            atomic::{AtomicBool, Ordering},
-            Arc, Mutex,
+            Arc, Mutex, atomic::{AtomicBool, Ordering}
         },
         thread::{self, Builder, JoinHandle},
         time::{Duration, Instant, SystemTime},
     },
     thiserror::Error,
     tokio::{
-        task::{self, spawn_blocking},
+        task::{self, JoinError, spawn_blocking},
         time::{interval, sleep, timeout},
     },
     tonic::{
-        codegen::InterceptedService,
-        transport::{Channel, Endpoint, Uri},
-        Status, Streaming,
+        Status, Streaming, codegen::InterceptedService, transport::{Channel, Endpoint, Uri}
     },
 };
 
@@ -307,6 +300,31 @@ impl BlockEngineStage {
         })
     }
 
+    async fn maybe_update_relayer_config(
+        relayer_config: &Arc<Mutex<RelayerConfig>>,
+        relayer_url: String,
+    ) {
+        let relayer_config_arc_clone = relayer_config.clone();
+        let update_relayer_fut = spawn_blocking(move || {
+            let mut config_lock = relayer_config_arc_clone.lock().unwrap();
+
+            let mut relayer_config = config_lock.clone();
+            relayer_config.relayer_url = relayer_url.clone();
+
+            if RelayerStage::is_valid_relayer_config(&relayer_config) {
+                info!(
+                    "Updated relayer url to {relayer_url} in relayer config {:?}",
+                    relayer_config
+                );
+                *config_lock = relayer_config;
+            } else {
+                error!("Invalid relayer config, failed to set the relayer url to {relayer_url}, config: {relayer_config:?}");
+            }
+        });
+
+        update_relayer_fut.await.unwrap()
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn connect_auth_and_stream_autoconfig(
         endpoint: Endpoint,
@@ -339,27 +357,7 @@ impl BlockEngineStage {
                 backend_endpoint = Self::get_endpoint(block_engine_url.as_str())?;
             }
 
-            {
-                let relayer_config_arc_clone = relayer_config.clone();
-                let update_relayer_fut = spawn_blocking(move || {
-                    let mut config_lock = relayer_config_arc_clone.lock().unwrap();
-
-                    let mut relayer_config = config_lock.clone();
-                    relayer_config.relayer_url = relayer_url.clone();
-
-                    if RelayerStage::is_valid_relayer_config(&relayer_config) {
-                        info!(
-                            "Updated relayer url to {relayer_url} in relayer config {:?}",
-                            relayer_config
-                        );
-                        *config_lock = relayer_config;
-                    } else {
-                        error!("Invalid relayer config, failed to set the relayer url to {relayer_url}, config: {relayer_config:?}");
-                    }
-                });
-
-                update_relayer_fut.await.unwrap();
-            }
+            Self::maybe_update_relayer_config(relayer_config, relayer_url.clone()).await;
 
             // shredstream_receiver_address.store(Arc::new(Some(shredstream_socket)));
             shredstream_receiver_address.store(Arc::new(None));
@@ -429,7 +427,6 @@ impl BlockEngineStage {
 
     /// Discover candidate endpoints either ranked via ping or using global fallback.
     /// Use u64::MAX for latency value to indicate global fallback (no ping data).
-    #[allow(dead_code)]
     async fn get_ranked_endpoints(
         backend_endpoint: &Endpoint,
     ) -> crate::proxy::Result<
