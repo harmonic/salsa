@@ -239,6 +239,13 @@ impl BundleStageStatsMetricsTracker {
                         .add_assign(Saturating(1));
                 }
                 Err(BundleExecutionError::TransactionFailure(
+                    LoadAndExecuteBundleError::TransactionError { .. },
+                )) => {
+                    bundle_stage_metrics
+                        .execution_results_transaction_failures
+                        .add_assign(Saturating(1));
+                }
+                Err(BundleExecutionError::TransactionFailure(
                     LoadAndExecuteBundleError::LockError { .. },
                 ))
                 | Err(BundleExecutionError::LockError) => {

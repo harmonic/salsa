@@ -7,6 +7,7 @@ use {
     solana_clock::Slot,
     solana_commitment_config::{CommitmentConfig, CommitmentLevel},
     solana_signature::Signature,
+    solana_svm::transaction_processing_result::ProcessedTransaction,
     solana_transaction_error::TransactionError,
     solana_transaction_status_client_types::{UiTransactionEncoding, UiTransactionReturnData},
     thiserror::Error,
@@ -66,24 +67,24 @@ impl From<BundleExecutionError> for RpcBundleExecutionError {
                         signature,
                         transaction_error,
                     } => Self::TransactionFailure(signature, transaction_error.to_string()),
-                    // LoadAndExecuteBundleError::TransactionError {
-                    //     signature,
-                    //     execution_result,
-                    // } => match *execution_result {
-                    //     Ok(ProcessedTransaction::Executed(executed_transaction)) => {
-                    //         let err_msg =
-                    //             if let Err(e) = executed_transaction.execution_details.status {
-                    //                 e.to_string()
-                    //             } else {
-                    //                 "Unknown error".to_string()
-                    //             };
-                    //         Self::TransactionFailure(signature, err_msg)
-                    //     }
-                    //     Ok(ProcessedTransaction::FeesOnly(fees_only)) => {
-                    //         Self::TransactionFailure(signature, fees_only.load_error.to_string())
-                    //     }
-                    //     Err(e) => Self::TransactionFailure(signature, e.to_string()),
-                    // },
+                    LoadAndExecuteBundleError::TransactionError {
+                        signature,
+                        execution_result,
+                    } => match *execution_result {
+                        Ok(ProcessedTransaction::Executed(executed_transaction)) => {
+                            let err_msg =
+                                if let Err(e) = executed_transaction.execution_details.status {
+                                    e.to_string()
+                                } else {
+                                    "Unknown error".to_string()
+                                };
+                            Self::TransactionFailure(signature, err_msg)
+                        }
+                        Ok(ProcessedTransaction::FeesOnly(fees_only)) => {
+                            Self::TransactionFailure(signature, fees_only.load_error.to_string())
+                        }
+                        Err(e) => Self::TransactionFailure(signature, e.to_string()),
+                    },
                     LoadAndExecuteBundleError::InvalidPreOrPostAccounts => {
                         Self::InvalidPreOrPostAccounts
                     }
@@ -121,7 +122,7 @@ pub struct RpcSimulateBundleTransactionResult {
 #[serde(rename_all = "camelCase")]
 pub struct RpcSimulateBundleConfig {
     /// Gives the state of accounts pre/post transaction execution.
-    /// The length of each of these must be equal to the number transactions.   
+    /// The length of each of these must be equal to the number transactions.
     pub pre_execution_accounts_configs: Vec<Option<RpcSimulateTransactionAccountsConfig>>,
     pub post_execution_accounts_configs: Vec<Option<RpcSimulateTransactionAccountsConfig>>,
 

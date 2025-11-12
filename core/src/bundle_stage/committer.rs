@@ -21,6 +21,7 @@ use {
     solana_svm::{
         transaction_balances::BalanceCollector, transaction_commit_result::TransactionCommitResult,
     },
+    solana_svm_timings::ExecuteTimings,
     solana_transaction::sanitized::SanitizedTransaction,
     std::{num::Saturating, ops::AddAssign, sync::Arc},
 };
@@ -57,6 +58,7 @@ impl Committer {
     /// The main difference is there's multiple non-parallelizable transaction vectors to commit
     /// and post-balances are collected after execution instead of from the bank in Self::collect_balances_and_send_status_batch.
     #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code)]
     pub(crate) fn commit_bundle(
         &self,
         bundle_execution_output: LoadAndExecuteBundleOutput,
@@ -146,6 +148,64 @@ impl Committer {
                 commit_transaction_details,
             },
         )
+    }
+
+    /// Very similar to commit_bundle()
+    /// The main differenced is that it operates on BundleTransactionsOutput (chunks) instead of
+    /// full bundles, and LeaderExecuteAndCommitTimings are not tracked
+    pub(crate) fn devin_commit_bundle(
+        &self,
+        bundle_transactions_output: BundleTransactionsOutput,
+        bank: &Arc<Bank>,
+    ) -> Vec<CommitTransactionDetails> {
+        let BundleTransactionsOutput {
+            transactions,
+            load_and_execute_transactions_output,
+            ..
+        } = bundle_transactions_output;
+
+        let commit_results = bank.commit_transactions(
+            transactions,
+            load_and_execute_transactions_output.processing_results,
+            &load_and_execute_transactions_output.processed_counts,
+            &mut ExecuteTimings::default(),
+        );
+
+        let commit_transaction_statuses = commit_results
+            .iter()
+            .map(|commit_result| match commit_result {
+                // reports actual execution CUs, and actual loaded accounts size for
+                // transaction committed to block. qos_service uses these information to adjust
+                // reserved block space.
+                Ok(committed_tx) => CommitTransactionDetails::Committed {
+                    compute_units: committed_tx.executed_units,
+                    loaded_accounts_data_size: committed_tx
+                        .loaded_account_stats
+                        .loaded_accounts_data_size,
+                    result: committed_tx.status.clone(),
+                },
+                Err(err) => CommitTransactionDetails::NotCommitted(err.clone()),
+            })
+            .collect::<Vec<_>>();
+
+        bank_utils::find_and_send_votes(
+            transactions,
+            &commit_results,
+            Some(&self.replay_vote_sender),
+        );
+
+        self.prioritization_fee_cache
+            .update(bank, transactions.iter());
+
+        self.collect_balances_and_send_status_batch(
+            commit_results,
+            bank,
+            transactions,
+            load_and_execute_transactions_output.balance_collector,
+            None,
+        );
+
+        commit_transaction_statuses
     }
 
     fn collect_balances_and_send_status_batch(
