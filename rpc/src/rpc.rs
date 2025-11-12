@@ -3511,7 +3511,7 @@ pub mod utils {
             Ok(_) => RpcBundleSimulationSummary::Succeeded,
             Err(e) => {
                 let tx_signature = match e {
-                    // LoadAndExecuteBundleError::TransactionError { signature, .. }
+                    LoadAndExecuteBundleError::TransactionError { signature, .. }
                     | LoadAndExecuteBundleError::LockError { signature, .. } => {
                         Some(signature.to_string())
                     }
@@ -4390,7 +4390,7 @@ pub mod rpc_full {
             // only return error if irrecoverable (timeout or tx malformed)
             // bundle execution failures w/ context are returned to client
             match bundle_execution_result.result {
-                Ok(()) => {}
+                Ok(()) | Err(LoadAndExecuteBundleError::TransactionError { .. }) => {}
                 Err(LoadAndExecuteBundleError::ProcessingTimeExceeded(elapsed)) => {
                     let mut error = Error::new(ErrorCode::ServerError(10_000));
                     error.message = format!(
