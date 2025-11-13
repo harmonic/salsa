@@ -16,10 +16,16 @@ use {
         proxy::block_engine_stage::BlockBuilderFeeInfo,
         tip_manager::TipManager,
     },
+    itertools::Itertools,
+    que::{
+        lossless::{lossless_pair, producer::Producer},
+        LocalMode,
+    },
     rayon::{ThreadPool, ThreadPoolBuilder},
     solana_bundle::{
-        bundle_execution::{parallel_load_and_execute_bundle, BundleExecutionMetrics},
+        bundle_execution::{devin_load_and_execute_chunk, BundleExecutionMetrics},
         scheduler::Scheduler,
+        timer::Timer,
         BundleExecutionError, BundleExecutionResult, SanitizedBundle, TipError,
     },
     solana_clock::{Slot, MAX_PROCESSING_AGE},
@@ -27,19 +33,22 @@ use {
     solana_entry::entry::hash_transactions,
     solana_gossip::cluster_info::ClusterInfo,
     solana_measure::measure_us,
-    solana_poh::transaction_recorder::{
-        RecordTransactionsSummary, RecordTransactionsTimings, TransactionRecorder,
-    },
+    solana_poh::transaction_recorder::TransactionRecorder,
     solana_pubkey::Pubkey,
     solana_runtime::bank::Bank,
     solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
-    solana_svm::transaction_error_metrics::TransactionErrorMetrics,
+    solana_svm::{
+        account_overrides::AccountOverrides, transaction_error_metrics::TransactionErrorMetrics,
+    },
     solana_transaction::{sanitized::SanitizedTransaction, versioned::VersionedTransaction},
     solana_transaction_error::TransactionResult,
     std::{
+        cmp::max,
         collections::HashSet,
+        mem::MaybeUninit,
         num::Saturating,
-        sync::{Arc, Mutex},
+        ops::Range,
+        sync::{mpsc, Arc, Mutex},
         time::{Duration, Instant},
     },
 };
@@ -81,7 +90,7 @@ pub struct BundleConsumer {
 
     cluster_info: Arc<ClusterInfo>,
 
-    // For use in the parallel_load_and_execute_bundle function
+    // For parallel execute and commit
     scheduler: Scheduler,
     thread_pool: ThreadPool,
 }
@@ -628,149 +637,173 @@ impl BundleConsumer {
     ) -> ExecuteRecordCommitResult {
         let transaction_status_sender_enabled = committer.transaction_status_sender_enabled();
 
-        let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
-
-        let (record_batches, record_batches_us) = measure_us!(sanitized_bundle
+        // Step 1: Record and broadcast bundle optimistically
+        // Keep this synchronous so we can revert and build a fallback block on failure
+        let record_batches = sanitized_bundle
             .transactions
             .iter()
             .map(|br| vec![br.to_versioned_transaction()])
-            .collect::<Vec<Vec<VersionedTransaction>>>());
-
-        debug!(
-            "bundle: {} recording {} batches",
-            sanitized_bundle.slot,
-            record_batches.len()
-        );
-
-        // mevanoxx: Have to lock the bank freeze and blockhash queue to avoid
-        // moving on to the next slot after recording transactions optimistically
-        let (freeze_lock, freeze_lock_us) = measure_us!(bank.freeze_lock());
-        let bh_lock = bank.cavey_bh_lock();
-        execute_and_commit_timings.freeze_lock_us = freeze_lock_us;
-
-        let (hashes, hash_us) = measure_us!(record_batches
+            .collect::<Vec<Vec<VersionedTransaction>>>();
+        let hashes = record_batches
             .iter()
             .map(|txs| hash_transactions(txs))
-            .collect());
-        let (starting_index, poh_record_us) =
-            measure_us!(recorder.record(bank.slot(), hashes, record_batches, is_remote_block));
+            .collect();
 
-        // mevanoxx: recording is synchronous. on failure, we are good to
-        // revert and have vanilla scheduler build a fallback block
-        let RecordTransactionsSummary {
-            record_transactions_timings,
-            result: record_transactions_result,
-            starting_transaction_index,
-        } = match starting_index {
-            Ok(starting_index) => RecordTransactionsSummary {
-                record_transactions_timings: RecordTransactionsTimings {
-                    processing_results_to_transactions_us: Saturating(0),
-                    hash_us: Saturating(hash_us),
-                    poh_record_us: Saturating(poh_record_us),
-                },
-                result: Ok(()),
-                starting_transaction_index: starting_index,
-            },
+        // Lock the blockhash queue to avoid ending the slot after optimistic record
+        let freeze_lock = bank.freeze_lock();
+        let bh_lock = bank.cavey_bh_lock();
 
-            // return early with error so we can build fallback
-            Err(e) => {
-                return ExecuteRecordCommitResult {
-                    commit_transaction_details: vec![],
-                    result: Err(BundleExecutionError::PohRecordError(e)),
-                    execution_metrics: BundleExecutionMetrics::default(),
-                    execute_and_commit_timings,
-                    transaction_error_counter: TransactionErrorMetrics::default(),
-                }
-            }
-        };
-
-        debug!("bundle: {} executing", sanitized_bundle.slot);
-        let default_accounts = vec![None; sanitized_bundle.transactions.len()];
-        let bundle_execution_results = parallel_load_and_execute_bundle(
-            bank,
-            sanitized_bundle,
-            MAX_PROCESSING_AGE,
-            &max_bundle_retry_duration,
-            transaction_status_sender_enabled,
-            log_messages_bytes_limit,
-            false,
-            None,
-            &default_accounts,
-            &default_accounts,
-            scheduler,
-            thread_pool,
-        );
-
-        info!(
-            "bundle: {} executed, is_ok: {}",
-            sanitized_bundle.slot,
-            bundle_execution_results.result.is_ok()
-        );
-        let execution_metrics = bundle_execution_results.metrics.clone();
-
-        execute_and_commit_timings.load_execute_us = execution_metrics.load_execute_us.0;
-        execute_and_commit_timings
-            .execute_timings
-            .accumulate(&execution_metrics.execute_timings);
-        let transaction_error_counter = execution_metrics.errors.clone();
-
-        // we must commit everything regardless of result
-        if let Err(e) = &bundle_execution_results.result {
-            info!(
-                "mevanoxx: bundle execution failed with {e:?} for slot {}",
-                bank.slot()
-            );
-            bank.mark_execution_invalid();
+        if let Err(e) = recorder.record(bank.slot(), hashes, record_batches, is_remote_block) {
+            // Return early so the vanilla scheduler can build a fallback block
+            return ExecuteRecordCommitResult {
+                commit_transaction_details: vec![],
+                result: Err(BundleExecutionError::PohRecordError(e)),
+                execution_metrics: BundleExecutionMetrics::default(),
+                execute_and_commit_timings: LeaderExecuteAndCommitTimings::default(),
+                transaction_error_counter: TransactionErrorMetrics::default(),
+            };
         }
 
-        execute_and_commit_timings.record_us = record_transactions_timings.poh_record_us.0;
-        execute_and_commit_timings.record_transactions_timings = record_transactions_timings;
-        execute_and_commit_timings
-            .record_transactions_timings
-            .processing_results_to_transactions_us = Saturating(record_batches_us);
+        // Step 2: Execute and commit bundle
+        // Have to commit every batch after execution to avoid stale global cache
+        let start_time = Timer::new();
+        let account_overrides = &AccountOverrides::default();
+        let mut commit_bundle_details = Vec::new();
+        let mut execution_order = Vec::new();
+        let mut execution_result: BundleExecutionResult<()> = Ok(());
 
-        debug!(
-            "bundle: {} record result: {}",
-            sanitized_bundle.slot,
-            record_transactions_result.is_ok()
-        );
+        thread_pool.in_place_scope(|scope| {
+            let mut start_channels: [MaybeUninit<Producer<LocalMode, Range<usize>, 1>>;
+                BundleConsumer::NUM_THREADS] =
+                [const { MaybeUninit::uninit() }; BundleConsumer::NUM_THREADS];
+            let (finish_tx, finish_rx) = mpsc::channel();
 
-        // note: execute_and_commit_timings.commit_us handled inside this function
-        let (commit_us, commit_bundle_details) = committer.commit_bundle(
-            bundle_execution_results,
-            starting_transaction_index,
-            bank,
-            &mut execute_and_commit_timings,
-        );
-        execute_and_commit_timings.commit_us = commit_us;
+            // Spawn threads for load, execute, and commit
+            for index in 0..start_channels.len() {
+                let finish_tx = finish_tx.clone();
+                let (start_tx, mut start_rx) = lossless_pair();
+                start_channels[index] = MaybeUninit::new(start_tx);
+                scope.spawn(move |_| {
+                    while !start_rx.producer_heartbeat() {
+                        if let Some(range) = start_rx.pop() {
+                            let start = start_time.elapsed_us();
+                            let chunk = &sanitized_bundle.transactions[range.clone()];
+                            // load and execute
+                            let bundle_transactions_output = match devin_load_and_execute_chunk(
+                                bank,
+                                chunk,
+                                MAX_PROCESSING_AGE,
+                                &max_bundle_retry_duration,
+                                transaction_status_sender_enabled,
+                                log_messages_bytes_limit,
+                                account_overrides,
+                                &start_time,
+                            ) {
+                                Ok(bundle_transactions_output) => bundle_transactions_output,
+                                Err(e) => {
+                                    let _ = finish_tx.send(Err(e));
+                                    continue;
+                                }
+                            };
+                            // commit
+                            let commit_transaction_details =
+                                committer.devin_commit_bundle(bundle_transactions_output, bank);
+                            let _ = finish_tx.send(Ok((
+                                index, // thread
+                                range,
+                                commit_transaction_details,
+                                start,
+                                start_time.elapsed_us(),
+                            )));
+                        }
+                    }
+                });
+            }
+            // This is now safe to do, because we initialized every index in the loop above
+            let mut start_channels: [Producer<LocalMode, Range<usize>, 1>;
+                BundleConsumer::NUM_THREADS] = unsafe { std::mem::transmute(start_channels) };
+
+            let mut next_channel: usize = 0;
+            let mut max_queue_depth: usize = 0;
+            let mut queue_depth: usize = 0;
+            let mut per_thread_transaction_count = [0; BundleConsumer::NUM_THREADS];
+            let mut per_thread_execution_times =
+                [const { Vec::new() }; BundleConsumer::NUM_THREADS];
+
+            scheduler.init(&sanitized_bundle.transactions);
+            while !scheduler.finished {
+                // Schedule transactions for execution
+                while let Some(range) = scheduler.pop(&sanitized_bundle.transactions, &bank) {
+                    // Schedule chunks until we hit a RW account block
+                    while start_channels[next_channel].push(range.clone()).is_err() {
+                        // Try the next channel if this one is busy
+                        next_channel += 1;
+                        next_channel %= BundleConsumer::NUM_THREADS;
+                    }
+                    start_channels[next_channel].sync();
+                    per_thread_transaction_count[next_channel] += range.len();
+                    queue_depth += 1;
+                    max_queue_depth = max(max_queue_depth, queue_depth);
+                    next_channel += 1;
+                    next_channel %= BundleConsumer::NUM_THREADS;
+                }
+
+                // Finish any completed transactions
+                if let Ok(result) = finish_rx.try_recv() {
+                    queue_depth -= 1;
+                    match result {
+                        Ok((thread, range, commit_transaction_details, start, end)) => {
+                            // Mark this chunk as complete
+                            scheduler.finish(range.clone(), &sanitized_bundle.transactions);
+                            commit_bundle_details.push(commit_transaction_details);
+                            execution_order.push(range.start);
+                            per_thread_execution_times[thread].push((range, start, end));
+                        }
+                        Err(e) => {
+                            error!("Block execution failed: {e:?}");
+                            bank.mark_execution_invalid();
+                            execution_result = Err(BundleExecutionError::TransactionFailure(e));
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Send exit heartbeat signal to the threads
+            start_channels.into_iter().for_each(|tx| tx.beat());
+
+            info!(
+                "{} transactions executed in {} us",
+                sanitized_bundle.transactions.len(),
+                start_time.elapsed_us()
+            );
+            info!(
+                "max queued transactions: {}, transactions processed per thread: {:?}",
+                max_queue_depth, per_thread_transaction_count
+            );
+            info!("runtimes per thread: {:?}", per_thread_execution_times);
+        });
 
         drop(freeze_lock);
         drop(bh_lock);
 
-        // commit_bundle_details contains transactions that were and were not committed
-        // given the current implementation only executes, records, and commits bundles
-        // where all transactions executed, we can filter out the non-committed
-        // TODO (LB): does this make more sense in commit_bundle for future when failing bundles are accepted?
-        let commit_transaction_details = commit_bundle_details
-            .commit_transaction_details
+        // Restore the commit transaction details back to the original bundle order
+        // This ensures that Qos bank rebates are correct
+        let commit_transaction_details = execution_order
             .into_iter()
-            .flat_map(|commit_details| {
-                commit_details
-                    .into_iter()
-                    .filter(|d| matches!(d, CommitTransactionDetails::Committed { .. }))
-            })
+            .zip(commit_bundle_details.into_iter())
+            .sorted_unstable_by_key(|(i, _)| *i)
+            // Because we allow failing transactions, keep uncommitted transactions here
+            .flat_map(|(_, v)| v)
             .collect();
-        debug!(
-            "bundle: {} commit details: {:?}",
-            sanitized_bundle.slot, commit_transaction_details
-        );
 
         ExecuteRecordCommitResult {
             commit_transaction_details,
-            result: Ok(()),
-            execution_metrics,
-            execute_and_commit_timings,
-            transaction_error_counter,
+            result: execution_result,
+            // We only care about the commit transactions details, not metric tracking
+            execution_metrics: BundleExecutionMetrics::default(),
+            execute_and_commit_timings: LeaderExecuteAndCommitTimings::default(),
+            transaction_error_counter: TransactionErrorMetrics::default(),
         }
     }
 
@@ -807,6 +840,7 @@ mod tests {
         solana_bundle::{scheduler::Scheduler, SanitizedBundle},
         solana_bundle_sdk::derive_bundle_id,
         solana_clock::MAX_PROCESSING_AGE,
+        solana_cluster_type::ClusterType,
         solana_cost_model::cost_model::CostModel,
         solana_fee_calculator::{FeeRateGovernor, DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE},
         solana_genesis_config::ClusterType,
@@ -1379,7 +1413,7 @@ mod tests {
             SocketAddrSpace::new(true),
         ));
 
-        let bank_start = poh_recorder.read().unwrap().bank_start().unwrap();
+        let working_bank = poh_recorder.read().unwrap().bank().unwrap();
         let mut scheduler = Scheduler::new();
         let thread_pool = ThreadPoolBuilder::new()
             .num_threads(BundleConsumer::NUM_THREADS)
@@ -1398,7 +1432,7 @@ mod tests {
                 &QosService::new(1),
                 &None,
                 Duration::from_secs(10),
-                &bank_start,
+                &working_bank,
                 &mut bundle_stage_leader_metrics,
                 &mut scheduler,
                 &thread_pool,
