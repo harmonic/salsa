@@ -670,6 +670,7 @@ impl BundleConsumer {
         let account_overrides = &AccountOverrides::default();
         let mut commit_bundle_details = Vec::new();
         let mut execution_order = Vec::new();
+        let mut execution_result: BundleExecutionResult<()> = Ok(());
 
         thread_pool.in_place_scope(|scope| {
             let mut start_channels: [MaybeUninit<Producer<LocalMode, Range<usize>, 1>>;
@@ -740,12 +741,11 @@ impl BundleConsumer {
                         next_channel %= BundleConsumer::NUM_THREADS;
                     }
                     start_channels[next_channel].sync();
-                    next_channel += 1;
-                    next_channel %= BundleConsumer::NUM_THREADS;
-                    // Update statistics
                     per_thread_transaction_count[next_channel] += range.len();
                     queue_depth += 1;
                     max_queue_depth = max(max_queue_depth, queue_depth);
+                    next_channel += 1;
+                    next_channel %= BundleConsumer::NUM_THREADS;
                 }
 
                 // Finish any completed transactions
@@ -759,7 +759,12 @@ impl BundleConsumer {
                             execution_order.push(range.start);
                             per_thread_execution_times[thread].push((range, start, end));
                         }
-                        Err(e) => todo!("Error: {e:?}"),
+                        Err(e) => {
+                            error!("Block execution failed: {e:?}");
+                            bank.mark_execution_invalid();
+                            execution_result = Err(BundleExecutionError::TransactionFailure(e));
+                            break;
+                        }
                     }
                 }
             }
@@ -794,7 +799,7 @@ impl BundleConsumer {
 
         ExecuteRecordCommitResult {
             commit_transaction_details,
-            result: Ok(()),
+            result: execution_result,
             // We only care about the commit transactions details, not metric tracking
             execution_metrics: BundleExecutionMetrics::default(),
             execute_and_commit_timings: LeaderExecuteAndCommitTimings::default(),
