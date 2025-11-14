@@ -62,37 +62,37 @@ type ReserveBundleBlockspaceResult<'a> = BundleExecutionResult<(
 )>;
 
 pub struct ExecuteRecordCommitResult {
-    commit_transaction_details: Vec<CommitTransactionDetails>,
-    result: BundleExecutionResult<()>,
-    execution_metrics: BundleExecutionMetrics,
-    execute_and_commit_timings: LeaderExecuteAndCommitTimings,
-    transaction_error_counter: TransactionErrorMetrics,
+    pub commit_transaction_details: Vec<CommitTransactionDetails>,
+    pub result: BundleExecutionResult<()>,
+    pub execution_metrics: BundleExecutionMetrics,
+    pub execute_and_commit_timings: LeaderExecuteAndCommitTimings,
+    pub transaction_error_counter: TransactionErrorMetrics,
 }
 
 pub struct BundleConsumer {
-    committer: Committer,
-    transaction_recorder: TransactionRecorder,
-    qos_service: QosService,
-    log_messages_bytes_limit: Option<usize>,
+    pub committer: Committer,
+    pub transaction_recorder: TransactionRecorder,
+    pub qos_service: QosService,
+    pub log_messages_bytes_limit: Option<usize>,
 
-    tip_manager: TipManager,
-    last_tip_update_slot: Slot,
+    pub tip_manager: TipManager,
+    pub last_tip_update_slot: Slot,
 
-    blacklisted_accounts: HashSet<Pubkey>,
+    pub blacklisted_accounts: HashSet<Pubkey>,
 
     // Manages account locks across multiple transactions within a bundle to prevent race conditions
     // with BankingStage
-    bundle_account_locker: BundleAccountLocker,
+    pub bundle_account_locker: BundleAccountLocker,
 
-    block_builder_fee_info: Arc<Mutex<BlockBuilderFeeInfo>>,
+    pub block_builder_fee_info: Arc<Mutex<BlockBuilderFeeInfo>>,
 
-    max_bundle_retry_duration: Duration,
+    pub max_bundle_retry_duration: Duration,
 
-    cluster_info: Arc<ClusterInfo>,
+    pub cluster_info: Arc<ClusterInfo>,
 
     // For parallel execute and commit
-    scheduler: Scheduler,
-    thread_pool: ThreadPool,
+    pub scheduler: Scheduler,
+    pub thread_pool: ThreadPool,
 }
 
 impl BundleConsumer {
@@ -624,7 +624,7 @@ impl BundleConsumer {
         res
     }
 
-    fn execute_record_commit_bundle(
+    pub fn execute_record_commit_bundle(
         committer: &Committer,
         recorder: &TransactionRecorder,
         log_messages_bytes_limit: &Option<usize>,
