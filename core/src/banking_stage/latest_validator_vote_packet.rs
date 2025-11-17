@@ -19,6 +19,7 @@ pub enum VoteSource {
 
 /// Holds deserialized vote messages as well as their source, and slot
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct LatestValidatorVotePacket {
     vote_source: VoteSource,
     vote_pubkey: Pubkey,
@@ -29,6 +30,7 @@ pub struct LatestValidatorVotePacket {
     timestamp: Option<UnixTimestamp>,
 }
 
+#[allow(dead_code)]
 impl LatestValidatorVotePacket {
     pub fn new_from_immutable(
         vote: Arc<ImmutableDeserializedPacket>,

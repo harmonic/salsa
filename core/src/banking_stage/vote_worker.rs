@@ -235,14 +235,13 @@ impl VoteWorker {
         // Based on the stake distribution present in the supplied bank, drain the unprocessed votes
         // from each validator using a weighted random ordering. Votes from validators with
         // 0 stake are ignored.
-        let all_vote_packets = self.storage.drain_unprocessed(bank);
 
         let mut reached_end_of_slot = false;
         let mut sanitized_transactions = Vec::with_capacity(UNPROCESSED_BUFFER_STEP_SIZE);
         let mut error_counters: TransactionErrorMetrics = TransactionErrorMetrics::default();
         debug!(
             "Processing {} vote packets, slot: {}, tick: {}, outstanding: {}",
-            all_vote_packets.len(),
+            self.storage.len(),
             bank.slot(),
             bank.slots_per_year(),
             self.storage.len()
@@ -250,21 +249,25 @@ impl VoteWorker {
 
         let mut vote_packets =
             ArrayVec::<Arc<ImmutableDeserializedPacket>, UNPROCESSED_BUFFER_STEP_SIZE>::new();
-        for chunk in all_vote_packets.chunks(UNPROCESSED_BUFFER_STEP_SIZE) {
-            vote_packets.clear();
-            chunk.iter().for_each(|packet| {
+        let mut attempts = 0_usize;
+        while !self.storage.is_empty() && !reached_end_of_slot && attempts < 1000 {
+            attempts += 1;
+            while let Some(packet) = (!vote_packets.is_full())
+                .then(|| self.storage.pop())
+                .flatten()
+            {
                 if consume_scan_should_process_packet(
                     bank,
                     banking_stage_stats,
-                    packet,
+                    &packet,
                     reached_end_of_slot,
                     &mut error_counters,
                     &mut sanitized_transactions,
                     slot_metrics_tracker,
                 ) {
-                    vote_packets.push(packet.clone());
+                    vote_packets.push(packet);
                 }
-            });
+            }
 
             if let Some(retryable_vote_indices) = self.do_process_packets(
                 bank,
