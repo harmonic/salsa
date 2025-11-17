@@ -16,11 +16,13 @@ extern crate solana_frozen_abi_macro;
 mod legacy;
 
 #[derive(Debug, Eq, PartialEq)]
+#[repr(u16)]
 pub enum ClientId {
     SolanaLabs,
     JitoLabs,
     Firedancer,
     Agave,
+    Harmonic = 10,
     // If new variants are added, update From<u16> and TryFrom<ClientId>.
     Unknown(u16),
 }
@@ -67,7 +69,7 @@ impl Default for Version {
                 .unwrap_or_else(|| thread_rng().gen::<u32>()),
             feature_set,
             // Other client implementations need to modify this line.
-            client: u16::try_from(ClientId::JitoLabs).unwrap(),
+            client: u16::try_from(ClientId::Harmonic).unwrap(),
         }
     }
 }
@@ -102,6 +104,7 @@ impl From<u16> for ClientId {
             1u16 => Self::JitoLabs,
             2u16 => Self::Firedancer,
             3u16 => Self::Agave,
+            10u16 => Self::Harmonic,
             _ => Self::Unknown(client),
         }
     }
@@ -116,7 +119,12 @@ impl TryFrom<ClientId> for u16 {
             ClientId::JitoLabs => Ok(1u16),
             ClientId::Firedancer => Ok(2u16),
             ClientId::Agave => Ok(3u16),
-            ClientId::Unknown(client @ 0u16..=3u16) => Err(format!("Invalid client: {client}")),
+            ClientId::Harmonic => Ok(10u16),
+            ClientId::Unknown(client @ 0u16..=3u16) | ClientId::Unknown(client)
+                if client == 10u16 =>
+            {
+                Err(format!("Invalid client: {client}"))
+            }
             ClientId::Unknown(client) => Ok(client),
         }
     }
