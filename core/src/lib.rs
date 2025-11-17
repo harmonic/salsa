@@ -181,7 +181,9 @@ pub(crate) mod scheduler_synchronization {
             .is_ok();
 
         if did_update_atomic {
-            info!("mevanoxx: vanilla updated slot to {current_slot}");
+            info!("DEVIN DEBUG: vanilla updated slot to {current_slot}");
+        } else {
+            info!("DEVIN DEBUG: vanilla unable to take lock for {current_slot}");
         }
 
         Some(did_update_atomic)

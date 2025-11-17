@@ -677,7 +677,10 @@ impl BundleConsumer {
             };
         }
         // This slot has been recorded, no going back to vanilla scheduler now
-        *last_recorded_slot = sanitized_bundle.slot;
+        if is_remote_block {
+            info!("DEVIN DEBUG: Recorded block for slot {last_recorded_slot}");
+            *last_recorded_slot = sanitized_bundle.slot;
+        }
 
         // Step 2: Execute and commit bundle
         // Have to commit every batch after execution to avoid stale global cache
