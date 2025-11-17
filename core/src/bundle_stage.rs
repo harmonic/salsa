@@ -326,7 +326,11 @@ impl BundleStage {
                 last_metrics_update = Instant::now();
             }
 
+            // if recv_slot != exec_slot
+            // bad happened
+            // revert to last slot
             match bundle_receiver.receive_and_buffer_bundles(
+                &mut decision_maker,
                 &mut bundle_storage,
                 &mut bundle_stage_metrics,
                 &mut bundle_stage_leader_metrics,

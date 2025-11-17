@@ -48,6 +48,7 @@ impl BundlePacketDeserializer {
         &self,
         recv_timeout: Duration,
         capacity: usize,
+        decision_maker: &mut crate::banking_stage::decision_maker::DecisionMaker,
     ) -> Result<ReceiveBundleResults, RecvTimeoutError> {
         let (bundle_count, _packet_count, mut bundles) =
             self.receive_until(recv_timeout, capacity)?;
@@ -58,6 +59,7 @@ impl BundlePacketDeserializer {
             bundle_count,
             &mut bundles,
             self.max_packets_per_bundle,
+            decision_maker,
         ))
     }
 
@@ -67,11 +69,22 @@ impl BundlePacketDeserializer {
         bundle_count: Saturating<usize>,
         bundles: &mut [PacketBundle],
         max_packets_per_bundle: Option<usize>,
+        decision_maker: &mut crate::banking_stage::decision_maker::DecisionMaker,
     ) -> ReceiveBundleResults {
         let mut deserialized_bundles = Vec::with_capacity(bundle_count.0);
         let mut num_dropped_bundles = Saturating(0);
 
         for bundle in bundles.iter_mut() {
+            let decision = decision_maker.make_consume_or_forward_decision();
+            if decision
+                .bank()
+                .is_some_and(|bank| bank.slot() == bundle.slot)
+            {
+                crate::banking_stage::decision_maker::DecisionMaker::maybe_consume::<
+                    /* vanilla */ false,
+                >(decision);
+                // update receive slot
+            }
             match Self::deserialize_bundle(bundle, max_packets_per_bundle) {
                 Ok(deserialized_bundle) => {
                     deserialized_bundles.push(deserialized_bundle);

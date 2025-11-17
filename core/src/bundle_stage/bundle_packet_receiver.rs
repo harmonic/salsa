@@ -38,6 +38,7 @@ impl BundleReceiver {
     /// Receive incoming packets, push into unprocessed buffer with packet indexes
     pub fn receive_and_buffer_bundles(
         &mut self,
+        decision_maker: &mut crate::banking_stage::decision_maker::DecisionMaker,
         bundle_storage: &mut BundleStorage,
         bundle_stage_metrics: &mut BundleStageLoopMetrics,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
@@ -46,7 +47,11 @@ impl BundleReceiver {
             let recv_timeout = Self::get_receive_timeout(bundle_storage);
             let mut recv_and_buffer_measure = Measure::start("recv_and_buffer");
             self.bundle_packet_deserializer
-                .receive_bundles(recv_timeout, bundle_storage.max_receive_size())
+                .receive_bundles(
+                    recv_timeout,
+                    bundle_storage.max_receive_size(),
+                    decision_maker,
+                )
                 // Consumes results if Ok, otherwise we keep the Err
                 .map(|receive_bundle_results| {
                     self.buffer_bundles(
@@ -123,7 +128,10 @@ impl BundleReceiver {
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
         bundle_stage_stats: &mut BundleStageLoopMetrics,
     ) {
-        info!("Inserting {} unprocessed bundles into storage", deserialized_bundles.len());
+        info!(
+            "Inserting {} unprocessed bundles into storage",
+            deserialized_bundles.len()
+        );
         if !deserialized_bundles.is_empty() {
             // bundles get pushed onto the back of the unprocessed bundle queue
             let insert_bundles_summary =
@@ -207,7 +215,7 @@ mod tests {
                             .map(|tx| BytesPacket::from_data(None, tx).unwrap())
                             .collect::<Vec<_>>(),
                     ),
-                    slot: 0
+                    slot: 0,
                 }
             })
             .collect()
