@@ -265,10 +265,8 @@ pub(crate) mod scheduler_synchronization {
                         std::cmp::Ordering::Equal => Some(current_slot.wrapping_sub(1)),
 
                         // New slot => don't revert (this includes sentinel case, which is unreachable)
-                        std::cmp::Ordering::Greater => None,
-
-                        // Invalid state revert
-                        std::cmp::Ordering::Less => unreachable!("never revert for past slot"),
+                        // Less => already reverted, likely duplicate calls while reverting block, ignore
+                        std::cmp::Ordering::Greater | std::cmp::Ordering::Less => None,
                     };
 
                     info!("mevanoxx: block_failed fetch_update update {update:?}");

@@ -42,6 +42,7 @@ impl BundleReceiver {
         bundle_storage: &mut BundleStorage,
         bundle_stage_metrics: &mut BundleStageLoopMetrics,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
+        last_received_slot: &mut u64,
     ) -> Result<(), RecvTimeoutError> {
         let (result, recv_time_us) = measure_us!({
             let recv_timeout = Self::get_receive_timeout(bundle_storage);
@@ -51,6 +52,7 @@ impl BundleReceiver {
                     recv_timeout,
                     bundle_storage.max_receive_size(),
                     decision_maker,
+                    last_received_slot,
                 )
                 // Consumes results if Ok, otherwise we keep the Err
                 .map(|receive_bundle_results| {
