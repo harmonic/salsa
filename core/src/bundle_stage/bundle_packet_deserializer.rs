@@ -89,6 +89,7 @@ impl BundlePacketDeserializer {
                 >(decision);
                 // update receive slot
                 *last_received_slot = bundle.slot;
+                info!("DEVIN DEBUG: Received bundle for slot {last_received_slot}");
             }
             match Self::deserialize_bundle(bundle, max_packets_per_bundle) {
                 Ok(deserialized_bundle) => {
