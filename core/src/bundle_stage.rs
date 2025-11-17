@@ -332,7 +332,9 @@ impl BundleStage {
             if last_received_slot != last_recorded_slot {
                 // Something failed in processing the bundle, tell vanilla to build a fallback block
                 crate::scheduler_synchronization::block_failed(last_received_slot);
-                info!("DEVIN DEBUG: Block failed for slot {last_received_slot}")
+                info!("DEVIN DEBUG: Block failed for slot {last_received_slot}");
+                // To avoid spamming print
+                last_received_slot = last_recorded_slot;
             }
 
             match bundle_receiver.receive_and_buffer_bundles(
