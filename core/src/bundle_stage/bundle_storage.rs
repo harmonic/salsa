@@ -1,7 +1,7 @@
 use {
     crate::{
         bundle_stage::bundle_stage_leader_metrics::BundleStageLeaderMetrics,
-        immutable_deserialized_bundle::ImmutableDeserializedBundle, scheduler_synchronization,
+        immutable_deserialized_bundle::ImmutableDeserializedBundle,
     },
     solana_bundle::{
         bundle_execution::LoadAndExecuteBundleError, BundleExecutionError, SanitizedBundle,
@@ -206,7 +206,6 @@ impl BundleStorage {
             bank.write_cost_tracker()
                 .unwrap()
                 .restore_nonvote_cost_limits();
-            scheduler_synchronization::block_failed(slot);
             return true;
         }
 
@@ -287,7 +286,6 @@ impl BundleStorage {
             bank.write_cost_tracker()
                 .unwrap()
                 .restore_nonvote_cost_limits();
-            scheduler_synchronization::block_failed(slot);
         }
 
         // rebuffered bundles are pushed onto deque in reverse order so the first bundle is at the front

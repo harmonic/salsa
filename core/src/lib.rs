@@ -151,40 +151,40 @@ pub(crate) mod scheduler_synchronization {
             return None;
         }
 
-        let did_update_atomic = LAST_SLOT_SCHEDULED
-            .fetch_update(
-                Ordering::Release,
-                Ordering::Acquire,
-                |last_slot_scheduled| {
-                    let update = match last_slot_scheduled.cmp(&current_slot) {
-                        // No longer in delegation period and last slot scheduled was in the past => update
-                        std::cmp::Ordering::Less => Some(current_slot),
-                        // Something has been scheduled for this slot => no update
-                        std::cmp::Ordering::Equal => None,
+        let result = LAST_SLOT_SCHEDULED.fetch_update(
+            Ordering::Release,
+            Ordering::Acquire,
+            |last_slot_scheduled| {
+                let update = match last_slot_scheduled.cmp(&current_slot) {
+                    // No longer in delegation period and last slot scheduled was in the past => update
+                    std::cmp::Ordering::Less => Some(current_slot),
+                    // Something has been scheduled for this slot => no update
+                    std::cmp::Ordering::Equal => None,
 
-                        // Edge case at slot boundary or sentinel value
-                        std::cmp::Ordering::Greater => {
-                            // If sentinel value, similar to Less but for startup case
-                            let is_sentinel_value = last_slot_scheduled == SENTINEL;
-                            if is_sentinel_value {
-                                return Some(current_slot);
-                            }
-
-                            // Otherwise, some weird edge case (don't schedule)
-                            None
+                    // Edge case at slot boundary or sentinel value
+                    std::cmp::Ordering::Greater => {
+                        // If sentinel value, similar to Less but for startup case
+                        let is_sentinel_value = last_slot_scheduled == SENTINEL;
+                        if is_sentinel_value {
+                            return Some(current_slot);
                         }
-                    };
 
-                    update
-                },
-            )
-            .is_ok();
+                        // Otherwise, some weird edge case (don't schedule)
+                        None
+                    }
+                };
 
-        if did_update_atomic {
-            info!("mevanoxx: vanilla updated slot to {current_slot}");
+                update
+            },
+        );
+
+        if let Ok(old) = result {
+            info!("DEVIN DEBUG: vanilla updated slot from {old} to {current_slot}");
+        } else {
+            info!("DEVIN DEBUG: vanilla unable to take lock for {current_slot}");
         }
 
-        Some(did_update_atomic)
+        Some(result.is_ok())
     }
 
     /// If block should schedule, the internal private atomic is
@@ -265,10 +265,8 @@ pub(crate) mod scheduler_synchronization {
                         std::cmp::Ordering::Equal => Some(current_slot.wrapping_sub(1)),
 
                         // New slot => don't revert (this includes sentinel case, which is unreachable)
-                        std::cmp::Ordering::Greater => None,
-
-                        // Invalid state revert
-                        std::cmp::Ordering::Less => unreachable!("never revert for past slot"),
+                        // Less => already reverted, likely duplicate calls while reverting block, ignore
+                        std::cmp::Ordering::Greater | std::cmp::Ordering::Less => None,
                     };
 
                     info!("mevanoxx: block_failed fetch_update update {update:?}");

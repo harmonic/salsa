@@ -160,6 +160,7 @@ impl BundleConsumer {
         bank: &Arc<Bank>,
         bundle_storage: &mut BundleStorage,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
+        last_recorded_slot: &mut u64,
     ) {
         let reached_end_of_slot = bundle_storage.process_bundles(
             bank.clone(),
@@ -182,6 +183,7 @@ impl BundleConsumer {
                     bundle_stage_leader_metrics,
                     &mut self.scheduler,
                     &self.thread_pool,
+                    last_recorded_slot,
                 )
             },
         );
@@ -210,6 +212,7 @@ impl BundleConsumer {
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
         scheduler: &mut Scheduler,
         thread_pool: &ThreadPool,
+        last_recorded_slot: &mut u64,
     ) -> Vec<Result<(), BundleExecutionError>> {
         // BundleAccountLocker holds RW locks for ALL accounts in ALL transactions within a single bundle.
         // By pre-locking bundles before they're ready to be processed, it will prevent BankingStage from
@@ -247,6 +250,7 @@ impl BundleConsumer {
                             bundle_stage_leader_metrics,
                             scheduler,
                             thread_pool,
+                            last_recorded_slot,
                         ));
                         bundle_stage_leader_metrics
                             .leader_slot_metrics_tracker()
@@ -288,6 +292,7 @@ impl BundleConsumer {
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
         scheduler: &mut Scheduler,
         thread_pool: &ThreadPool,
+        last_recorded_slot: &mut u64,
     ) -> Result<(), BundleExecutionError> {
         if bank.is_complete() {
             return Err(BundleExecutionError::BankProcessingTimeLimitReached);
@@ -311,6 +316,7 @@ impl BundleConsumer {
                 bundle_stage_leader_metrics,
                 scheduler,
                 thread_pool,
+                last_recorded_slot,
             );
 
             bundle_stage_leader_metrics
@@ -334,6 +340,7 @@ impl BundleConsumer {
             true,
             scheduler,
             thread_pool,
+            last_recorded_slot,
         )?;
 
         Ok(())
@@ -355,6 +362,7 @@ impl BundleConsumer {
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
         scheduler: &mut Scheduler,
         thread_pool: &ThreadPool,
+        last_recorded_slot: &mut u64,
     ) -> Result<(), BundleExecutionError> {
         debug!("handle_tip_programs");
 
@@ -387,6 +395,7 @@ impl BundleConsumer {
                 false,
                 scheduler,
                 thread_pool,
+                last_recorded_slot,
             )
             .map_err(|e| {
                 bundle_stage_leader_metrics
@@ -442,6 +451,7 @@ impl BundleConsumer {
                 false,
                 scheduler,
                 thread_pool,
+                last_recorded_slot,
             )
             .map_err(|e| {
                 bundle_stage_leader_metrics
@@ -503,6 +513,7 @@ impl BundleConsumer {
         is_remote_block: bool,
         scheduler: &mut Scheduler,
         thread_pool: &ThreadPool,
+        last_recorded_slot: &mut u64,
     ) -> BundleExecutionResult<()> {
         debug!(
             "bundle: {} reserving blockspace for {} transactions",
@@ -534,6 +545,7 @@ impl BundleConsumer {
             is_remote_block,
             scheduler,
             thread_pool,
+            last_recorded_slot,
         ));
 
         bundle_stage_leader_metrics
@@ -634,6 +646,7 @@ impl BundleConsumer {
         is_remote_block: bool,
         scheduler: &mut Scheduler,
         thread_pool: &ThreadPool,
+        last_recorded_slot: &mut u64,
     ) -> ExecuteRecordCommitResult {
         let transaction_status_sender_enabled = committer.transaction_status_sender_enabled();
 
@@ -662,6 +675,11 @@ impl BundleConsumer {
                 execute_and_commit_timings: LeaderExecuteAndCommitTimings::default(),
                 transaction_error_counter: TransactionErrorMetrics::default(),
             };
+        }
+        // This slot has been recorded, no going back to vanilla scheduler now
+        if is_remote_block {
+            *last_recorded_slot = sanitized_bundle.slot;
+            info!("DEVIN DEBUG: Recorded block for slot {last_recorded_slot}");
         }
 
         // Step 2: Execute and commit bundle
@@ -1177,6 +1195,7 @@ mod tests {
             &working_bank,
             &mut bundle_storage,
             &mut bundle_stage_leader_metrics,
+            &mut 0,
         );
 
         let mut transactions = Vec::new();
@@ -1304,6 +1323,7 @@ mod tests {
             &working_bank,
             &mut bundle_storage,
             &mut bundle_stage_leader_metrics,
+            &mut 0,
         );
 
         // its expected there are 3 transactions. One to initialize the tip program configuration, one to change the tip receiver,
@@ -1436,6 +1456,7 @@ mod tests {
                 &mut bundle_stage_leader_metrics,
                 &mut scheduler,
                 &thread_pool,
+                &mut 0
             ),
             Ok(())
         );

@@ -308,6 +308,8 @@ impl BundleStage {
 
         let mut bundle_stage_metrics = BundleStageLoopMetrics::new(id);
         let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(id);
+        let mut last_received_slot = 0;
+        let mut last_recorded_slot = 0;
 
         while !exit.load(Ordering::Relaxed) {
             if bundle_storage.unprocessed_bundles_len() > 0
@@ -319,6 +321,7 @@ impl BundleStage {
                         &mut consumer,
                         &mut bundle_storage,
                         &mut bundle_stage_leader_metrics,
+                        &mut last_recorded_slot,
                     ));
                 bundle_stage_leader_metrics
                     .leader_slot_metrics_tracker()
@@ -326,10 +329,20 @@ impl BundleStage {
                 last_metrics_update = Instant::now();
             }
 
+            if last_received_slot != last_recorded_slot {
+                // Something failed in processing the bundle, tell vanilla to build a fallback block
+                crate::scheduler_synchronization::block_failed(last_received_slot);
+                info!("DEVIN DEBUG: Block failed for slot {last_received_slot}");
+                // To avoid spamming print
+                last_received_slot = last_recorded_slot;
+            }
+
             match bundle_receiver.receive_and_buffer_bundles(
+                &mut decision_maker,
                 &mut bundle_storage,
                 &mut bundle_stage_metrics,
                 &mut bundle_stage_leader_metrics,
+                &mut last_received_slot,
             ) {
                 Ok(_) | Err(RecvTimeoutError::Timeout) => (),
                 Err(RecvTimeoutError::Disconnected) => break,
@@ -357,6 +370,7 @@ impl BundleStage {
         consumer: &mut BundleConsumer,
         bundle_storage: &mut BundleStorage,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
+        last_recorded_slot: &mut u64,
     ) {
         let (decision, make_decision_time_us) =
             measure_us!(decision_maker.make_consume_or_forward_decision());
@@ -406,7 +420,12 @@ impl BundleStage {
                     .unwrap()
                     .save_nonvote_cost_limits();
                 let (_, consume_buffered_packets_time_us) = measure_us!(consumer
-                    .consume_buffered_bundles(&bank, bundle_storage, bundle_stage_leader_metrics,));
+                    .consume_buffered_bundles(
+                        &bank,
+                        bundle_storage,
+                        bundle_stage_leader_metrics,
+                        last_recorded_slot
+                    ));
                 bundle_stage_leader_metrics
                     .leader_slot_metrics_tracker()
                     .increment_consume_buffered_packets_us(consume_buffered_packets_time_us);
