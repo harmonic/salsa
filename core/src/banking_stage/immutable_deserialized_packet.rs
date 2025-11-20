@@ -50,6 +50,7 @@ static FEATURE_SET: std::sync::LazyLock<FeatureSet> =
 #[cfg_attr(test, derive(Clone))]
 pub struct ImmutableDeserializedPacket {
     transaction: SanitizedVersionedTransaction,
+    signature: Signature,
     forwarded: bool,
     message_hash: Hash,
     is_simple_vote: bool,
@@ -60,6 +61,7 @@ pub struct ImmutableDeserializedPacket {
 impl ImmutableDeserializedPacket {
     pub fn new(packet: PacketRef) -> Result<Self, DeserializedPacketError> {
         let versioned_transaction: VersionedTransaction = packet.deserialize_slice(..)?;
+        let signature = versioned_transaction.signatures[0];
         let sanitized_transaction = SanitizedVersionedTransaction::try_from(versioned_transaction)?;
         let message_bytes = packet_message(packet)?;
         let message_hash = Message::hash_raw_message(message_bytes);
@@ -87,6 +89,7 @@ impl ImmutableDeserializedPacket {
 
         Ok(Self {
             transaction: sanitized_transaction,
+            signature,
             forwarded,
             message_hash,
             is_simple_vote,
@@ -117,6 +120,10 @@ impl ImmutableDeserializedPacket {
 
     pub fn compute_unit_limit(&self) -> u64 {
         u64::from(self.compute_unit_limit)
+    }
+
+    pub fn signature(&self) -> &Signature {
+        &self.signature
     }
 
     // This function deserializes packets into transactions, computes the blake3 hash of transaction
