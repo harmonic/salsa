@@ -4,8 +4,12 @@ use {
         latest_validator_vote_packet::VoteSource,
     },
     agave_feature_set as feature_set,
+    lru::LruCache,
+    solana_clock::MAX_PROCESSING_AGE,
     solana_runtime::bank::Bank,
-    std::{collections::VecDeque, sync::Arc},
+    solana_signature::Signature,
+    solana_svm::transaction_error_metrics::TransactionErrorMetrics,
+    std::sync::Arc,
 };
 
 /// Maximum number of votes a single receive call will accept
@@ -33,14 +37,14 @@ impl VoteBatchInsertionMetrics {
 
 #[derive(Debug)]
 pub struct VoteStorage {
-    votes: VecDeque<Arc<ImmutableDeserializedPacket>>,
+    votes: LruCache<Signature, Arc<ImmutableDeserializedPacket>>,
     deprecate_legacy_vote_ixs: bool,
 }
 
 impl VoteStorage {
     pub fn new(bank: &Bank) -> Self {
         Self {
-            votes: VecDeque::new(),
+            votes: LruCache::new(400_000),
             deprecate_legacy_vote_ixs: bank
                 .feature_set
                 .is_active(&feature_set::deprecate_legacy_vote_ixs::id()),
@@ -65,7 +69,9 @@ impl VoteStorage {
         vote_source: VoteSource,
         deserialized_packets: impl Iterator<Item = ImmutableDeserializedPacket>,
     ) -> VoteBatchInsertionMetrics {
-        self.votes.extend(deserialized_packets.map(Arc::new));
+        for vote in deserialized_packets.map(Arc::new) {
+            self.votes.push(vote.signature().clone(), vote);
+        }
         VoteBatchInsertionMetrics {
             num_dropped_gossip: 0,
             num_dropped_tpu: 0,
@@ -77,7 +83,9 @@ impl VoteStorage {
         &mut self,
         packets: impl Iterator<Item = Arc<ImmutableDeserializedPacket>>,
     ) {
-        self.votes.extend(packets);
+        for vote in packets {
+            self.votes.push(vote.signature().clone(), vote);
+        }
     }
 
     pub fn clear(&mut self) {
@@ -85,12 +93,38 @@ impl VoteStorage {
     }
 
     pub fn pop(&mut self) -> Option<Arc<ImmutableDeserializedPacket>> {
-        self.votes.pop_front()
+        self.votes.pop_lru().map(|(_sig, vote)| vote)
     }
 
     pub fn cache_epoch_boundary_info(&mut self, bank: &Bank) {
         self.deprecate_legacy_vote_ixs = bank
             .feature_set
             .is_active(&feature_set::deprecate_legacy_vote_ixs::id());
+    }
+
+    pub fn cavey_clean(&mut self, bank: &Bank) {
+        let lock_result = [Ok(()); 1];
+        let mut to_remove = vec![];
+        let ref mut error_counters = TransactionErrorMetrics::default();
+        for (sig, vote) in self.votes.iter().rev() {
+            let Some((sanitized_txn, _slot)) =
+                vote.build_sanitized_transaction(true, bank, bank.get_reserved_account_keys())
+            else {
+                continue;
+            };
+            let check = bank.check_transactions(
+                core::array::from_ref(&sanitized_txn),
+                &lock_result,
+                MAX_PROCESSING_AGE,
+                error_counters,
+            );
+            if check[0].is_err() {
+                to_remove.push(sig.clone());
+            }
+        }
+
+        for ref sig in to_remove {
+            let _ = self.votes.pop(sig);
+        }
     }
 }

@@ -160,15 +160,19 @@ impl VoteWorker {
                 // load all accounts from address loader;
                 let current_bank = self.bank_forks.read().unwrap().working_bank();
                 self.storage.cache_epoch_boundary_info(&current_bank);
-                self.storage.clear();
+                self.storage.cavey_clean(&current_bank);
             }
             BufferedPacketsDecision::ForwardAndHold => {
                 // get current working bank from bank_forks, use it to sanitize transaction and
                 // load all accounts from address loader;
                 let current_bank = self.bank_forks.read().unwrap().working_bank();
                 self.storage.cache_epoch_boundary_info(&current_bank);
+                self.storage.cavey_clean(&current_bank);
             }
-            BufferedPacketsDecision::Hold => {}
+            BufferedPacketsDecision::Hold => {
+                let current_bank = self.bank_forks.read().unwrap().working_bank();
+                self.storage.cavey_clean(&current_bank);
+            }
         }
     }
 
@@ -249,14 +253,14 @@ impl VoteWorker {
 
         let mut vote_packets =
             ArrayVec::<Arc<ImmutableDeserializedPacket>, UNPROCESSED_BUFFER_STEP_SIZE>::new();
-        let mut attempts = 0_usize;
-        while !self.storage.is_empty() && !reached_end_of_slot && attempts < 1000 {
-            attempts += 1;
+        let mut num_votes = 0_usize;
+        let mut retry_packets = vec![];
+        while !self.storage.is_empty() && !reached_end_of_slot && num_votes < 1000 {
             while let Some(packet) = (!vote_packets.is_full())
                 .then(|| self.storage.pop())
                 .flatten()
             {
-                if consume_scan_should_process_packet(
+                match consume_scan_should_process_packet(
                     bank,
                     banking_stage_stats,
                     &packet,
@@ -265,7 +269,14 @@ impl VoteWorker {
                     &mut sanitized_transactions,
                     slot_metrics_tracker,
                 ) {
-                    vote_packets.push(packet);
+                    PacketProcessResult::Process => {
+                        num_votes += 1;
+                        vote_packets.push(packet);
+                    }
+                    PacketProcessResult::Retry => {
+                        retry_packets.push(packet);
+                    }
+                    PacketProcessResult::Drop => { /* bye */ }
                 }
             }
 
@@ -295,6 +306,8 @@ impl VoteWorker {
             bank.slot_tick_height(),
             self.storage.len()
         );
+
+        self.storage.reinsert_packets(retry_packets.drain(..));
 
         reached_end_of_slot
     }
@@ -420,38 +433,6 @@ impl VoteWorker {
         transactions: &[impl TransactionWithMeta],
         reservation_cb: &impl Fn(&Bank) -> u64,
     ) -> ProcessTransactionsSummary {
-        const MAX_TICK_FOR_VOTING: u64 = 48;
-
-        let bank_slot_tick_start = bank.max_tick_height().saturating_sub(bank.ticks_per_slot());
-        let bank_slot_tick_height = bank.tick_height().saturating_sub(bank_slot_tick_start);
-
-        debug!(
-            "process_transaction: slot: {} height: {} block_start: {}, tx_count: {}",
-            bank.slot(),
-            bank_slot_tick_height,
-            bank_slot_tick_start,
-            transactions.len(),
-        );
-
-        if bank_slot_tick_height > MAX_TICK_FOR_VOTING {
-            debug!(
-                "process transactions: max tick height reached slot: {} height: {} block_start: {}, tx_count: {}",
-                bank.slot(),
-                bank_slot_tick_start,
-                bank_slot_tick_height,
-                transactions.len(),
-            );
-            return ProcessTransactionsSummary {
-                reached_max_poh_height: true,
-                retryable_transaction_indexes: transactions
-                    .iter()
-                    .enumerate()
-                    .map(|(index, _)| index)
-                    .collect(),
-                ..Default::default()
-            };
-        }
-
         let process_transaction_batch_output =
             self.consumer
                 .process_and_record_transactions(bank, transactions, reservation_cb);
@@ -545,6 +526,12 @@ impl VoteWorker {
     }
 }
 
+enum PacketProcessResult {
+    Process, // Process now
+    Retry,   // Retry later (e.g., account locks)
+    Drop,    // Drop permanently (e.g., invalid)
+}
+
 fn consume_scan_should_process_packet(
     bank: &Bank,
     banking_stage_stats: &BankingStageStats,
@@ -553,14 +540,11 @@ fn consume_scan_should_process_packet(
     error_counters: &mut TransactionErrorMetrics,
     sanitized_transactions: &mut Vec<RuntimeTransaction<SanitizedTransaction>>,
     slot_metrics_tracker: &mut LeaderSlotMetricsTracker,
-) -> bool {
-    // If end of the slot, return should process (quick loop after reached end of slot)
+) -> PacketProcessResult {
     if reached_end_of_slot {
-        return true;
+        return PacketProcessResult::Retry;
     }
 
-    // Try to sanitize the packet. Ignore deactivation slot since we are
-    // immediately attempting to process the transaction.
     let (maybe_sanitized_transaction, sanitization_time_us) = measure_us!(packet
         .build_sanitized_transaction(
             bank.vote_only_bank(),
@@ -577,24 +561,24 @@ fn consume_scan_should_process_packet(
     if let Some(sanitized_transaction) = maybe_sanitized_transaction {
         let message = sanitized_transaction.message();
 
-        // Check the number of locks and whether there are duplicates
         if validate_account_locks(
             message.account_keys(),
             bank.get_transaction_account_lock_limit(),
         )
         .is_err()
         {
-            return false;
+            return PacketProcessResult::Retry; // Retry account lock conflicts
         }
 
         if Consumer::check_fee_payer_unlocked(bank, &sanitized_transaction, error_counters).is_err()
         {
-            return false;
+            return PacketProcessResult::Retry; // Retry if fee payer locked
         }
+
         sanitized_transactions.push(sanitized_transaction);
-        true
+        PacketProcessResult::Process
     } else {
-        false
+        PacketProcessResult::Drop // Drop invalid packets permanently
     }
 }
 

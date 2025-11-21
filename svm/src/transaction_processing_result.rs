@@ -4,7 +4,6 @@ use {
         transaction_execution_result::{ExecutedTransaction, TransactionExecutionDetails},
     },
     solana_fee_structure::FeeDetails,
-    solana_instruction::error::InstructionError,
     solana_transaction_error::{TransactionError, TransactionResult},
 };
 
@@ -12,7 +11,6 @@ pub type TransactionProcessingResult = TransactionResult<ProcessedTransaction>;
 
 pub trait TransactionProcessingResultExtensions {
     fn was_processed(&self) -> bool;
-    fn cavey_was_processed(&self) -> bool;
     fn was_processed_with_successful_result(&self) -> bool;
     fn processed_transaction(&self) -> Option<&ProcessedTransaction>;
     fn flattened_result(&self) -> TransactionResult<()>;
@@ -31,17 +29,6 @@ pub enum ProcessedTransaction {
 impl TransactionProcessingResultExtensions for TransactionProcessingResult {
     fn was_processed(&self) -> bool {
         self.is_ok()
-    }
-
-    fn cavey_was_processed(&self) -> bool {
-        self.is_ok()
-            || matches!(
-                self,
-                Err(TransactionError::InstructionError(
-                    0,
-                    InstructionError::Custom(0)
-                ))
-            )
     }
 
     fn was_processed_with_successful_result(&self) -> bool {
