@@ -461,7 +461,7 @@ impl Consumer {
                 .iter()
                 .zip(batch.sanitized_transactions())
                 .filter_map(|(processing_result, tx)| {
-                    if processing_result.cavey_was_processed() {
+                    if processing_result.was_processed() {
                         Some(tx.to_versioned_transaction())
                     } else {
                         None
