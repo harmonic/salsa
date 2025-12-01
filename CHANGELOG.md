@@ -7,19 +7,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and follows a [Backwards Compatibility Policy](https://docs.anza.xyz/backwards-compatibility)
 
-Release channels have their own copy of this changelog:
-* [edge - v3.1](#edge-channel)
-* [beta - v3.0](https://github.com/anza-xyz/agave/blob/v3.0/CHANGELOG.md)
-* [stable - v2.3](https://github.com/anza-xyz/agave/blob/v2.3/CHANGELOG.md)
-
-<a name="edge-channel"></a>
-## 3.1.0—Unreleased
-### RPC
-#### Breaking
-#### Changes
-### Validator
-#### Breaking
-
 ## 3.0.0
 
 ### RPC
@@ -35,6 +22,7 @@ Release channels have their own copy of this changelog:
 
 #### Breaking
 * When XDP is enabled, the validator process requires the `CAP_NET_RAW`, `CAP_NET_ADMIN`, `CAP_BPF`, and `CAP_PERFMON` capabilities. These can be configured in the systemd service file by setting `CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN CAP_BPF CAP_PERFMON` under the `[Service]` section or directly on the binary with the command `sudo setcap cap_net_raw,cap_net_admin,cap_bpf,cap_perfmon=p <path/to/agave-validator>` (this command must be run each time the binary is replaced)
+* Enabling XDP zero copy on systems configured with LACP bond requires manually passing  `--experimental-retransmit-xdp-interface <real-interface>` (e.g.: `eno17395np0` not `bond0`), as zero copy is only available on physical interfaces.
 * Require increased `memlock` limits - recommended setting is `LimitMEMLOCK=2000000000` in systemd service configuration. Lack of sufficient limit (on Linux) will cause startup error.
 * Remove deprecated arguments
   * `--accounts-index-memory-limit-mb`

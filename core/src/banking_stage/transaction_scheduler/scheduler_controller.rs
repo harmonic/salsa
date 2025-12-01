@@ -6,17 +6,15 @@ use {
         receive_and_buffer::{DisconnectedError, ReceiveAndBuffer},
         scheduler::{PreLockFilterAction, Scheduler},
         scheduler_error::SchedulerError,
-        scheduler_metrics::{
-            SchedulerCountMetrics, SchedulerTimingMetrics,
-            SchedulingDetails,
-        },
+        scheduler_metrics::{SchedulerCountMetrics, SchedulerTimingMetrics, SchedulingDetails},
     },
     crate::banking_stage::{
         consume_worker::ConsumeWorkerMetrics,
         consumer::Consumer,
         decision_maker::{BufferedPacketsDecision, DecisionMaker},
         transaction_scheduler::{
-            receive_and_buffer::ReceivingStats, scheduler_controller::slot::set_consume_slot, transaction_state_container::StateContainer
+            receive_and_buffer::ReceivingStats, scheduler_controller::slot::set_consume_slot,
+            transaction_state_container::StateContainer,
         },
         TOTAL_BUFFERED_PACKETS,
     },
@@ -26,7 +24,10 @@ use {
     solana_svm::transaction_error_metrics::TransactionErrorMetrics,
     std::{
         num::Saturating,
-        sync::{atomic::{AtomicBool, Ordering}, Arc, RwLock},
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc, RwLock,
+        },
     },
 };
 
@@ -309,7 +310,8 @@ where
         &mut self,
         decision: &BufferedPacketsDecision,
     ) -> Result<ReceivingStats, DisconnectedError> {
-        let receiving_stats = self.receive_and_buffer
+        let receiving_stats = self
+            .receive_and_buffer
             .receive_and_buffer_packets(&mut self.container, decision)?;
 
         self.count_metrics.update(|count_metrics| {
@@ -371,6 +373,7 @@ pub(crate) mod slot {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use {
         super::*,
         crate::banking_stage::{
