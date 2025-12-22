@@ -114,6 +114,10 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
                         .wait_for_bank_success_us
                         .fetch_add(get_bank_us, Ordering::Relaxed);
                     bank = new_bank;
+                    // Re-check slot after bank change
+                    if work.slot != bank.slot() {
+                        return self.retry_drain(work);
+                    }
                 } else {
                     self.metrics
                         .timing_metrics
