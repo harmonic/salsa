@@ -308,6 +308,7 @@ pub struct ReplaySenders {
     pub drop_bank_sender: Sender<Vec<BankWithScheduler>>,
     pub block_metadata_notifier: Option<BlockMetadataNotifierArc>,
     pub dumped_slots_sender: Sender<Vec<(u64, Hash)>>,
+    pub leader_window_sender: tokio::sync::mpsc::Sender<(std::time::SystemTime, u64)>,
 }
 
 pub struct ReplayReceivers {
@@ -614,6 +615,7 @@ impl ReplayStage {
             drop_bank_sender,
             block_metadata_notifier,
             dumped_slots_sender,
+            leader_window_sender,
         } = senders;
 
         let ReplayReceivers {
@@ -1224,6 +1226,7 @@ impl ReplayStage {
                             has_new_vote_been_rooted,
                             &first_alpenglow_slot,
                             &mut is_alpenglow_migration_complete,
+                            &leader_window_sender,
                         ) {
                             Self::log_leader_change(
                                 &my_pubkey,
@@ -2147,6 +2150,7 @@ impl ReplayStage {
         has_new_vote_been_rooted: bool,
         first_alpenglow_slot: &Option<Slot>,
         is_alpenglow_migration_complete: &mut bool,
+        leader_window_sender: &tokio::sync::mpsc::Sender<(std::time::SystemTime, u64)>,
     ) -> Option<Slot> {
         // all the individual calls to poh_recorder.read() are designed to
         // increase granularity, decrease contention
@@ -2286,6 +2290,25 @@ impl ReplayStage {
                 poh_controller,
                 tpu_bank,
             );
+
+            // Send leader window notification to block auction house
+            let window_start_time = std::time::SystemTime::now();
+            match leader_window_sender.try_send((window_start_time, poh_slot)) {
+                Ok(()) => {
+                    info!(
+                        "Sent leader window notification ({:?}, {})",
+                        window_start_time, poh_slot
+                    );
+                }
+                Err(e) => {
+                    error!(
+                        "Failed to send leader window notification. Is consumer thread connected \
+                         to the block auction house? error: {}",
+                        e
+                    );
+                }
+            }
+
             Some(poh_slot)
         } else {
             error!("{my_pubkey} No next leader found");
@@ -8793,6 +8816,7 @@ pub(crate) mod tests {
 
         let rpc_subscriptions = Some(rpc_subscriptions);
 
+        let (leader_window_sender, _) = tokio::sync::mpsc::channel(1);
         assert!(ReplayStage::maybe_start_leader(
             my_pubkey,
             bank_forks,
@@ -8808,6 +8832,7 @@ pub(crate) mod tests {
             has_new_vote_been_rooted,
             &None,
             &mut false,
+            &leader_window_sender,
         )
         .is_none());
     }
@@ -9471,6 +9496,7 @@ pub(crate) mod tests {
             poh_recorder.read().unwrap().reached_leader_slot(&my_pubkey),
             PohLeaderStatus::NotReached
         );
+        let (leader_window_sender, _) = tokio::sync::mpsc::channel(1);
         assert!(ReplayStage::maybe_start_leader(
             &my_pubkey,
             &bank_forks,
@@ -9486,6 +9512,7 @@ pub(crate) mod tests {
             has_new_vote_been_rooted,
             &None,
             &mut false,
+            &leader_window_sender,
         )
         .is_none());
 
@@ -9516,6 +9543,7 @@ pub(crate) mod tests {
             has_new_vote_been_rooted,
             &None,
             &mut false,
+            &leader_window_sender,
         )
         .is_some());
         wait_for_poh_service(&poh_controller);
@@ -9823,6 +9851,7 @@ pub(crate) mod tests {
         let has_new_vote_been_rooted = true;
 
         // We should start leader for the poh slot, however alpenglow migration should not be started
+        let (leader_window_sender, _) = tokio::sync::mpsc::channel(1);
         assert!(ReplayStage::maybe_start_leader(
             &my_pubkey,
             &bank_forks,
@@ -9838,6 +9867,7 @@ pub(crate) mod tests {
             has_new_vote_been_rooted,
             &None,
             &mut is_alpenglow_migration_complete,
+            &leader_window_sender,
         )
         .is_some());
         assert!(!is_alpenglow_migration_complete);
@@ -9873,6 +9903,7 @@ pub(crate) mod tests {
             has_new_vote_been_rooted,
             &Some(alpenglow_slot),
             &mut is_alpenglow_migration_complete,
+            &leader_window_sender,
         )
         .is_none());
         assert!(is_alpenglow_migration_complete);

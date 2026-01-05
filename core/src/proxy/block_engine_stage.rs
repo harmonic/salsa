@@ -24,6 +24,7 @@ use {
         block_engine::{
             self, block_engine_validator_client::BlockEngineValidatorClient,
             BlockBuilderFeeInfoRequest, BlockEngineEndpoint, GetBlockEngineEndpointRequest,
+            SubmitLeaderWindowInfoRequest,
         },
     },
     solana_gossip::cluster_info::ClusterInfo,
@@ -131,6 +132,8 @@ impl BlockEngineStage {
         shredstream_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
         // Channel that blocks get piped through.
         block_tx: Sender<HarmonicBlock>,
+        // Channel for leader window notifications.
+        leader_window_receiver: tokio::sync::mpsc::Receiver<(std::time::SystemTime, u64)>,
     ) -> Self {
         let block_builder_fee_info = block_builder_fee_info.clone();
 
@@ -151,6 +154,7 @@ impl BlockEngineStage {
                     block_builder_fee_info,
                     shredstream_receiver_address,
                     block_tx,
+                    leader_window_receiver,
                 ));
             })
             .unwrap();
@@ -178,6 +182,7 @@ impl BlockEngineStage {
         block_builder_fee_info: Arc<Mutex<BlockBuilderFeeInfo>>,
         shredstream_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
         block_tx: Sender<HarmonicBlock>,
+        mut leader_window_receiver: tokio::sync::mpsc::Receiver<(std::time::SystemTime, u64)>,
     ) {
         let mut error_count: u64 = 0;
 
@@ -203,6 +208,7 @@ impl BlockEngineStage {
                 &shredstream_receiver_address,
                 &local_block_engine_config,
                 &block_tx,
+                &mut leader_window_receiver,
             )
             .await
             {
@@ -239,6 +245,7 @@ impl BlockEngineStage {
         shredstream_receiver_address: &Arc<ArcSwap<Option<SocketAddr>>>,
         local_block_engine_config: &BlockEngineConfig,
         block_tx: &Sender<HarmonicBlock>,
+        leader_window_receiver: &mut tokio::sync::mpsc::Receiver<(std::time::SystemTime, u64)>,
     ) -> crate::proxy::Result<()> {
         let endpoint = Self::get_endpoint(&local_block_engine_config.block_engine_url)?;
         if !local_block_engine_config.disable_block_engine_autoconfig {
@@ -259,6 +266,7 @@ impl BlockEngineStage {
                 block_builder_fee_info,
                 shredstream_receiver_address,
                 block_tx,
+                leader_window_receiver,
             )
             .await;
         }
@@ -292,6 +300,7 @@ impl BlockEngineStage {
             block_builder_fee_info,
             &Self::CONNECTION_TIMEOUT,
             block_tx,
+            leader_window_receiver,
         )
         .await
         .inspect(|_| {
@@ -317,6 +326,7 @@ impl BlockEngineStage {
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         shredstream_receiver_address: &Arc<ArcSwap<Option<SocketAddr>>>,
         block_tx: &Sender<HarmonicBlock>,
+        leader_window_receiver: &mut tokio::sync::mpsc::Receiver<(std::time::SystemTime, u64)>,
     ) -> crate::proxy::Result<()> {
         let candidates = Self::get_ranked_endpoints(&endpoint).await?;
 
@@ -353,6 +363,7 @@ impl BlockEngineStage {
                 block_builder_fee_info,
                 &Self::CONNECTION_TIMEOUT,
                 block_tx,
+                leader_window_receiver,
             )
             .await
             {
@@ -472,6 +483,7 @@ impl BlockEngineStage {
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         connection_timeout: &Duration,
         block_tx: &Sender<HarmonicBlock>,
+        leader_window_receiver: &mut tokio::sync::mpsc::Receiver<(std::time::SystemTime, u64)>,
     ) -> crate::proxy::Result<()> {
         // Get a copy of configs here in case they have changed at runtime
         let keypair = cluster_info.keypair().clone();
@@ -534,6 +546,7 @@ impl BlockEngineStage {
             cluster_info,
             &backend_url,
             block_tx,
+            leader_window_receiver,
         )
         .await
     }
@@ -717,6 +730,7 @@ impl BlockEngineStage {
         cluster_info: &Arc<ClusterInfo>,
         block_engine_url: &str,
         block_tx: &Sender<HarmonicBlock>,
+        leader_window_receiver: &mut tokio::sync::mpsc::Receiver<(std::time::SystemTime, u64)>,
     ) -> crate::proxy::Result<()> {
         let subscribe_packets_stream = timeout(
             *connection_timeout,
@@ -789,6 +803,7 @@ impl BlockEngineStage {
             connection_timeout,
             block_engine_url,
             &block_tx,
+            leader_window_receiver,
         )
         .await
     }
@@ -816,6 +831,7 @@ impl BlockEngineStage {
         connection_timeout: &Duration,
         block_engine_url: &str,
         block_tx: &Sender<HarmonicBlock>,
+        leader_window_receiver: &mut tokio::sync::mpsc::Receiver<(std::time::SystemTime, u64)>,
     ) -> crate::proxy::Result<()> {
         const METRICS_TICK: Duration = Duration::from_secs(1);
         const MAINTENANCE_TICK: Duration = Duration::from_secs(10 * 60);
@@ -837,6 +853,9 @@ impl BlockEngineStage {
                 }
                 maybe_bundles = bundle_stream.message() => {
                     Self::handle_block_engine_maybe_bundles(maybe_bundles, bundle_tx, &mut block_engine_stats)?;
+                }
+                maybe_leader_window = leader_window_receiver.recv() => {
+                    Self::handle_leader_window_notification(maybe_leader_window, &mut client).await?;
                 }
                 maybe_blocks = block_stream.message() => {
                     Self::handle_block_engine_maybe_blocks(maybe_blocks, block_tx, &mut block_engine_stats)?;
@@ -977,6 +996,34 @@ impl BlockEngineStage {
                     .map_err(|_| ProxyError::PacketForwardError)?;
             }
         }
+        Ok(())
+    }
+
+    async fn handle_leader_window_notification(
+        notification: Option<(std::time::SystemTime, u64)>,
+        client: &mut BlockEngineValidatorClient<InterceptedService<Channel, AuthInterceptor>>,
+    ) -> crate::proxy::Result<()> {
+        let Some((time, slot)) = notification else {
+            return Err(ProxyError::GrpcStreamDisconnected);
+        };
+
+        info!("Handling leader window notification ({:?}, {})", time, slot);
+
+        match client
+            .submit_leader_window_info(SubmitLeaderWindowInfoRequest {
+                start_timestamp: Some(prost_types::Timestamp::from(time)),
+                slot,
+            })
+            .await
+        {
+            Ok(_) => {
+                info!("Successfully submitted leader window info for slot {}", slot);
+            }
+            Err(e) => {
+                error!("Failed to submit leader window info: {e}");
+            }
+        }
+
         Ok(())
     }
 

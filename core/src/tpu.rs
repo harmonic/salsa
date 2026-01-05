@@ -190,6 +190,7 @@ impl Tpu {
         relayer_config: Arc<Mutex<RelayerConfig>>,
         tip_manager_config: TipManagerConfig,
         shred_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+        leader_window_receiver: tokio::sync::mpsc::Receiver<(std::time::SystemTime, u64)>,
     ) -> Self {
         let TpuSockets {
             transactions: transactions_sockets,
@@ -372,6 +373,7 @@ impl Tpu {
             &block_builder_fee_info,
             shredstream_receiver_address.clone(),
             block_sender,
+            leader_window_receiver,
         );
         let (verified_bundle_sender, verified_bundle_receiver) = bounded(1024);
         let bundle_sigverify_stage = BundleSigverifyStage::new(
