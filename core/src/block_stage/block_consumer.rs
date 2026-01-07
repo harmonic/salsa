@@ -104,6 +104,10 @@ impl BlockConsumer {
         transaction_recorder: TransactionRecorder,
         log_messages_bytes_limit: Option<usize>,
     ) -> Self {
+        // Pre-initialize the timer calibration to avoid 2s stall on first block
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        super::timer::memoize_ticks_per_us_and_invariant_tsc_check();
+
         let thread_pool = ThreadPoolBuilder::new()
             .num_threads(NUM_THREADS)
             .thread_name(|i| format!("solBlkExec{i}"))
