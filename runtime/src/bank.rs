@@ -2533,7 +2533,14 @@ impl Bank {
         // BankingStage doesn't release this hash lock until both
         // record and commit are finished, those transactions will be
         // committed before this write lock can be obtained here.
-        let mut hash = self.hash.write().unwrap();
+        // NOTE: (mevanoxx) This RwLock is fair, so calling self.hash.write()
+        // will queue a write lock, potentially interrupting transaction
+        // execution. Instead, we use try_write() here.
+        let mut hash = loop {
+            if let Ok(lock) = self.hash.try_write() {
+                break lock;
+            }
+        };
         if *hash == Hash::default() {
             // finish up any deferred changes to account state
             self.distribute_transaction_fee_details();
@@ -2877,7 +2884,15 @@ impl Bank {
         // Only acquire the write lock for the blockhash queue on block boundaries because
         // readers can starve this write lock acquisition and ticks would be slowed down too
         // much if the write lock is acquired for each tick.
-        let mut w_blockhash_queue = self.blockhash_queue.write().unwrap();
+        let mut w_blockhash_queue = loop {
+            // cavey: block stage holds one read lock throughout execution and individual block
+            // stage execution threads take a read lock to check for valid blockhashes. this
+            // was changed from a write() to try_write() because this is a fair rwlock and the
+            // interleaved r/w requests cause a deadlock
+            if let Ok(lock) = self.blockhash_queue.try_write() {
+                break lock;
+            }
+        };
 
         #[cfg(feature = "dev-context-only-utils")]
         let blockhash_override = self
