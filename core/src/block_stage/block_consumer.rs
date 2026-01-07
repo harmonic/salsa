@@ -208,22 +208,19 @@ impl BlockConsumer {
             &mut error_counters,
         );
 
-        // If all transactions failed checks, return early without recording
-        let failed_checks: Vec<_> = check_results
-            .iter()
+        // All transactions should pass check_transactions
+        if let Some((txn, err)) = check_results
+            .into_iter()
             .enumerate()
-            .filter_map(|(i, result)| result.as_ref().err().map(|e| (i, e.clone())))
-            .collect();
-
-        if failed_checks.len() == transactions.len() {
-            let commit_transactions_result = check_results
-                .into_iter()
-                .map(|r| match r {
-                    Ok(_) => unreachable!("all transactions failed checks"),
-                    Err(err) => CommitTransactionDetails::NotCommitted(err),
-                })
-                .collect();
-
+            .find(|(_i, r)| r.is_err())
+            .map(|(i, r)| (&transactions[i], r.expect_err("filtered for is_err")))
+        {
+            info!(
+                "block in slot {} has txn {} which failed check_transactions: {:?}",
+                bank.slot(),
+                txn.signatures()[0],
+                &err
+            );
             return ProcessTransactionBatchOutput {
                 cost_model_throttled_transactions_count: 0,
                 cost_model_us: 0,
@@ -234,7 +231,9 @@ impl BlockConsumer {
                     max_prioritization_fees: 0,
                     transaction_counts: LeaderProcessedTransactionCounts::default(),
                     retryable_transaction_indexes: vec![],
-                    commit_transactions_result: Ok(commit_transactions_result),
+                    commit_transactions_result: Err(
+                        PohRecorderError::HarmonicBlockInvalidTransaction,
+                    ),
                 },
             };
         }
