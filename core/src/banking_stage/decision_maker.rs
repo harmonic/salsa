@@ -9,7 +9,7 @@ use {
     solana_runtime::bank::Bank,
     solana_unified_scheduler_pool::{BankingStageMonitor, BankingStageStatus},
     std::sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, Ordering::Relaxed},
         Arc,
     },
 };
@@ -138,7 +138,7 @@ impl DecisionMakerWrapper {
 
 impl BankingStageMonitor for DecisionMakerWrapper {
     fn status(&mut self) -> BankingStageStatus {
-        if self.is_exited.load(Ordering::Relaxed) {
+        if self.is_exited.load(Relaxed) {
             BankingStageStatus::Exited
         } else if matches!(
             self.decision_maker.make_consume_or_forward_decision(),
@@ -150,7 +150,6 @@ impl BankingStageMonitor for DecisionMakerWrapper {
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {

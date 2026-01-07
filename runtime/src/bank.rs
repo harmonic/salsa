@@ -1395,7 +1395,7 @@ impl Bank {
         };
 
         // cavey unset limits. if we are proposer again this is set when we set_tpu_bank
-        new.restore_vote_limit();    
+        new.restore_vote_limit();
 
         let (_, ancestors_time_us) = measure_us!({
             let mut ancestors = Vec::with_capacity(1 + new.parents().len());
@@ -1422,8 +1422,6 @@ impl Bank {
             }
             new.distribute_partitioned_epoch_rewards();
         });
-
-
 
         let (_, cache_preparation_time_us) =
             measure_us!(new.prepare_program_cache_for_upcoming_feature_set());
@@ -2020,9 +2018,7 @@ impl Bank {
     /// Set proposer vote limit (4M CUs) for our leader slot.
     /// Limits vote processing capacity during block execution.
     pub fn set_proposer_vote_limit(&self) {
-        self.write_cost_tracker()
-            .unwrap()
-            .set_proposer_vote_limit();
+        self.write_cost_tracker().unwrap().set_proposer_vote_limit();
     }
 
     /// Restore vote limit after block execution completes.
