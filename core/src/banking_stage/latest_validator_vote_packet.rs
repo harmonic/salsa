@@ -19,6 +19,7 @@ pub enum VoteSource {
 }
 
 /// Holds deserialized vote messages as well as their source, and slot
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct LatestValidatorVote {
     vote_source: VoteSource,
@@ -29,6 +30,7 @@ pub struct LatestValidatorVote {
     timestamp: Option<UnixTimestamp>,
 }
 
+#[allow(dead_code)]
 impl LatestValidatorVote {
     pub fn new_from_view(
         vote: SanitizedTransactionView<SharedBytes>,
@@ -130,6 +132,7 @@ impl LatestValidatorVote {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Error)]
 pub enum DeserializedPacketError {
     #[error("vote transaction failure")]

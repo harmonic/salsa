@@ -13,33 +13,23 @@ use {
     crate::{
         banking_stage::{
             consumer::{ExecuteAndCommitTransactionsOutput, ProcessTransactionBatchOutput},
-            transaction_scheduler::transaction_state_container::{
-                RuntimeTransactionView, SharedBytes,
-            },
+            transaction_scheduler::transaction_state_container::RuntimeTransactionView,
         },
         bundle_stage::bundle_account_locker::BundleAccountLocker,
     },
-    agave_transaction_view::{
-        transaction_version::TransactionVersion, transaction_view::SanitizedTransactionView,
-    },
     arrayvec::ArrayVec,
     crossbeam_channel::RecvTimeoutError,
-    itertools::Itertools,
     solana_accounts_db::account_locks::validate_account_locks,
     solana_clock::FORWARD_TRANSACTIONS_TO_LEADER_AT_SLOT_OFFSET,
     solana_measure::{measure::Measure, measure_us},
     solana_poh::poh_recorder::PohRecorderError,
     solana_runtime::{bank::Bank, bank_forks::BankForks},
-    solana_runtime_transaction::{
-        runtime_transaction::RuntimeTransaction, transaction_meta::StaticMeta,
-        transaction_with_meta::TransactionWithMeta,
-    },
+    solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
     solana_svm::{
         account_loader::TransactionCheckResult, transaction_error_metrics::TransactionErrorMetrics,
     },
     solana_svm_transaction::svm_message::SVMMessage,
     solana_time_utils::timestamp,
-    solana_transaction::sanitized::MessageHash,
     solana_transaction_error::TransactionError,
     std::{
         sync::{
@@ -170,15 +160,19 @@ impl VoteWorker {
                 // load all accounts from address loader;
                 let current_bank = self.bank_forks.read().unwrap().working_bank();
                 self.storage.cache_epoch_boundary_info(&current_bank);
-                self.storage.clear();
+                self.storage.cavey_clean(&current_bank);
             }
             BufferedPacketsDecision::ForwardAndHold => {
                 // get current working bank from bank_forks, use it to sanitize transaction and
                 // load all accounts from address loader;
                 let current_bank = self.bank_forks.read().unwrap().working_bank();
                 self.storage.cache_epoch_boundary_info(&current_bank);
+                self.storage.cavey_clean(&current_bank);
             }
-            BufferedPacketsDecision::Hold => {}
+            BufferedPacketsDecision::Hold => {
+                let current_bank = self.bank_forks.read().unwrap().working_bank();
+                self.storage.cavey_clean(&current_bank);
+            }
         }
     }
 
@@ -242,57 +236,75 @@ impl VoteWorker {
         slot_metrics_tracker: &mut LeaderSlotMetricsTracker,
         reservation_cb: &impl Fn(&Bank) -> u64,
     ) -> bool {
-        // Based on the stake distribution present in the supplied bank, drain the unprocessed votes
-        // from each validator using a weighted random ordering. Votes from validators with
-        // 0 stake are ignored.
-        let all_vote_packets = self.storage.drain_unprocessed(bank);
+        // Simplified vote processing: pop votes from the LRU cache and process
+        // them in batches.
 
         let mut reached_end_of_slot = false;
         let mut error_counters: TransactionErrorMetrics = TransactionErrorMetrics::default();
-        let mut resolved_txs = ArrayVec::<_, UNPROCESSED_BUFFER_STEP_SIZE>::new();
-        for chunk in Itertools::chunks(all_vote_packets.into_iter(), UNPROCESSED_BUFFER_STEP_SIZE)
-            .into_iter()
+        let mut votes_batch =
+            ArrayVec::<RuntimeTransactionView, UNPROCESSED_BUFFER_STEP_SIZE>::new();
+        let mut retry_votes = Vec::new();
+        let mut num_votes_processed = 0_usize;
+        const MAX_VOTES_PER_SLOT: usize = 1000;
+
+        debug!(
+            "Processing vote packets, slot: {}, outstanding: {}",
+            bank.slot(),
+            self.storage.len()
+        );
+
+        while !self.storage.is_empty()
+            && !reached_end_of_slot
+            && num_votes_processed < MAX_VOTES_PER_SLOT
         {
-            debug_assert!(resolved_txs.is_empty());
+            votes_batch.clear();
 
-            // Short circuit if we've reached the end of slot.
-            if reached_end_of_slot {
-                self.storage.reinsert_packets(chunk.into_iter());
-
-                continue;
+            // Fill up the batch from the LRU (votes are already resolved)
+            while !votes_batch.is_full() {
+                if let Some(vote) = self.storage.pop() {
+                    // Validate against current bank
+                    if validate_vote_for_processing(bank, &vote, &mut error_counters) {
+                        num_votes_processed += 1;
+                        votes_batch.push(vote);
+                    } else {
+                        retry_votes.push(vote);
+                    }
+                } else {
+                    break;
+                }
             }
 
-            // Sanitize & resolve our chunk.
-            for packet in chunk.into_iter() {
-                if let Some(tx) =
-                    consume_scan_should_process_packet(bank, packet, &mut error_counters)
-                {
-                    resolved_txs.push(tx);
-                }
+            if votes_batch.is_empty() {
+                break;
             }
 
             if let Some(retryable_vote_indices) = self.do_process_packets(
                 bank,
                 &mut reached_end_of_slot,
-                &resolved_txs,
+                &votes_batch,
                 banking_stage_stats,
                 consumed_buffered_packets_count,
                 rebuffered_packet_count,
                 slot_metrics_tracker,
                 reservation_cb,
             ) {
-                self.storage.reinsert_packets(
-                    Self::extract_retryable(&mut resolved_txs, retryable_vote_indices)
-                        .map(|tx| tx.into_inner_transaction().into_view()),
-                );
+                self.storage.reinsert_votes(Self::extract_retryable(
+                    &mut votes_batch,
+                    retryable_vote_indices,
+                ));
             } else {
-                self.storage.reinsert_packets(
-                    resolved_txs
-                        .drain(..)
-                        .map(|tx| tx.into_inner_transaction().into_view()),
-                );
+                self.storage.reinsert_votes(votes_batch.drain(..));
             }
         }
+
+        debug!(
+            "Done processing votes, slot: {}, outstanding: {}",
+            bank.slot(),
+            self.storage.len()
+        );
+
+        // Reinsert votes that failed validation for retry
+        self.storage.reinsert_votes(retry_votes.drain(..));
 
         reached_end_of_slot
     }
@@ -533,47 +545,27 @@ impl VoteWorker {
     }
 }
 
-fn consume_scan_should_process_packet(
+/// Validate a pre-resolved vote transaction against the current bank.
+fn validate_vote_for_processing(
     bank: &Bank,
-    packet: SanitizedTransactionView<SharedBytes>,
+    vote: &RuntimeTransactionView,
     error_counters: &mut TransactionErrorMetrics,
-) -> Option<RuntimeTransactionView> {
-    // Construct the RuntimeTransaction.
-    let Ok(view) = RuntimeTransaction::<SanitizedTransactionView<_>>::try_from(
-        packet,
-        MessageHash::Compute,
-        None,
-    ) else {
-        return None;
-    };
-
-    // Filter invalid votes (should never be triggered).
-    if !view.is_simple_vote_transaction() {
-        return None;
-    }
-
-    // Resolve the transaction (votes do not have LUTs).
-    debug_assert!(!matches!(view.version(), TransactionVersion::V0));
-    let Ok(view) = RuntimeTransactionView::try_from(view, None, bank.get_reserved_account_keys())
-    else {
-        return None;
-    };
-
+) -> bool {
     // Check the number of locks and whether there are duplicates
     if validate_account_locks(
-        view.account_keys(),
+        vote.account_keys(),
         bank.get_transaction_account_lock_limit(),
     )
     .is_err()
     {
-        return None;
+        return false;
     }
 
-    if Consumer::check_fee_payer_unlocked(bank, &view, error_counters).is_err() {
-        return None;
+    if Consumer::check_fee_payer_unlocked(bank, vote, error_counters).is_err() {
+        return false;
     }
 
-    Some(view)
+    true
 }
 
 fn has_reached_end_of_slot(reached_max_poh_height: bool, bank: &Bank) -> bool {
@@ -585,13 +577,19 @@ mod tests {
     use {
         super::*,
         crate::banking_stage::{
-            tests::create_slow_genesis_config, vote_storage::tests::packet_from_slots,
+            tests::create_slow_genesis_config,
+            transaction_scheduler::transaction_state_container::SharedBytes,
+            vote_storage::tests::packet_from_slots,
         },
+        agave_transaction_view::transaction_view::SanitizedTransactionView,
         solana_ledger::genesis_utils::GenesisConfigInfo,
         solana_perf::packet::BytesPacket,
         solana_runtime::genesis_utils::ValidatorVoteKeypairs,
-        solana_runtime_transaction::transaction_meta::StaticMeta,
+        solana_runtime_transaction::{
+            runtime_transaction::RuntimeTransaction, transaction_meta::StaticMeta,
+        },
         solana_svm::account_loader::CheckedTransactionDetails,
+        solana_transaction::sanitized::MessageHash,
         std::collections::HashSet,
     };
 

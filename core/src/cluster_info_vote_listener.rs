@@ -468,22 +468,10 @@ impl ClusterInfoVoteListener {
             .entry(*vote_pubkey)
             .or_insert(0);
 
-        let root = root_bank.slot();
         let mut is_new_vote = false;
         let vote_slots = vote.slots();
 
-        let accumulate_intermediate_votes =
-            if let Some(hash) = bank_hash_cache.hash(last_vote_slot, &mut slots_dumped) {
-                // Only accumulate intermediates if we have replayed the same version being voted on, as
-                // otherwise we cannot verify the ancestry or the hashes.
-                // Note: this can only be performed on full tower votes, until deprecate_legacy_vote_ixs feature
-                // is active we must check the transaction type.
-                hash == last_vote_hash && vote.is_full_tower_vote()
-            } else {
-                // If we have not frozen the bank do not accumulate intermediate slots as we cannot verify
-                // the hashes
-                false
-            };
+        let accumulate_intermediate_votes = true;
         let mut get_hash = |slot: Slot| {
             (slot == last_vote_slot)
                 .then_some(last_vote_hash)
@@ -491,7 +479,7 @@ impl ClusterInfoVoteListener {
         };
 
         // If slot is before the root, ignore it. Iterates from most recent vote slot to oldest.
-        for slot in vote_slots.iter().filter(|slot| **slot > root).rev() {
+        for slot in vote_slots.iter().rev() {
             let slot = *slot;
 
             // if we don't have stake information, ignore it
@@ -571,14 +559,6 @@ impl ClusterInfoVoteListener {
                 }
 
                 is_new_vote = is_new;
-            }
-
-            if slot < *latest_vote_slot {
-                // Important that we filter after the `last_vote_slot` check, as even if this vote
-                // is old, we still need to track optimistic confirmations.
-                // However it is fine to filter the rest of the slots for the propagated check tracking below,
-                // as the propagated check is able to roll up votes for descendants unlike optimistic confirmation.
-                continue;
             }
 
             diff.entry(slot)
