@@ -741,6 +741,7 @@ impl BlockEngineStage {
         .map_err(|e| ProxyError::MethodError(e.to_string()))?
         .into_inner();
 
+        // Harmonic TODO: revert to subscribe_bundles once 3.0 clients are deprecated
         let subscribe_bundles_stream = timeout(
             *connection_timeout,
             client.subscribe_bundles2(block_engine::SubscribeBundlesRequest {}),
@@ -1017,7 +1018,10 @@ impl BlockEngineStage {
             .await
         {
             Ok(_) => {
-                info!("Successfully submitted leader window info for slot {}", slot);
+                info!(
+                    "Successfully submitted leader window info for slot {}",
+                    slot
+                );
             }
             Err(e) => {
                 error!("Failed to submit leader window info: {e}");
