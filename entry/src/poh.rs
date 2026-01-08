@@ -159,6 +159,24 @@ impl Poh {
             .wrapping_mul(self.hashes_per_tick)
             .wrapping_add(self.remaining_hashes_until_tick)
     }
+
+    /// Set the slot start time for consistent timing across consecutive leader slots.
+    /// When we're leader in back-to-back slots, we use the previous slot's expected end time
+    /// rather than the current wall clock time to maintain consistent 400ms slot boundaries.
+    #[inline]
+    pub fn cavey_set_start_time(&mut self, start_time: Instant) {
+        info!(
+            "CAVEY DEBUG: set start time. old slot_start_time {:?}; new start_time {:?}",
+            self.slot_start_time, start_time
+        );
+        self.slot_start_time = start_time;
+    }
+
+    /// Get the current slot start time.
+    #[inline]
+    pub fn cavey_start_time(&self) -> Instant {
+        self.slot_start_time
+    }
 }
 
 pub fn compute_hash_time(hashes_sample_size: u64) -> Duration {

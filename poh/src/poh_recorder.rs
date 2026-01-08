@@ -503,6 +503,20 @@ impl PohRecorder {
             leader_first_tick_height,
             next_leader_slot,
         )));
+
+        // Check if we were leader in the previous slot (consecutive leader slots).
+        // If so, use the parent's expected end time as our start time for consistent slot pacing.
+        // This ensures that back-to-back leader slots maintain consistent 400ms timing
+        // rather than drifting based on actual processing time.
+        let parent = working_bank.bank.parent();
+        let parent_was_our_leader_prev_slot = parent.as_ref().is_some_and(|p| {
+            p.collector_id() == working_bank.bank.collector_id()
+                && p.slot() + 1 == working_bank.bank.slot()
+        });
+        if parent_was_our_leader_prev_slot {
+            self.cavey_set_start_time(parent.as_ref().unwrap().cavey_next_time.0);
+        }
+
         self.working_bank = Some(working_bank);
 
         // TODO: adjust the working_bank.start time based on number of ticks
@@ -943,6 +957,17 @@ impl PohRecorder {
     #[cfg(feature = "dev-context-only-utils")]
     pub fn clear_bank_for_test(&mut self) {
         self.clear_bank(true);
+    }
+
+    /// Set the slot start time for consistent timing across consecutive leader slots.
+    /// Wrapper that delegates to the underlying Poh instance.
+    pub fn cavey_set_start_time(&self, start_time: Instant) {
+        self.poh.lock().unwrap().cavey_set_start_time(start_time);
+    }
+
+    /// Get the current slot start time from the underlying Poh instance.
+    pub fn cavey_start_time(&self) -> Instant {
+        self.poh.lock().unwrap().cavey_start_time()
     }
 }
 

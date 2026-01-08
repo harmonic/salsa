@@ -182,7 +182,7 @@ use {
             },
             Arc, LockResult, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak,
         },
-        time::{Duration, Instant},
+        time::{Duration, Instant, SystemTime},
         vec,
     },
 };
@@ -594,6 +594,7 @@ impl PartialEq for Bank {
             block_id,
             bank_hash_stats: _,
             epoch_rewards_calculation_cache: _,
+            cavey_next_time: _,
             // Ignore new fields explicitly if they do not impact PartialEq.
             // Adding ".." will remove compile-time checks that if a new field
             // is added to the struct, this PartialEq is accordingly updated.
@@ -941,6 +942,11 @@ pub struct Bank {
     /// This is used to avoid recalculating the same epoch rewards at epoch boundary.
     /// The hashmap is keyed by parent_hash.
     epoch_rewards_calculation_cache: Arc<Mutex<HashMap<Hash, Arc<PartitionedRewardsCalculation>>>>,
+
+    /// The expected start time of the next slot when we're leader in consecutive slots.
+    /// Used to maintain consistent slot timing across back-to-back leader slots.
+    /// Tuple of (Instant for internal pacing, SystemTime for external communication).
+    pub cavey_next_time: (Instant, SystemTime),
 }
 
 #[derive(Debug)]
@@ -1145,6 +1151,10 @@ impl Bank {
             block_id: RwLock::new(None),
             bank_hash_stats: AtomicBankHashStats::default(),
             epoch_rewards_calculation_cache: Arc::new(Mutex::new(HashMap::default())),
+            cavey_next_time: (
+                Instant::now() + Duration::from_millis(400),
+                SystemTime::now() + Duration::from_millis(400),
+            ),
         };
 
         bank.transaction_processor =
@@ -1392,6 +1402,27 @@ impl Bank {
             block_id: RwLock::new(None),
             bank_hash_stats: AtomicBankHashStats::default(),
             epoch_rewards_calculation_cache: parent.epoch_rewards_calculation_cache.clone(),
+            // For consecutive leader slots (same collector, consecutive slot numbers),
+            // chain the timing from the parent's expected end time to maintain consistent
+            // 400ms slot boundaries. Otherwise, start fresh from now.
+            cavey_next_time: {
+                let is_consecutive_leader =
+                    *parent.collector_id() == *collector_id && parent.slot() + 1 == slot;
+                if is_consecutive_leader {
+                    // Chain from parent's expected end time
+                    let parent_next = parent.cavey_next_time;
+                    (
+                        parent_next.0 + Duration::from_millis(400),
+                        parent_next.1 + Duration::from_millis(400),
+                    )
+                } else {
+                    // First slot in leader window or not a leader slot - start fresh
+                    (
+                        Instant::now() + Duration::from_millis(400),
+                        SystemTime::now() + Duration::from_millis(400),
+                    )
+                }
+            },
         };
 
         // cavey unset limits. if we are proposer again this is set when we set_tpu_bank
@@ -1888,6 +1919,10 @@ impl Bank {
             block_id: RwLock::new(None),
             bank_hash_stats: AtomicBankHashStats::new(&fields.bank_hash_stats),
             epoch_rewards_calculation_cache: Arc::new(Mutex::new(HashMap::default())),
+            cavey_next_time: (
+                Instant::now() + Duration::from_millis(400),
+                SystemTime::now() + Duration::from_millis(400),
+            ),
         };
 
         // Sanity assertions between bank snapshot and genesis config
