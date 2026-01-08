@@ -65,6 +65,7 @@ struct BlockEngineStageStats {
     num_bundle_packets: u64,
     num_packets: u64,
     num_empty_packets: u64,
+    num_blocks: u64,
 }
 
 impl BlockEngineStageStats {
@@ -74,7 +75,8 @@ impl BlockEngineStageStats {
             ("num_bundles", self.num_bundles, i64),
             ("num_bundle_packets", self.num_bundle_packets, i64),
             ("num_packets", self.num_packets, i64),
-            ("num_empty_packets", self.num_empty_packets, i64)
+            ("num_empty_packets", self.num_empty_packets, i64),
+            ("num_blocks", self.num_blocks, i64)
         );
     }
 }
@@ -970,7 +972,7 @@ impl BlockEngineStage {
     fn handle_block_engine_maybe_blocks(
         maybe_blocks_response: Result<Option<block_engine::SubscribeBundlesResponse>, Status>,
         block_sender: &Sender<crate::block_stage::HarmonicBlock>,
-        _block_engine_stats: &mut BlockEngineStageStats,
+        block_engine_stats: &mut BlockEngineStageStats,
     ) -> crate::proxy::Result<()> {
         let blocks_response = maybe_blocks_response?.ok_or(ProxyError::GrpcStreamDisconnected)?;
         for bundle in blocks_response.bundles {
@@ -995,6 +997,8 @@ impl BlockEngineStage {
                 block_sender
                     .send(block_bundle)
                     .map_err(|_| ProxyError::PacketForwardError)?;
+
+                block_engine_stats.num_blocks += 1;
             }
         }
         Ok(())
