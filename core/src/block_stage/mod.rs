@@ -71,7 +71,7 @@ impl BlockStage {
         let consumer =
             BlockConsumer::new(committer, transaction_recorder, log_messages_bytes_limit);
 
-        let cluster_info = Arc::clone(&cluster_info)
+        let cluster_info = Arc::clone(&cluster_info);
         let block_thread = Builder::new()
             .name("solBlockStgTx".to_string())
             .spawn(move || {
