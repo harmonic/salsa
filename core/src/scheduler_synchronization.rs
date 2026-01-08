@@ -69,10 +69,6 @@ pub fn vanilla_should_schedule(current_slot: u64, in_delegation_period: bool) ->
         // Check who claimed it - if vanilla claimed, all vanilla threads can consume
         // If block claimed, no vanilla thread should consume
         let claimed_by_vanilla = is_block_claim(state);
-        info!(
-            "vanilla_should_schedule: slot {} already claimed, by_block={}",
-            current_slot, claimed_by_vanilla
-        );
         return Some(!claimed_by_vanilla);
     }
 
