@@ -164,14 +164,10 @@ pub fn block_should_schedule(current_slot: u64, in_delegation_period: bool) -> O
 /// This atomically clears the block claim and sets the slot to current_slot - 1
 /// so that vanilla can claim the current slot.
 pub fn block_failed(current_slot: u64) -> Option<bool> {
-    info!("block_failed {current_slot}");
-
     // Atomically revert if we're still on the same slot with block claim
     let did_revert = SCHEDULER_STATE
         .fetch_update(Ordering::Release, Ordering::Acquire, |old_state| {
-            info!("block_failed fetch_update old_state={old_state}");
-
-            // Only revert if current slot is claimed by block
+            // Only revert if currnt slot is claimed by block
             if old_state == SENTINEL {
                 return None;
             }
@@ -190,16 +186,11 @@ pub fn block_failed(current_slot: u64) -> Option<bool> {
             // Revert to previous slot (vanilla claim, so vanilla can now claim current_slot)
             // Using wrapping_sub to handle slot 0 edge case
             let new_state = vanilla_claim(current_slot.wrapping_sub(1));
-            info!("block_failed reverting to state={new_state}");
             Some(new_state)
         })
         .is_ok();
 
-    info!("block_failed did_revert={did_revert}");
-
-    if did_revert {
-        info!("block reverted in slot {current_slot}");
-    }
+    info!("block_failed did_revert={did_revert} in slot={current_slot}");
 
     Some(did_revert)
 }
