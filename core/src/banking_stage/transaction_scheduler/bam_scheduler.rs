@@ -322,6 +322,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                 revert_on_error: false,
                 respond_with_extra_info: false,
                 max_schedule_slot: None,
+                slot: 0,
             }
         }
     }

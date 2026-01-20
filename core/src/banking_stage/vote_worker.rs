@@ -253,9 +253,9 @@ impl VoteWorker {
 
         let mut vote_packets =
             ArrayVec::<Arc<ImmutableDeserializedPacket>, UNPROCESSED_BUFFER_STEP_SIZE>::new();
-        let mut attempts = 0_usize;
-        while !self.storage.is_empty() && !reached_end_of_slot && attempts < 1000 {
-            attempts += 1;
+        let mut num_votes = 0_usize;
+        let mut retry_packets = vec![];
+        while !self.storage.is_empty() && !reached_end_of_slot && num_votes < 1000 {
             while let Some(packet) = (!vote_packets.is_full())
                 .then(|| self.storage.pop())
                 .flatten()

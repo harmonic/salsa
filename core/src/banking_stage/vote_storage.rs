@@ -126,3 +126,4 @@ impl VoteStorage {
             let _ = self.votes.pop(sig);
         }
     }
+}
