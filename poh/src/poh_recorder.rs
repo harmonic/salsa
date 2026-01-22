@@ -638,13 +638,18 @@ impl PohRecorder {
                 entry_count,
             );
 
-            for tick in &self.tick_cache[..entry_count] {
-                working_bank.bank.register_tick(&tick.0.hash);
-                send_result = self
-                    .working_bank_sender
-                    .send((working_bank.bank.clone(), tick.clone()));
-                if send_result.is_err() {
-                    break;
+            // Harmonic: send ticks to broadcast stage before registering
+            'harmonic_register_tick: for _ in 0..1 {
+                for tick in &self.tick_cache[..entry_count] {
+                    send_result = self
+                        .working_bank_sender
+                        .send((working_bank.bank.clone(), tick.clone()));
+                    if send_result.is_err() {
+                        break 'harmonic_register_tick;
+                    }
+                }
+                for tick in &self.tick_cache[..entry_count] {
+                    working_bank.bank.register_tick(&tick.0.hash);
                 }
             }
         }
