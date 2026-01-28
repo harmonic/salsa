@@ -561,7 +561,10 @@ impl BlockEngineStage {
                     "invalid block engine url value: {block_engine_url}",
                 ))
             })?
-            .tcp_keepalive(Some(Duration::from_secs(60)));
+            .tcp_nodelay(true)
+            .tcp_keepalive(Some(Duration::from_secs(60)))
+            .initial_connection_window_size(16 * 1024 * 1024)
+            .initial_stream_window_size(4 * 1024 * 1024);
         if block_engine_url.starts_with("https") {
             backend_endpoint = backend_endpoint
                 .tls_config(tonic::transport::ClientTlsConfig::new())
