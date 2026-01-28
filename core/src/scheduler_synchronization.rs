@@ -160,6 +160,47 @@ pub fn block_should_schedule(current_slot: u64, in_delegation_period: bool) -> O
     Some(did_claim)
 }
 
+/// Check if a block is currently executing for the given slot.
+/// Used by vote worker to defer vote processing during block execution.
+///
+/// Returns true if the block claim bit is set for the current slot.
+pub fn is_block_executing(current_slot: u64) -> bool {
+    let state = SCHEDULER_STATE.load(Ordering::Acquire);
+    if state == SENTINEL {
+        return false;
+    }
+    get_slot(state) == current_slot && is_block_claim(state)
+}
+
+/// Called when block execution has finished successfully.
+/// Clears the block claim bit so votes can resume processing.
+///
+/// Returns true if the claim was successfully cleared, false if:
+/// - Different slot is claimed
+/// - Not claimed by block
+/// - Sentinel value
+pub fn block_execution_finished(current_slot: u64) -> bool {
+    SCHEDULER_STATE
+        .fetch_update(Ordering::Release, Ordering::Acquire, |old_state| {
+            if old_state == SENTINEL {
+                return None;
+            }
+
+            let old_slot = get_slot(old_state);
+            if old_slot != current_slot {
+                return None;
+            }
+
+            if !is_block_claim(old_state) {
+                return None;
+            }
+
+            // Clear block claim bit - set to vanilla claim for same slot
+            Some(vanilla_claim(current_slot))
+        })
+        .is_ok()
+}
+
 /// If block failed, we should revert and give vanilla a chance.
 /// This atomically clears the block claim and sets the slot to current_slot - 1
 /// so that vanilla can claim the current slot.
@@ -195,21 +236,23 @@ pub fn block_failed(current_slot: u64) -> Option<bool> {
     Some(did_revert)
 }
 
+/// Reset the scheduler synchronization state. Used in tests to ensure
+/// a clean slate for each test.
+#[cfg(test)]
+pub fn reset_for_tests() {
+    SCHEDULER_STATE.store(SENTINEL, Ordering::Release);
+}
+
+/// Force claim a slot for vanilla scheduling. Used in tests to simulate
+/// being past the delegation period.
+#[cfg(test)]
+pub fn force_vanilla_claim(slot: u64) {
+    SCHEDULER_STATE.store(vanilla_claim(slot), Ordering::Release);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Reset the scheduler synchronization state. Used in tests to ensure
-    /// a clean slate for each test.
-    fn reset_for_tests() {
-        SCHEDULER_STATE.store(SENTINEL, Ordering::Release);
-    }
-
-    /// Force claim a slot for vanilla scheduling. Used in tests to simulate
-    /// being past the delegation period.
-    fn force_vanilla_claim(slot: u64) {
-        SCHEDULER_STATE.store(vanilla_claim(slot), Ordering::Release);
-    }
 
     /// Returns the last slot that was scheduled (without the block/vanilla flag).
     fn last_slot_scheduled() -> u64 {
@@ -330,5 +373,75 @@ mod tests {
         // Slot 100 should still be claimed by block
         assert!(is_slot_claimed_by_block());
         assert_eq!(last_slot_scheduled(), 100);
+    }
+
+    #[test]
+    fn test_is_block_executing() {
+        reset_for_tests();
+
+        // No block executing initially (sentinel value)
+        assert!(!is_block_executing(100));
+
+        // Block claims slot 100
+        block_should_schedule(100, true);
+        assert!(is_block_executing(100));
+        assert!(!is_block_executing(99)); // Wrong slot
+        assert!(!is_block_executing(101)); // Wrong slot
+
+        // After vanilla claims, block is not executing
+        reset_for_tests();
+        force_vanilla_claim(100);
+        assert!(!is_block_executing(100));
+    }
+
+    #[test]
+    fn test_block_execution_finished() {
+        reset_for_tests();
+
+        // Block claims slot 100
+        block_should_schedule(100, true);
+        assert!(is_slot_claimed_by_block());
+        assert!(is_block_executing(100));
+
+        // Block execution finishes
+        let result = block_execution_finished(100);
+        assert!(result);
+
+        // Block claim should be cleared
+        assert!(!is_slot_claimed_by_block());
+        assert!(!is_block_executing(100));
+        // Slot should still be 100, but now vanilla claim
+        assert_eq!(last_slot_scheduled(), 100);
+    }
+
+    #[test]
+    fn test_block_execution_finished_wrong_slot() {
+        reset_for_tests();
+
+        // Block claims slot 100
+        block_should_schedule(100, true);
+
+        // Try to finish slot 99 (wrong slot)
+        let result = block_execution_finished(99);
+        assert!(!result);
+
+        // Slot 100 should still be claimed by block
+        assert!(is_slot_claimed_by_block());
+        assert!(is_block_executing(100));
+    }
+
+    #[test]
+    fn test_block_execution_finished_not_block_claim() {
+        reset_for_tests();
+
+        // Vanilla claims slot 100
+        force_vanilla_claim(100);
+
+        // Try to finish block execution (but it's vanilla claim)
+        let result = block_execution_finished(100);
+        assert!(!result);
+
+        // Should still be vanilla claim
+        assert!(!is_slot_claimed_by_block());
     }
 }

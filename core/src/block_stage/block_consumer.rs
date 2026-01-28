@@ -12,14 +12,17 @@
 
 use {
     super::{DevinScheduler, Timer},
-    crate::banking_stage::{
-        committer::{CommitTransactionDetails, Committer},
-        consumer::{
-            ExecuteAndCommitTransactionsOutput, LeaderProcessedTransactionCounts,
-            ProcessTransactionBatchOutput,
+    crate::{
+        banking_stage::{
+            committer::{CommitTransactionDetails, Committer},
+            consumer::{
+                ExecuteAndCommitTransactionsOutput, LeaderProcessedTransactionCounts,
+                ProcessTransactionBatchOutput,
+            },
+            leader_slot_timing_metrics::LeaderExecuteAndCommitTimings,
+            scheduler_messages::MaxAge,
         },
-        leader_slot_timing_metrics::LeaderExecuteAndCommitTimings,
-        scheduler_messages::MaxAge,
+        scheduler_synchronization,
     },
     agave_transaction_view::{
         resolved_transaction_view::ResolvedTransactionView, transaction_data::TransactionData,
@@ -346,6 +349,9 @@ impl BlockConsumer {
 
         // Restore vote limit after block execution completes
         bank.restore_vote_limit();
+
+        // Clear block claim bit so votes & vanilla can resume processing
+        scheduler_synchronization::block_execution_finished(intended_slot);
 
         // Comprehensive timing log for profiling
         let timings = &execute_and_commit_output.execute_and_commit_timings;
