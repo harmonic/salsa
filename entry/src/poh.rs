@@ -163,6 +163,8 @@ impl Poh {
     /// Set the slot start time for consistent timing across consecutive leader slots.
     /// When we're leader in back-to-back slots, we use the previous slot's expected end time
     /// rather than the current wall clock time to maintain consistent 400ms slot boundaries.
+    /// 
+    /// Note: Clamping to prevent overcorrection is done by the caller (poh_recorder).
     #[inline]
     pub fn cavey_set_start_time(&mut self, start_time: Instant) {
         info!(

@@ -946,7 +946,8 @@ pub struct Bank {
     /// The expected start time of the next slot when we're leader in consecutive slots.
     /// Used to maintain consistent slot timing across back-to-back leader slots.
     /// Tuple of (Instant for internal pacing, SystemTime for external communication).
-    pub cavey_next_time: (Instant, SystemTime),
+    /// Uses RwLock for interior mutability to allow updating when clamping is needed.
+    pub cavey_next_time: RwLock<(Instant, SystemTime)>,
 }
 
 #[derive(Debug)]
@@ -1151,10 +1152,10 @@ impl Bank {
             block_id: RwLock::new(None),
             bank_hash_stats: AtomicBankHashStats::default(),
             epoch_rewards_calculation_cache: Arc::new(Mutex::new(HashMap::default())),
-            cavey_next_time: (
+            cavey_next_time: RwLock::new((
                 Instant::now() + Duration::from_millis(400),
                 SystemTime::now() + Duration::from_millis(400),
-            ),
+            )),
         };
 
         bank.transaction_processor =
@@ -1405,22 +1406,24 @@ impl Bank {
             // For consecutive leader slots (same collector, consecutive slot numbers),
             // chain the timing from the parent's expected end time to maintain consistent
             // 400ms slot boundaries. Otherwise, start fresh from now.
+            // Note: Clamping to prevent overcorrection happens at usage sites (poh_recorder, replay_stage)
+            // which will update this value if needed.
             cavey_next_time: {
                 let is_consecutive_leader =
                     *parent.collector_id() == *collector_id && parent.slot() + 1 == slot;
                 if is_consecutive_leader {
                     // Chain from parent's expected end time
-                    let parent_next = parent.cavey_next_time;
-                    (
+                    let parent_next = *parent.cavey_next_time.read().unwrap();
+                    RwLock::new((
                         parent_next.0 + Duration::from_millis(400),
                         parent_next.1 + Duration::from_millis(400),
-                    )
+                    ))
                 } else {
                     // First slot in leader window or not a leader slot - start fresh
-                    (
+                    RwLock::new((
                         Instant::now() + Duration::from_millis(400),
                         SystemTime::now() + Duration::from_millis(400),
-                    )
+                    ))
                 }
             },
         };
@@ -1919,10 +1922,10 @@ impl Bank {
             block_id: RwLock::new(None),
             bank_hash_stats: AtomicBankHashStats::new(&fields.bank_hash_stats),
             epoch_rewards_calculation_cache: Arc::new(Mutex::new(HashMap::default())),
-            cavey_next_time: (
+            cavey_next_time: RwLock::new((
                 Instant::now() + Duration::from_millis(400),
                 SystemTime::now() + Duration::from_millis(400),
-            ),
+            )),
         };
 
         // Sanity assertions between bank snapshot and genesis config

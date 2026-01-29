@@ -2299,11 +2299,17 @@ impl ReplayStage {
             // - PoH uses parent.cavey_next_time.0 (Instant) for internal pacing
             // - Notification uses parent.cavey_next_time.1 (SystemTime) for external communication
             // Both come from the same tuple, ensuring they represent the same logical time point.
+            //
+            // To prevent overcorrection when slots run long, we clamp the start time to ensure
+            // slots are at minimum 200ms (start_time cannot be more than 200ms in the past).
             let parent_was_our_leader_prev_slot =
                 parent.collector_id() == &tpu_bank_collector_id && parent_slot + 1 == poh_slot;
             let window_start_time = if parent_was_our_leader_prev_slot {
-                // Use parent's expected start time (synced with PoH which uses .0 component)
-                parent.cavey_next_time.1.min(SystemTime::now())
+                // Use parent's expected end time (= this slot's start), clamped to [now-200ms, now]
+                let parent_next_time = parent.cavey_next_time.read().unwrap().1;
+                let now = SystemTime::now();
+                let min_start_time = now - Duration::from_millis(200);
+                parent_next_time.max(min_start_time).min(now)
             } else {
                 SystemTime::now()
             };

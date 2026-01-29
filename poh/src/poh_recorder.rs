@@ -38,7 +38,7 @@ use {
             atomic::{AtomicBool, AtomicU64, Ordering},
             Arc, Mutex, RwLock,
         },
-        time::Instant,
+        time::{Duration, Instant},
     },
     thiserror::Error,
 };
@@ -508,13 +508,34 @@ impl PohRecorder {
         // If so, use the parent's expected end time as our start time for consistent slot pacing.
         // This ensures that back-to-back leader slots maintain consistent 400ms timing
         // rather than drifting based on actual processing time.
+        //
+        // To prevent overcorrection when slots run long, we clamp the start time to ensure
+        // slots are at minimum 200ms. If clamping occurs, we update the bank's cavey_next_time.
         let parent = working_bank.bank.parent();
         let parent_was_our_leader_prev_slot = parent.as_ref().is_some_and(|p| {
             p.collector_id() == working_bank.bank.collector_id()
                 && p.slot() + 1 == working_bank.bank.slot()
         });
         if parent_was_our_leader_prev_slot {
-            self.cavey_set_start_time(parent.as_ref().unwrap().cavey_next_time.0);
+            let parent_ref = parent.as_ref().unwrap();
+            let parent_next_time = *parent_ref.cavey_next_time.read().unwrap();
+            let min_start_time = Instant::now() - Duration::from_millis(200);
+            let min_start_time_sys = std::time::SystemTime::now() - Duration::from_millis(200);
+            
+            if parent_next_time.0 < min_start_time {
+                // Clamping needed - update parent's cavey_next_time (so replay_stage sees the corrected value)
+                // and current bank's cavey_next_time (so next consecutive slot chains correctly)
+                let clamped_parent_next = (min_start_time, min_start_time_sys);
+                let clamped_current_next = (
+                    min_start_time + Duration::from_millis(400),
+                    min_start_time_sys + Duration::from_millis(400),
+                );
+                *parent_ref.cavey_next_time.write().unwrap() = clamped_parent_next;
+                *working_bank.bank.cavey_next_time.write().unwrap() = clamped_current_next;
+                self.cavey_set_start_time(min_start_time);
+            } else {
+                self.cavey_set_start_time(parent_next_time.0);
+            }
         }
 
         self.working_bank = Some(working_bank);
