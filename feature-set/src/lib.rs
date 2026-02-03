@@ -1080,7 +1080,7 @@ pub mod drop_unchained_merkle_shreds {
 }
 
 pub mod relax_intrabatch_account_locks {
-    solana_pubkey::declare_id!("ENTRYnPAoT5Swwx73YDGzMp3XnNH1kxacyvLosRHza1i");
+    solana_pubkey::declare_id!("4WeHX6QoXCCwqbSFgi6dxnB6QsPo6YApaNTH7P4MLQ99");
 }
 
 pub mod create_slashing_program {
@@ -1190,13 +1190,17 @@ pub mod fix_alt_bn128_pairing_length_check {
 pub mod replace_spl_token_with_p_token {
     use super::Pubkey;
 
-    solana_pubkey::declare_id!("ptokSWRqZz5u2xdqMdstkMKpFurauUpVen7TZXgDpkQ");
+    solana_pubkey::declare_id!("ptokFjwyJtrwCa9Kgo9xoDS59V4QccBGEaRFnRPnSdP");
 
     pub const SPL_TOKEN_PROGRAM_ID: Pubkey =
         Pubkey::from_str_const("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
 
     pub const PTOKEN_PROGRAM_BUFFER: Pubkey =
-        Pubkey::from_str_const("ptokNfvuU7terQ2r2452RzVXB3o4GT33yPWo1fUkkZ2");
+        Pubkey::from_str_const("ptok6rngomXrDbWf5v5Mkmu5CEbB51hzSCPDoj9DrvF");
+}
+
+pub mod relax_programdata_account_check_migration {
+    solana_pubkey::declare_id!("rexav5eNTUSNT1K2N7cfRjnthwhcP5BC25v2tA4rW4h");
 }
 
 pub static FEATURE_NAMES: LazyLock<AHashMap<Pubkey, &'static str>> = LazyLock::new(|| {
@@ -2149,6 +2153,10 @@ pub static FEATURE_NAMES: LazyLock<AHashMap<Pubkey, &'static str>> = LazyLock::n
         (
             replace_spl_token_with_p_token::id(),
             "SIMD-0266: Efficient Token program",
+        ),
+        (
+            relax_programdata_account_check_migration::id(),
+            "SIMD-0444: Relax program data account check in migration",
         ),
         /*************** ADD NEW FEATURES HERE ***************/
     ]

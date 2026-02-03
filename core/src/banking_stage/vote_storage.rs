@@ -171,7 +171,6 @@ pub(crate) mod tests {
         agave_transaction_view::transaction_view::SanitizedTransactionView,
         solana_clock::UnixTimestamp,
         solana_hash::Hash,
-        solana_keypair::Keypair,
         solana_perf::packet::{BytesPacket, PacketFlags},
         solana_runtime::genesis_utils::ValidatorVoteKeypairs,
         solana_signer::Signer,
