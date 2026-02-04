@@ -17,7 +17,7 @@ use {
     wincode::serialized_size,
 };
 
-const ENTRY_COALESCE_DURATION: Duration = Duration::from_millis(50);
+const ENTRY_COALESCE_DURATION: Duration = Duration::from_millis(5);
 
 pub(super) struct ReceiveResults {
     pub entries: Vec<Entry>,
