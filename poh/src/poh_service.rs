@@ -528,7 +528,7 @@ impl PohService {
         let mut block_received = false;
         // The target ns per tick when waiting for a block to arrive
         let extended_target_ns_per_tick =
-            Duration::from_millis(430).as_nanos() as u64 / ticks_per_slot;
+            Duration::from_millis(400).as_nanos() as u64 / ticks_per_slot;
         // The target ns per tick after a block has arrived
         let shortened_target_ns_per_tick = 1;
         // Current target ns per tick (dynamically adjusted)
