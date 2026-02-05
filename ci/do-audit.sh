@@ -60,15 +60,14 @@ cargo_audit_ignores=(
   # Solution:  Upgrade to >=0.12.3
   --ignore RUSTSEC-2024-0376
 
-  # Crate:     ring
-  # Version:   0.16.20
-  # Title:     Some AES functions may panic when overflow checking is enabled.
-  # Date:      2025-03-06
-  # ID:        RUSTSEC-2025-0009
-  # URL:       https://rustsec.org/advisories/RUSTSEC-2025-0009
-  # Solution:  Upgrade to >=0.17.12
-  # Dependency tree:
-  --ignore RUSTSEC-2025-0009
+	# Crate:     bytes
+	# Version:   1.10.1
+	# Title:     Integer overflow in `BytesMut::reserve`
+	# Date:      2026-02-03
+	# ID:        RUSTSEC-2026-0007
+	# URL:       https://github.com/advisories/GHSA-434x-w66g-qw3r
+	# Solution:  Upgrade to >=1.11.1
+	--ignore RUSTSEC-2026-0007
 )
 scripts/cargo-for-all-lock-files.sh audit "${cargo_audit_ignores[@]}" | $dep_tree_filter
 # we want the `cargo audit` exit code, not `$dep_tree_filter`'s
