@@ -122,6 +122,7 @@ impl BlockStage {
         while !exit.load(Ordering::Relaxed) {
             match block_receiver.recv_timeout(Duration::from_millis(10)) {
                 Ok(block) => {
+                    info!("Received block from Block Engine");
                     let (root_bank, working_bank) = {
                         let bank_forks_guard = bank_forks.read().unwrap();
                         (

@@ -427,6 +427,9 @@ impl PohService {
                         std::mem::take(&mut record.transaction_batches),
                     ) {
                         Ok(record_summary) => {
+                            if record.harmonic {
+                                info!("Harmonic block entries queued for broadcast");
+                            }
                             if record_receiver.should_shutdown(
                                 record_summary.remaining_hashes_in_slot,
                                 ticks_per_slot,

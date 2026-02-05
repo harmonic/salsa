@@ -1116,6 +1116,7 @@ impl BlockEngineStage {
             })?;
 
             if let Some(bundle_data) = bundle.bundle {
+                info!("Received block from auction");
                 let packet_batch = PacketBatch::from(
                     bundle_data
                         .packets

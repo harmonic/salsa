@@ -6,6 +6,7 @@ use {
         *,
     },
     crate::cluster_nodes::ClusterNodesCache,
+    log::info,
     solana_entry::entry::Entry,
     solana_hash::Hash,
     solana_keypair::Keypair,
@@ -195,9 +196,14 @@ impl StandardBroadcastRun {
         process_stats: &mut ProcessShredsStats,
     ) -> Result<()> {
         let num_entries = receive_results.entries.len();
+        // Use the number of entries as a heuristic for detecting harmonic block shreds
+        let entry_burst = num_entries > 50;
         let bank = receive_results.bank.clone();
         let last_tick_height = receive_results.last_tick_height;
         inc_new_counter_info!("broadcast_service-entries_received", num_entries);
+        if entry_burst {
+            info!("Broadcast received {} entries", num_entries);
+        }
 
         let mut to_shreds_time = Measure::start("broadcast_to_shreds");
 
@@ -297,6 +303,9 @@ impl StandardBroadcastRun {
             }
         }
         to_shreds_time.stop();
+        if entry_burst {
+            info!("Entry shredding complete: {}us", to_shreds_time.as_us());
+        }
 
         let mut get_leader_schedule_time = Measure::start("broadcast_get_leader_schedule");
         // Data and coding shreds are sent in a single batch.
@@ -326,6 +335,7 @@ impl StandardBroadcastRun {
         self.process_shreds_stats += *process_stats;
 
         if last_tick_height == bank.max_tick_height() {
+            info!("Last tick broadcast complete");
             self.report_and_reset_stats(false);
             self.completed = true;
         }

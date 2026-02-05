@@ -268,6 +268,7 @@ impl BlockConsumer {
 
         // Record all transactions - this is all-or-nothing for the entire block
         // Pass harmonic=true to trigger PoH speedrun after this block is recorded
+        info!("Sending block to PoH");
         let (record_result, poh_record_us) =
             measure_us!(self
                 .transaction_recorder
