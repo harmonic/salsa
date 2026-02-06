@@ -140,18 +140,13 @@ impl BlockConsumer {
         intended_slot: Slot,
     ) -> ProcessTransactionBatchOutput {
         if transactions.is_empty() {
-            // Empty block: revert claim so vanilla gets a full slot
-            warn!(
-                "Empty block for slot {}, reverting to vanilla",
-                intended_slot
-            );
             return ProcessTransactionBatchOutput {
                 cost_model_throttled_transactions_count: 0,
                 cost_model_us: 0,
                 execute_and_commit_transactions_output: ExecuteAndCommitTransactionsOutput {
                     transaction_counts: LeaderProcessedTransactionCounts::default(),
                     retryable_transaction_indexes: vec![],
-                    commit_transactions_result: Err(PohRecorderError::HarmonicBlockEmpty),
+                    commit_transactions_result: Ok(vec![]),
                     execute_and_commit_timings: Default::default(),
                     error_counters: Default::default(),
                     min_prioritization_fees: 0,

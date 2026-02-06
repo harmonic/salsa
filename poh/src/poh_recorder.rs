@@ -68,9 +68,6 @@ pub enum PohRecorderError {
 
     #[error("harmonic block invalid transaction")]
     HarmonicBlockInvalidTransaction,
-
-    #[error("harmonic empty block")]
-    HarmonicBlockEmpty,
 }
 
 pub(crate) type Result<T> = std::result::Result<T, PohRecorderError>;
