@@ -589,7 +589,6 @@ mod tests {
         super::*,
         crate::banking_stage::{
             tests::create_slow_genesis_config,
-            transaction_scheduler::transaction_state_container::SharedBytes,
             vote_storage::tests::packet_from_slots,
         },
         agave_transaction_view::transaction_view::SanitizedTransactionView,

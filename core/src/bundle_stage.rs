@@ -1002,6 +1002,7 @@ mod tests {
         solana_system_transaction::transfer,
         solana_time_utils::timestamp,
         solana_vote_interface::state::vote_state_v4::VoteStateV4,
+        serial_test::serial,
     };
 
     struct TestFixture {
@@ -1032,6 +1033,7 @@ mod tests {
             },
             rent.clone(), // most tests don't expect rent
             ClusterType::Development,
+            &agave_feature_set::FeatureSet::all_enabled(),
             spl_programs(&rent),
         );
         genesis_config.ticks_per_slot *= 8;
@@ -1048,7 +1050,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_tip_programs_initialized_with_no_bundles() {
+        scheduler_synchronization::reset_for_tests();
         agave_logger::setup();
         let TestFixture {
             genesis_config_info,
@@ -1189,7 +1193,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_process_bad_bundle() {
+        scheduler_synchronization::reset_for_tests();
         agave_logger::setup();
         let TestFixture {
             genesis_config_info,
@@ -1282,7 +1288,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_process_sequential_bundles() {
+        scheduler_synchronization::reset_for_tests();
         agave_logger::setup();
         let TestFixture {
             genesis_config_info,
@@ -1409,7 +1417,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_partial_revert_bundle() {
+        scheduler_synchronization::reset_for_tests();
         agave_logger::setup();
         let TestFixture {
             genesis_config_info,
@@ -1533,7 +1543,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_already_processed_tx_drops_bundle() {
+        scheduler_synchronization::reset_for_tests();
         agave_logger::setup();
         let TestFixture {
             genesis_config_info,

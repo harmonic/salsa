@@ -623,6 +623,7 @@ pub mod tests {
             None,
             Arc::new(connection_cache),
             Arc::new(ArcSwap::from_pointee(None)),
+            tokio::sync::broadcast::channel(1).0,
         )
         .expect("assume success");
         if enable_wen_restart {

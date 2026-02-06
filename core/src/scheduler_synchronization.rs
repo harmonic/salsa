@@ -253,6 +253,7 @@ pub fn force_vanilla_claim(slot: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     /// Returns the last slot that was scheduled (without the block/vanilla flag).
     fn last_slot_scheduled() -> u64 {
@@ -276,12 +277,14 @@ mod tests {
         assert_eq!(get_slot(b), 42);
         assert!(is_block_claim(b));
 
-        // Test sentinel
+        // Test sentinel - SENTINEL has top bit set but is_block_claim explicitly
+        // excludes it to distinguish "no slot scheduled" from "block claimed"
         assert_eq!(get_slot(SENTINEL), SLOT_MASK); // Very large, not a real slot
-        assert!(is_block_claim(SENTINEL)); // Top bit is set in u64::MAX
+        assert!(!is_block_claim(SENTINEL));
     }
 
     #[test]
+    #[serial]
     fn test_vanilla_claim_after_delegation() {
         reset_for_tests();
 
@@ -293,6 +296,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_vanilla_during_delegation_unclaimed() {
         reset_for_tests();
 
@@ -302,6 +306,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_vanilla_during_delegation_claimed_by_vanilla() {
         reset_for_tests();
         force_vanilla_claim(100);
@@ -312,6 +317,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_vanilla_during_delegation_claimed_by_block() {
         reset_for_tests();
         SCHEDULER_STATE.store(block_claim(100), Ordering::Release);
@@ -322,6 +328,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_block_claim_during_delegation() {
         reset_for_tests();
 
@@ -333,6 +340,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_block_outside_delegation() {
         reset_for_tests();
 
@@ -342,6 +350,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_block_failed_reverts() {
         reset_for_tests();
 
@@ -360,6 +369,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_block_failed_wrong_slot() {
         reset_for_tests();
 
@@ -376,6 +386,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_is_block_executing() {
         reset_for_tests();
 
@@ -395,6 +406,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_block_execution_finished() {
         reset_for_tests();
 
@@ -415,6 +427,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_block_execution_finished_wrong_slot() {
         reset_for_tests();
 
@@ -431,6 +444,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_block_execution_finished_not_block_claim() {
         reset_for_tests();
 
