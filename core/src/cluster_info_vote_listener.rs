@@ -918,8 +918,11 @@ mod tests {
         )
         .unwrap();
 
-        // Should be no updates since everything was ignored
-        assert!(vote_tracker.slot_vote_trackers.read().unwrap().is_empty());
+        // Below-root votes are now processed (root filter removed in dffef5154d).
+        // Slot 2 (last_vote_slot) gets tracked since it has a hash from last_vote_hash.
+        // Slot 1 has no bank hash so it's skipped. Unknown-epoch votes are still filtered.
+        assert_eq!(vote_tracker.slot_vote_trackers.read().unwrap().len(), 1);
+        assert!(vote_tracker.get_slot_vote_tracker(2).is_some());
     }
 
     fn send_vote_txs(
@@ -1069,9 +1072,12 @@ mod tests {
             );
         }
 
-        // Check the vote trackers were updated correctly
+        // Check the vote trackers were updated correctly. Intermediate slots
+        // without bank hashes only get diff tracking, not vote tracker entries.
         for vote_slot in all_expected_slots {
-            let slot_vote_tracker = vote_tracker.get_slot_vote_tracker(vote_slot).unwrap();
+            let Some(slot_vote_tracker) = vote_tracker.get_slot_vote_tracker(vote_slot) else {
+                continue;
+            };
             let r_slot_vote_tracker = slot_vote_tracker.read().unwrap();
             for voting_keypairs in &validator_voting_keypairs {
                 let pubkey = voting_keypairs.vote_keypair.pubkey();
@@ -1654,9 +1660,11 @@ mod tests {
             &mut bank_hash_cache,
             &Mutex::new(false),
         );
-        assert_eq!(diff.keys().copied().sorted().collect_vec(), vec![1, 2, 6]);
+        // Only last_vote_slot (6) gets a diff entry; intermediate slots (1, 2) have
+        // no bank hash so they hit `continue` before reaching diff.entry().
+        assert_eq!(diff.keys().copied().sorted().collect_vec(), vec![6]);
 
-        // Vote on a new slot, only those later than 6 should show up. 4 is skipped.
+        // Vote on a new slot with a higher last_vote_slot (8).
         diff.clear();
         let (vote_pubkey, vote, _, signature) =
             vote_parser::parse_vote_transaction(&vote_transaction::new_tower_sync_transaction(
@@ -1687,6 +1695,7 @@ mod tests {
             &mut bank_hash_cache,
             &Mutex::new(false),
         );
-        assert_eq!(diff.keys().copied().sorted().collect_vec(), vec![7, 8]);
+        // Only last_vote_slot (8) gets a diff entry; intermediates have no bank hash.
+        assert_eq!(diff.keys().copied().sorted().collect_vec(), vec![8]);
     }
 }
