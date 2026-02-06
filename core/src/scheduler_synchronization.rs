@@ -12,7 +12,7 @@
 
 use {
     log::info,
-    std::sync::atomic::{AtomicU64, Ordering},
+    std::sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 /// Top bit indicates block claimed (1) vs vanilla claimed (0)
@@ -26,6 +26,11 @@ const SENTINEL: u64 = u64::MAX;
 /// Module private state. Shared with block & vanilla schedulers.
 /// Encodes both the slot and who claimed it in a single atomic.
 static SCHEDULER_STATE: AtomicU64 = AtomicU64::new(SENTINEL);
+
+/// Vote processing flag for mutual exclusion with block stage.
+/// Set by vote worker before each batch, cleared after. Block stage
+/// spins on this after claiming a slot to wait for any in-flight batch.
+static VOTE_PROCESSING: AtomicBool = AtomicBool::new(false);
 
 /// Extract the slot number from the combined state value.
 #[inline]
@@ -172,6 +177,32 @@ pub fn is_block_executing(current_slot: u64) -> bool {
     get_slot(state) == current_slot && is_block_claim(state)
 }
 
+/// Called by vote worker before processing a vote batch.
+/// Uses SeqCst store + check pattern (Peterson's algorithm) to ensure mutual
+/// exclusion with the block stage. Returns true if safe to process votes.
+pub fn begin_vote_processing(current_slot: u64) -> bool {
+    VOTE_PROCESSING.store(true, Ordering::SeqCst);
+    if is_block_executing(current_slot) {
+        VOTE_PROCESSING.store(false, Ordering::SeqCst);
+        return false;
+    }
+    true
+}
+
+/// Called by vote worker after processing a vote batch.
+pub fn end_vote_processing() {
+    VOTE_PROCESSING.store(false, Ordering::Release);
+}
+
+/// Called by block stage after claiming slot. Spins until any in-flight
+/// vote batch finishes (at most UNPROCESSED_BUFFER_STEP_SIZE transactions).
+pub fn wait_for_votes_to_finish() {
+    std::sync::atomic::fence(Ordering::SeqCst);
+    while VOTE_PROCESSING.load(Ordering::Acquire) {
+        std::hint::spin_loop();
+    }
+}
+
 /// Called when block execution has finished successfully.
 /// Clears the block claim bit so votes can resume processing.
 ///
@@ -241,6 +272,7 @@ pub fn block_failed(current_slot: u64) -> Option<bool> {
 #[cfg(test)]
 pub fn reset_for_tests() {
     SCHEDULER_STATE.store(SENTINEL, Ordering::Release);
+    VOTE_PROCESSING.store(false, Ordering::Release);
 }
 
 /// Force claim a slot for vanilla scheduling. Used in tests to simulate

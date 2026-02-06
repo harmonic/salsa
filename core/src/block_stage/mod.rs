@@ -164,7 +164,9 @@ impl BlockStage {
                     if let BufferedPacketsDecision::Consume(working_bank) =
                         DecisionMaker::maybe_consume::<false>(decision)
                     {
-                        // Claimed! Now record, execute, commit
+                        // Claimed! Wait for any in-flight vote batch to finish
+                        // before proceeding with block execution.
+                        scheduler_synchronization::wait_for_votes_to_finish();
 
                         // Translate packets to RuntimeTransaction<ResolvedTransactionView>
                         // using zerocopy TransactionView instead of bincode deserialization
