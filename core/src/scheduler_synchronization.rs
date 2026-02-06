@@ -68,8 +68,8 @@ pub fn vanilla_should_schedule(current_slot: u64, in_delegation_period: bool) ->
     if state != SENTINEL && get_slot(state) == current_slot {
         // Check who claimed it - if vanilla claimed, all vanilla threads can consume
         // If block claimed, no vanilla thread should consume
-        let claimed_by_vanilla = is_block_claim(state);
-        return Some(!claimed_by_vanilla);
+        let claimed_by_block = is_block_claim(state);
+        return Some(!claimed_by_block);
     }
 
     // If still in delegation period and slot not yet claimed, don't try to claim
