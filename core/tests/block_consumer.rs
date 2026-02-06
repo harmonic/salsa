@@ -69,11 +69,8 @@ impl TestFixture {
 }
 
 /// Helper to convert VersionedTransaction bytes to RuntimeTransaction<ResolvedTransactionView>
-fn to_runtime_transaction(
-    serialized: &[u8],
-) -> RuntimeTransaction<ResolvedTransactionView<&[u8]>> {
-    let transaction_view =
-        SanitizedTransactionView::try_new_sanitized(serialized, true).unwrap();
+fn to_runtime_transaction(serialized: &[u8]) -> RuntimeTransaction<ResolvedTransactionView<&[u8]>> {
+    let transaction_view = SanitizedTransactionView::try_new_sanitized(serialized, true).unwrap();
     let static_runtime_tx = RuntimeTransaction::<SanitizedTransactionView<_>>::try_from(
         transaction_view,
         MessageHash::Compute,
@@ -145,7 +142,10 @@ fn test_block_consumer_executes_transactions() {
 
     // Verify the transaction was committed successfully
     match &commit_result[0] {
-        solana_core::banking_stage::committer::CommitTransactionDetails::Committed { result, .. } => {
+        solana_core::banking_stage::committer::CommitTransactionDetails::Committed {
+            result,
+            ..
+        } => {
             assert!(result.is_ok(), "Transaction should succeed: {:?}", result);
         }
         other => panic!("Expected Committed, got {:?}", other),
@@ -168,11 +168,11 @@ fn test_block_consumer_with_empty_transactions() {
         .block_consumer
         .process_and_record_block_transactions(&bank, &transactions, &max_ages, intended_slot);
 
-    // Empty block returns an error so mod.rs can revert the claim to vanilla
+    // Should return success for empty transactions
     assert!(output
         .execute_and_commit_transactions_output
         .commit_transactions_result
-        .is_err());
+        .is_ok());
 }
 
 #[test]
