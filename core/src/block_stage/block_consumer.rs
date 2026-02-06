@@ -12,17 +12,14 @@
 
 use {
     super::{DevinScheduler, Timer},
-    crate::{
-        banking_stage::{
-            committer::{CommitTransactionDetails, Committer},
-            consumer::{
-                ExecuteAndCommitTransactionsOutput, LeaderProcessedTransactionCounts,
-                ProcessTransactionBatchOutput,
-            },
-            leader_slot_timing_metrics::LeaderExecuteAndCommitTimings,
-            scheduler_messages::MaxAge,
+    crate::banking_stage::{
+        committer::{CommitTransactionDetails, Committer},
+        consumer::{
+            ExecuteAndCommitTransactionsOutput, LeaderProcessedTransactionCounts,
+            ProcessTransactionBatchOutput,
         },
-        scheduler_synchronization,
+        leader_slot_timing_metrics::LeaderExecuteAndCommitTimings,
+        scheduler_messages::MaxAge,
     },
     agave_transaction_view::{
         resolved_transaction_view::ResolvedTransactionView, transaction_data::TransactionData,
@@ -143,13 +140,18 @@ impl BlockConsumer {
         intended_slot: Slot,
     ) -> ProcessTransactionBatchOutput {
         if transactions.is_empty() {
+            // Empty block: revert claim so vanilla gets a full slot
+            warn!(
+                "Empty block for slot {}, reverting to vanilla",
+                intended_slot
+            );
             return ProcessTransactionBatchOutput {
                 cost_model_throttled_transactions_count: 0,
                 cost_model_us: 0,
                 execute_and_commit_transactions_output: ExecuteAndCommitTransactionsOutput {
                     transaction_counts: LeaderProcessedTransactionCounts::default(),
                     retryable_transaction_indexes: vec![],
-                    commit_transactions_result: Ok(vec![]),
+                    commit_transactions_result: Err(PohRecorderError::HarmonicBlockEmpty),
                     execute_and_commit_timings: Default::default(),
                     error_counters: Default::default(),
                     min_prioritization_fees: 0,
@@ -347,12 +349,6 @@ impl BlockConsumer {
 
         drop(freeze_lock);
         drop(blockhash_queue_lock);
-
-        // Restore vote limit after block execution completes
-        bank.restore_vote_limit();
-
-        // Clear block claim bit so votes & vanilla can resume processing
-        scheduler_synchronization::block_execution_finished(intended_slot);
 
         // Comprehensive timing log for profiling
         let timings = &execute_and_commit_output.execute_and_commit_timings;

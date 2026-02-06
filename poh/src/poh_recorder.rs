@@ -68,6 +68,9 @@ pub enum PohRecorderError {
 
     #[error("harmonic block invalid transaction")]
     HarmonicBlockInvalidTransaction,
+
+    #[error("harmonic empty block")]
+    HarmonicBlockEmpty,
 }
 
 pub(crate) type Result<T> = std::result::Result<T, PohRecorderError>;
@@ -521,7 +524,7 @@ impl PohRecorder {
             let parent_next_time = *parent_ref.cavey_next_time.read().unwrap();
             let min_start_time = Instant::now() - Duration::from_millis(200);
             let min_start_time_sys = std::time::SystemTime::now() - Duration::from_millis(200);
-            
+
             if parent_next_time.0 < min_start_time {
                 // Clamping needed - update parent's cavey_next_time (so replay_stage sees the corrected value)
                 // and current bank's cavey_next_time (so next consecutive slot chains correctly)

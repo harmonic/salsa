@@ -196,16 +196,20 @@ impl BlockStage {
                             intended_slot,
                         );
 
-                        // Check if recording failed - if so, revert so vanilla can build fallback block
+                        // Always restore vote limit after block execution attempt
+                        working_bank.restore_vote_limit();
+
                         if let Err(e) = output
                             .execute_and_commit_transactions_output
                             .commit_transactions_result
                         {
                             info!(
-                                "Block recording failed for slot {}, reverting to vanilla: {:?}",
+                                "Block failed for slot {}, reverting to vanilla: {:?}",
                                 current_slot, e
                             );
                             scheduler_synchronization::block_failed(current_slot);
+                        } else {
+                            scheduler_synchronization::block_execution_finished(current_slot);
                         }
                     } else {
                         // Failed to claim for this slot.
