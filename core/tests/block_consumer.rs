@@ -168,11 +168,11 @@ fn test_block_consumer_with_empty_transactions() {
         .block_consumer
         .process_and_record_block_transactions(&bank, &transactions, &max_ages, intended_slot);
 
-    // Should return success for empty transactions
+    // Empty block returns an error so mod.rs can revert the claim to vanilla
     assert!(output
         .execute_and_commit_transactions_output
         .commit_transactions_result
-        .is_ok());
+        .is_err());
 }
 
 #[test]
