@@ -573,8 +573,13 @@ impl BlockConsumer {
             let mut per_thread_execution_times: [Vec<(Range<usize>, u64, u64)>; NUM_THREADS] =
                 Default::default();
 
-            // Main scheduling loop - matches audited implementation
-            while !self.scheduler.finished {
+            // Main scheduling loop.
+            // Timeout guards against a zombie validator caused by a panic in a worker thread. If a
+            // worker thread panics, a chunk is lost and scheduler.finished is never true. The panic
+            // is propagated when threads are joined at the end of the scope, which is acceptable
+            // because we never expect to see a panic and cannot reasonably recover from one.
+            const EXECUTION_TIMEOUT: u64 = 2_000_000; // 2 seconds in us
+            while !self.scheduler.finished && start_time.elapsed_us() < EXECUTION_TIMEOUT {
                 // Schedule transactions for execution
                 while let Some(range) = self.scheduler.pop(transactions, bank) {
                     // Send work to next available worker (round-robin)
@@ -611,6 +616,10 @@ impl BlockConsumer {
                         }
                     }
                 }
+            }
+
+            if !self.scheduler.finished {
+                error!("Block execution timed out");
             }
 
             // Drop senders to signal workers to exit
