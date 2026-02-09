@@ -12,17 +12,14 @@
 
 use {
     super::{DevinScheduler, Timer},
-    crate::{
-        banking_stage::{
-            committer::{CommitTransactionDetails, Committer},
-            consumer::{
-                ExecuteAndCommitTransactionsOutput, LeaderProcessedTransactionCounts,
-                ProcessTransactionBatchOutput,
-            },
-            leader_slot_timing_metrics::LeaderExecuteAndCommitTimings,
-            scheduler_messages::MaxAge,
+    crate::banking_stage::{
+        committer::{CommitTransactionDetails, Committer},
+        consumer::{
+            ExecuteAndCommitTransactionsOutput, LeaderProcessedTransactionCounts,
+            ProcessTransactionBatchOutput,
         },
-        scheduler_synchronization,
+        leader_slot_timing_metrics::LeaderExecuteAndCommitTimings,
+        scheduler_messages::MaxAge,
     },
     agave_transaction_view::{
         resolved_transaction_view::ResolvedTransactionView, transaction_data::TransactionData,
@@ -348,12 +345,6 @@ impl BlockConsumer {
         drop(freeze_lock);
         drop(blockhash_queue_lock);
 
-        // Restore vote limit after block execution completes
-        bank.restore_vote_limit();
-
-        // Clear block claim bit so votes & vanilla can resume processing
-        scheduler_synchronization::block_execution_finished(intended_slot);
-
         // Comprehensive timing log for profiling
         let timings = &execute_and_commit_output.execute_and_commit_timings;
         let committed_count = execute_and_commit_output
@@ -577,8 +568,13 @@ impl BlockConsumer {
             let mut per_thread_execution_times: [Vec<(Range<usize>, u64, u64)>; NUM_THREADS] =
                 Default::default();
 
-            // Main scheduling loop - matches audited implementation
-            while !self.scheduler.finished {
+            // Main scheduling loop.
+            // Timeout guards against a zombie validator caused by a panic in a worker thread. If a
+            // worker thread panics, a chunk is lost and scheduler.finished is never true. The panic
+            // is propagated when threads are joined at the end of the scope, which is acceptable
+            // because we never expect to see a panic and cannot reasonably recover from one.
+            const EXECUTION_TIMEOUT: u64 = 2_000_000; // 2 seconds in us
+            while !self.scheduler.finished && start_time.elapsed_us() < EXECUTION_TIMEOUT {
                 // Schedule transactions for execution
                 while let Some(range) = self.scheduler.pop(transactions, bank) {
                     // Send work to next available worker (round-robin)
@@ -615,6 +611,10 @@ impl BlockConsumer {
                         }
                     }
                 }
+            }
+
+            if !self.scheduler.finished {
+                error!("Block execution timed out");
             }
 
             // Drop senders to signal workers to exit

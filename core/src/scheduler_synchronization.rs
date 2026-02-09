@@ -12,7 +12,7 @@
 
 use {
     log::info,
-    std::sync::atomic::{AtomicU64, Ordering},
+    std::sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 /// Top bit indicates block claimed (1) vs vanilla claimed (0)
@@ -26,6 +26,11 @@ const SENTINEL: u64 = u64::MAX;
 /// Module private state. Shared with block & vanilla schedulers.
 /// Encodes both the slot and who claimed it in a single atomic.
 static SCHEDULER_STATE: AtomicU64 = AtomicU64::new(SENTINEL);
+
+/// Vote processing flag for mutual exclusion with block stage.
+/// Set by vote worker before each batch, cleared after. Block stage
+/// spins on this after claiming a slot to wait for any in-flight batch.
+static VOTE_PROCESSING: AtomicBool = AtomicBool::new(false);
 
 /// Extract the slot number from the combined state value.
 #[inline]
@@ -68,8 +73,8 @@ pub fn vanilla_should_schedule(current_slot: u64, in_delegation_period: bool) ->
     if state != SENTINEL && get_slot(state) == current_slot {
         // Check who claimed it - if vanilla claimed, all vanilla threads can consume
         // If block claimed, no vanilla thread should consume
-        let claimed_by_vanilla = is_block_claim(state);
-        return Some(!claimed_by_vanilla);
+        let claimed_by_block = is_block_claim(state);
+        return Some(!claimed_by_block);
     }
 
     // If still in delegation period and slot not yet claimed, don't try to claim
@@ -172,6 +177,32 @@ pub fn is_block_executing(current_slot: u64) -> bool {
     get_slot(state) == current_slot && is_block_claim(state)
 }
 
+/// Called by vote worker before processing a vote batch.
+/// Uses SeqCst store + check pattern (Peterson's algorithm) to ensure mutual
+/// exclusion with the block stage. Returns true if safe to process votes.
+pub fn begin_vote_processing(current_slot: u64) -> bool {
+    VOTE_PROCESSING.store(true, Ordering::SeqCst);
+    if is_block_executing(current_slot) {
+        VOTE_PROCESSING.store(false, Ordering::SeqCst);
+        return false;
+    }
+    true
+}
+
+/// Called by vote worker after processing a vote batch.
+pub fn end_vote_processing() {
+    VOTE_PROCESSING.store(false, Ordering::Release);
+}
+
+/// Called by block stage after claiming slot. Spins until any in-flight
+/// vote batch finishes (at most UNPROCESSED_BUFFER_STEP_SIZE transactions).
+pub fn wait_for_votes_to_finish() {
+    std::sync::atomic::fence(Ordering::SeqCst);
+    while VOTE_PROCESSING.load(Ordering::Acquire) {
+        std::hint::spin_loop();
+    }
+}
+
 /// Called when block execution has finished successfully.
 /// Clears the block claim bit so votes can resume processing.
 ///
@@ -241,6 +272,7 @@ pub fn block_failed(current_slot: u64) -> Option<bool> {
 #[cfg(test)]
 pub fn reset_for_tests() {
     SCHEDULER_STATE.store(SENTINEL, Ordering::Release);
+    VOTE_PROCESSING.store(false, Ordering::Release);
 }
 
 /// Force claim a slot for vanilla scheduling. Used in tests to simulate
@@ -253,6 +285,7 @@ pub fn force_vanilla_claim(slot: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     /// Returns the last slot that was scheduled (without the block/vanilla flag).
     fn last_slot_scheduled() -> u64 {
@@ -276,12 +309,14 @@ mod tests {
         assert_eq!(get_slot(b), 42);
         assert!(is_block_claim(b));
 
-        // Test sentinel
+        // Test sentinel - SENTINEL has top bit set but is_block_claim explicitly
+        // excludes it to distinguish "no slot scheduled" from "block claimed"
         assert_eq!(get_slot(SENTINEL), SLOT_MASK); // Very large, not a real slot
-        assert!(is_block_claim(SENTINEL)); // Top bit is set in u64::MAX
+        assert!(!is_block_claim(SENTINEL));
     }
 
     #[test]
+    #[serial]
     fn test_vanilla_claim_after_delegation() {
         reset_for_tests();
 
@@ -293,6 +328,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_vanilla_during_delegation_unclaimed() {
         reset_for_tests();
 
@@ -302,6 +338,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_vanilla_during_delegation_claimed_by_vanilla() {
         reset_for_tests();
         force_vanilla_claim(100);
@@ -312,6 +349,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_vanilla_during_delegation_claimed_by_block() {
         reset_for_tests();
         SCHEDULER_STATE.store(block_claim(100), Ordering::Release);
@@ -322,6 +360,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_block_claim_during_delegation() {
         reset_for_tests();
 
@@ -333,6 +372,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_block_outside_delegation() {
         reset_for_tests();
 
@@ -342,6 +382,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_block_failed_reverts() {
         reset_for_tests();
 
@@ -360,6 +401,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_block_failed_wrong_slot() {
         reset_for_tests();
 
@@ -376,6 +418,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_is_block_executing() {
         reset_for_tests();
 
@@ -395,6 +438,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_block_execution_finished() {
         reset_for_tests();
 
@@ -415,6 +459,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_block_execution_finished_wrong_slot() {
         reset_for_tests();
 
@@ -431,6 +476,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_block_execution_finished_not_block_claim() {
         reset_for_tests();
 

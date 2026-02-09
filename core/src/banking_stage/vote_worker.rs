@@ -147,24 +147,14 @@ impl VoteWorker {
 
         match decision {
             BufferedPacketsDecision::Consume(bank) => {
-                // Do not process votes if a block is currently executing.
-                // This prevents race conditions where votes modify state that
-                // optimistically recorded transactions depend on.
-                if scheduler_synchronization::is_block_executing(bank.slot()) {
-                    let current_bank = self.bank_forks.read().unwrap().working_bank();
-                    self.storage.cache_epoch_boundary_info(&current_bank);
-                    self.storage.cavey_clean(&current_bank);
-                } else {
-                    let (_, consume_buffered_packets_us) =
-                        measure_us!(self.consume_buffered_packets(
-                            &bank,
-                            banking_stage_stats,
-                            slot_metrics_tracker,
-                            reservation_cb
-                        ));
-                    slot_metrics_tracker
-                        .increment_consume_buffered_packets_us(consume_buffered_packets_us);
-                }
+                let (_, consume_buffered_packets_us) = measure_us!(self.consume_buffered_packets(
+                    &bank,
+                    banking_stage_stats,
+                    slot_metrics_tracker,
+                    reservation_cb
+                ));
+                slot_metrics_tracker
+                    .increment_consume_buffered_packets_us(consume_buffered_packets_us);
             }
             BufferedPacketsDecision::Forward => {
                 // get current working bank from bank_forks, use it to sanitize transaction and
@@ -254,7 +244,6 @@ impl VoteWorker {
         let mut error_counters: TransactionErrorMetrics = TransactionErrorMetrics::default();
         let mut votes_batch =
             ArrayVec::<RuntimeTransactionView, UNPROCESSED_BUFFER_STEP_SIZE>::new();
-        let mut retry_votes = Vec::new();
         let mut num_votes_processed = 0_usize;
         const MAX_VOTES_PER_SLOT: usize = 1000;
 
@@ -277,8 +266,6 @@ impl VoteWorker {
                     if validate_vote_for_processing(bank, &vote, &mut error_counters) {
                         num_votes_processed += 1;
                         votes_batch.push(vote);
-                    } else {
-                        retry_votes.push(vote);
                     }
                 } else {
                     break;
@@ -286,6 +273,13 @@ impl VoteWorker {
             }
 
             if votes_batch.is_empty() {
+                break;
+            }
+
+            // Per-batch mutual exclusion with block stage. If a block just
+            // claimed the slot, reinsert unprocessed votes and stop.
+            if !scheduler_synchronization::begin_vote_processing(bank.slot()) {
+                self.storage.reinsert_votes(votes_batch.drain(..));
                 break;
             }
 
@@ -306,6 +300,7 @@ impl VoteWorker {
             } else {
                 self.storage.reinsert_votes(votes_batch.drain(..));
             }
+            scheduler_synchronization::end_vote_processing();
         }
 
         debug!(
@@ -313,9 +308,6 @@ impl VoteWorker {
             bank.slot(),
             self.storage.len()
         );
-
-        // Reinsert votes that failed validation for retry
-        self.storage.reinsert_votes(retry_votes.drain(..));
 
         reached_end_of_slot
     }
@@ -572,6 +564,8 @@ fn validate_vote_for_processing(
         return false;
     }
 
+    // Loads fee payer account, validates balance covers fee + rent-exempt minimum.
+    // Also catches AccountNotFound (zero-balance fee payer DOS).
     if Consumer::check_fee_payer_unlocked(bank, vote, error_counters).is_err() {
         return false;
     }
@@ -588,9 +582,7 @@ mod tests {
     use {
         super::*,
         crate::banking_stage::{
-            tests::create_slow_genesis_config,
-            transaction_scheduler::transaction_state_container::SharedBytes,
-            vote_storage::tests::packet_from_slots,
+            tests::create_slow_genesis_config, vote_storage::tests::packet_from_slots,
         },
         agave_transaction_view::transaction_view::SanitizedTransactionView,
         solana_ledger::genesis_utils::GenesisConfigInfo,

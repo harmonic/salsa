@@ -838,6 +838,7 @@ mod tests {
         solana_vote_program::vote_state::TowerSync,
         std::{sync::atomic::Ordering, thread::sleep, time::Instant},
         strum::IntoEnumIterator,
+        serial_test::serial,
     };
 
     pub(crate) fn sanitize_transactions(
@@ -849,7 +850,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_banking_stage_shutdown1() {
+        scheduler_synchronization::reset_for_tests();
         let genesis_config = create_genesis_config(2).genesis_config;
         let (bank, bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
         let banking_tracer = BankingTracer::new_disabled();
@@ -904,7 +907,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_banking_stage_tick() {
+        scheduler_synchronization::reset_for_tests();
         agave_logger::setup();
         let GenesisConfigInfo {
             mut genesis_config, ..
@@ -981,6 +986,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_banking_stage_entries_only_central_scheduler() {
         agave_logger::setup();
         let GenesisConfigInfo {
@@ -1013,6 +1019,10 @@ mod tests {
             entry_receiver,
         ) = create_test_recorder(bank.clone(), blockstore, None, None);
         let (replay_vote_sender, _replay_vote_receiver) = unbounded();
+
+        // Force vanilla scheduling for slot 0 (simulates being past delegation period)
+        scheduler_synchronization::reset_for_tests();
+        scheduler_synchronization::force_vanilla_claim(0);
 
         let banking_stage = BankingStage::new_num_threads(
             BlockProductionMethod::CentralScheduler,
@@ -1109,6 +1119,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_banking_stage_entryfication() {
         agave_logger::setup();
         // In this attack we'll demonstrate that a verifier can interpret the ledger
@@ -1228,6 +1239,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_bank_record_transactions() {
         agave_logger::setup();
 
@@ -1290,6 +1302,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_vote_storage_full_send() {
         agave_logger::setup();
         let GenesisConfigInfo {
@@ -1322,6 +1335,10 @@ mod tests {
             _entry_receiver,
         ) = create_test_recorder(bank.clone(), blockstore, None, None);
         let (replay_vote_sender, _replay_vote_receiver) = unbounded();
+
+        // Force vanilla scheduling for slot 0 (simulates being past delegation period)
+        scheduler_synchronization::reset_for_tests();
+        scheduler_synchronization::force_vanilla_claim(0);
 
         let banking_stage = BankingStage::new_num_threads(
             BlockProductionMethod::CentralScheduler,
@@ -1419,6 +1436,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_blacklisted_accounts() {
         for block_production_method in BlockProductionMethod::iter() {
             let GenesisConfigInfo {
