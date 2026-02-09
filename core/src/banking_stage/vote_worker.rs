@@ -554,11 +554,6 @@ fn validate_vote_for_processing(
     vote: &RuntimeTransactionView,
     error_counters: &mut TransactionErrorMetrics,
 ) -> bool {
-    // Reject votes with stale blockhashes early.
-    if !bank.is_blockhash_valid(vote.recent_blockhash()) {
-        return false;
-    }
-
     // Check the number of locks and whether there are duplicates
     if validate_account_locks(
         vote.account_keys(),
