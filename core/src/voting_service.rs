@@ -16,6 +16,7 @@ use {
     solana_measure::measure::Measure,
     solana_poh::poh_recorder::PohRecorder,
     solana_runtime::bank_forks::BankForks,
+    solana_tpu_client_next::transaction_batch::TransactionBatch,
     solana_transaction::Transaction,
     solana_transaction_error::TransportError,
     std::{
@@ -24,6 +25,7 @@ use {
         thread::{self, Builder, JoinHandle},
     },
     thiserror::Error,
+    tokio::sync::mpsc,
 };
 
 pub enum VoteOp {
@@ -79,6 +81,25 @@ fn send_vote_transaction(
     })
 }
 
+/// Send a serialized vote through the shared tpu-client-next channel.
+/// This reuses the QUIC connections already maintained by the
+/// `ConnectionWorkersScheduler` (shared with SendTransactionService).
+fn send_vote_via_tpu_client(
+    transaction: &Transaction,
+    tx_sender: &mpsc::Sender<TransactionBatch>,
+) {
+    let wire_tx = match serialize(transaction) {
+        Ok(buf) => buf,
+        Err(err) => {
+            error!("Failed to serialize vote transaction: {err:?}");
+            return;
+        }
+    };
+    if let Err(err) = tx_sender.try_send(TransactionBatch::new(vec![wire_tx])) {
+        warn!("Failed to send vote via tpu-client-next channel: {err:?}");
+    }
+}
+
 pub struct VotingService {
     thread_hdl: JoinHandle<()>,
 }
@@ -90,6 +111,7 @@ impl VotingService {
         poh_recorder: Arc<RwLock<PohRecorder>>,
         tower_storage: Arc<dyn TowerStorage>,
         connection_cache: Arc<ConnectionCache>,
+        vote_tx_sender: Option<mpsc::Sender<TransactionBatch>>,
         alpenglow_socket: Option<UdpSocket>,
         bank_forks: Arc<RwLock<BankForks>>,
     ) -> Self {
@@ -121,6 +143,7 @@ impl VotingService {
                             tower_storage.as_ref(),
                             vote_op,
                             connection_cache.clone(),
+                            vote_tx_sender.as_ref(),
                         );
                         // trigger mock alpenglow vote if we have just cast an actual vote
                         if let Some(slot) = vote_slot {
@@ -145,6 +168,7 @@ impl VotingService {
         tower_storage: &dyn TowerStorage,
         vote_op: VoteOp,
         connection_cache: Arc<ConnectionCache>,
+        vote_tx_sender: Option<&mpsc::Sender<TransactionBatch>>,
     ) {
         if let VoteOp::PushVote { saved_tower, .. } = &vote_op {
             let mut measure = Measure::start("tower storage save");
@@ -154,6 +178,15 @@ impl VotingService {
             }
             measure.stop();
             trace!("{measure}");
+        }
+
+        // When a shared tpu-client-next sender is available, send the vote
+        // through it. This reuses the QUIC connections already maintained
+        // by the ConnectionWorkersScheduler (shared with the RPC service's
+        // SendTransactionService), avoiding extra QUIC connections that
+        // could hit the server's connection limit.
+        if let Some(tx_sender) = vote_tx_sender {
+            send_vote_via_tpu_client(vote_op.tx(), tx_sender);
         }
 
         // Attempt to send our vote transaction to the leaders for the next few

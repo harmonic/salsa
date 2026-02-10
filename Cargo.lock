@@ -10233,6 +10233,7 @@ dependencies = [
  "solana-sysvar",
  "solana-time-utils",
  "solana-tpu-client",
+ "solana-tpu-client-next",
  "solana-transaction",
  "solana-transaction-context",
  "solana-transaction-error",

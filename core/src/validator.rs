@@ -135,7 +135,10 @@ use {
         snapshot_controller::SnapshotController,
         snapshot_utils::{self, clean_orphaned_account_snapshot_dirs},
     },
-    solana_send_transaction_service::send_transaction_service::Config as SendTransactionServiceConfig,
+    solana_send_transaction_service::{
+        send_transaction_service::Config as SendTransactionServiceConfig,
+        transaction_client::TPU_CLIENT_NEXT_CHANNEL_SIZE,
+    },
     solana_shred_version::compute_shred_version,
     solana_signer::Signer,
     solana_streamer::{
@@ -148,6 +151,7 @@ use {
     solana_tpu_client::tpu_client::{
         DEFAULT_TPU_CONNECTION_POOL_SIZE, DEFAULT_TPU_USE_QUIC, DEFAULT_VOTE_USE_QUIC,
     },
+    solana_tpu_client_next::transaction_batch::TransactionBatch,
     solana_turbine::{
         self,
         broadcast_stage::BroadcastStageType,
@@ -1232,6 +1236,7 @@ impl Validator {
             rpc_completed_slots_service,
             optimistically_confirmed_bank_tracker,
             bank_notification_sender,
+            vote_tx_sender,
         ) = if let Some((rpc_addr, rpc_pubsub_addr)) = config.rpc_addrs {
             assert_eq!(
                 node.info.rpc().map(|addr| socket_addr_space.check(&addr)),
@@ -1246,22 +1251,41 @@ impl Validator {
                 None
             };
 
-            let client_option = if config.use_tpu_client_next {
+            // When using tpu-client-next, create the transaction channel here
+            // so we can share the sender with the voting service. Both the RPC
+            // service (SendTransactionService) and the voting service will
+            // submit transactions through the same ConnectionWorkersScheduler,
+            // reusing the underlying QUIC connections.
+            let (client_option, tpu_client_next_channel, vote_tx_sender) = if config
+                .use_tpu_client_next
+            {
                 let runtime_handle = tpu_client_next_runtime
                     .as_ref()
                     .map(TokioRuntime::handle)
                     .unwrap_or_else(|| current_runtime_handle.as_ref().unwrap());
-                ClientOption::TpuClientNext(
-                    Arc::as_ref(&identity_keypair),
-                    node.sockets.rpc_sts_client,
-                    runtime_handle.clone(),
-                    cancel.clone(),
+                let (tx_sender, tx_receiver) =
+                    tokio::sync::mpsc::channel::<TransactionBatch>(TPU_CLIENT_NEXT_CHANNEL_SIZE);
+                let vote_tx_sender = tx_sender.clone();
+                (
+                    ClientOption::TpuClientNext(
+                        Arc::as_ref(&identity_keypair),
+                        node.sockets.rpc_sts_client,
+                        runtime_handle.clone(),
+                        cancel.clone(),
+                    ),
+                    Some((tx_sender, tx_receiver)),
+                    Some(vote_tx_sender),
                 )
             } else {
-                let Some(connection_cache) = &connection_cache else {
-                    panic!("ConnectionCache should exist by construction.");
-                };
-                ClientOption::ConnectionCache(connection_cache.clone())
+                // let Some(connection_cache) = &connection_cache else {
+                //     panic!("ConnectionCache should exist by construction.");
+                // };
+                // (
+                //     ClientOption::ConnectionCache(connection_cache.clone()),
+                //     None,
+                //     None,
+                // )
+                panic!("must use tpu client next");
             };
             let rpc_svc_config = JsonRpcServiceConfig {
                 rpc_addr,
@@ -1284,6 +1308,7 @@ impl Validator {
                 max_complete_transaction_status_slot: max_complete_transaction_status_slot.clone(),
                 prioritization_fee_cache: prioritization_fee_cache.clone(),
                 client_option,
+                tpu_client_next_channel,
             };
             let json_rpc_service =
                 JsonRpcService::new_with_config(rpc_svc_config).map_err(ValidatorError::Other)?;
@@ -1377,9 +1402,10 @@ impl Validator {
                 rpc_completed_slots_service,
                 optimistically_confirmed_bank_tracker,
                 bank_notification_sender_config,
+                vote_tx_sender,
             )
         } else {
-            (None, None, None, None, None, None, None, None)
+            (None, None, None, None, None, None, None, None, None)
         };
 
         if config.halt_at_slot.is_some() {
@@ -1687,6 +1713,7 @@ impl Validator {
             wen_restart_repair_slots.clone(),
             slot_status_notifier,
             vote_connection_cache,
+            vote_tx_sender,
             config.shred_retransmit_receiver_address.clone(),
             leader_window_sender.clone(),
         )

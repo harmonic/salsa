@@ -25,6 +25,7 @@ use {
     crossbeam_channel::{unbounded, Receiver, Sender},
     solana_client::connection_cache::ConnectionCache,
     solana_clock::Slot,
+    solana_tpu_client_next::transaction_batch::TransactionBatch,
     solana_geyser_plugin_manager::block_metadata_notifier_interface::BlockMetadataNotifierArc,
     solana_gossip::{
         cluster_info::ClusterInfo, duplicate_shred_handler::DuplicateShredHandler,
@@ -175,6 +176,7 @@ impl Tvu {
         wen_restart_repair_slots: Option<Arc<RwLock<Vec<Slot>>>>,
         slot_status_notifier: Option<SlotStatusNotifier>,
         vote_connection_cache: Arc<ConnectionCache>,
+        vote_tx_sender: Option<tokio::sync::mpsc::Sender<TransactionBatch>>,
         shred_receiver_addr: Arc<ArcSwap<Option<SocketAddr>>>,
         leader_window_sender: tokio::sync::broadcast::Sender<(std::time::SystemTime, u64)>,
     ) -> Result<Self, String> {
@@ -361,6 +363,7 @@ impl Tvu {
             poh_recorder.clone(),
             tower_storage,
             vote_connection_cache.clone(),
+            vote_tx_sender,
             alpenglow_socket,
             bank_forks.clone(),
         );
@@ -622,6 +625,7 @@ pub mod tests {
             wen_restart_repair_slots,
             None,
             Arc::new(connection_cache),
+            None, // vote_tx_sender
             Arc::new(ArcSwap::from_pointee(None)),
             tokio::sync::broadcast::channel(1).0,
         )

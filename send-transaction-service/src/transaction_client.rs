@@ -242,6 +242,10 @@ pub struct TpuClientNextClient {
     cancel: CancellationToken,
 }
 
+/// Size of the transaction channel when creating a new one internally.
+/// Represents ~8s worth of transactions at 1000 tps with batch size 64.
+pub const TPU_CLIENT_NEXT_CHANNEL_SIZE: usize = 128;
+
 const METRICS_REPORTING_INTERVAL: Duration = Duration::from_secs(3);
 impl TpuClientNextClient {
     pub fn new<T>(
@@ -257,10 +261,40 @@ impl TpuClientNextClient {
     where
         T: TpuInfoWithSendStatic + Clone,
     {
-        // The channel size represents 8s worth of transactions at a rate of
-        // 1000 tps, assuming batch size is 64.
-        let (sender, receiver) = mpsc::channel(128);
+        let (sender, receiver) = mpsc::channel(TPU_CLIENT_NEXT_CHANNEL_SIZE);
+        Self::new_with_channel(
+            runtime_handle,
+            sender,
+            receiver,
+            cluster_info,
+            tpu_peers,
+            leader_info,
+            leader_forward_count,
+            identity,
+            bind_socket,
+            cancel,
+        )
+    }
 
+    /// Like [`Self::new`], but accepts a pre-created `(Sender, Receiver)` pair
+    /// so that the caller can retain a clone of the sender to submit
+    /// transactions from other components (e.g. the voting service) while
+    /// sharing the same underlying QUIC connections.
+    pub fn new_with_channel<T>(
+        runtime_handle: Handle,
+        sender: mpsc::Sender<TransactionBatch>,
+        receiver: mpsc::Receiver<TransactionBatch>,
+        cluster_info: Arc<ClusterInfo>,
+        tpu_peers: Option<Vec<SocketAddr>>,
+        leader_info: Option<T>,
+        leader_forward_count: u64,
+        identity: Option<&Keypair>,
+        bind_socket: UdpSocket,
+        cancel: CancellationToken,
+    ) -> Self
+    where
+        T: TpuInfoWithSendStatic + Clone,
+    {
         let (update_certificate_sender, update_certificate_receiver) = watch::channel(None);
 
         let leader_info_provider = CurrentLeaderInfo::new(leader_info);

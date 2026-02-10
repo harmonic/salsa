@@ -44,6 +44,7 @@ use {
         transaction_client::{ConnectionCacheClient, TpuClientNextClient, TransactionClient},
     },
     solana_storage_bigtable::CredentialType,
+    solana_tpu_client_next::transaction_batch::TransactionBatch,
     solana_validator_exit::Exit,
     std::{
         net::SocketAddr,
@@ -487,6 +488,16 @@ pub struct JsonRpcServiceConfig<'a> {
     pub max_complete_transaction_status_slot: Arc<AtomicU64>,
     pub prioritization_fee_cache: Arc<PrioritizationFeeCache>,
     pub client_option: ClientOption<'a>,
+    /// Pre-created channel for the tpu-client-next `ConnectionWorkersScheduler`.
+    /// When provided (together with `ClientOption::TpuClientNext`), the scheduler
+    /// reuses this channel so the caller can retain a clone of the sender to
+    /// submit transactions from other components (e.g. the voting service)
+    /// while sharing the same underlying QUIC connections.
+    pub tpu_client_next_channel:
+        Option<(
+            tokio::sync::mpsc::Sender<TransactionBatch>,
+            tokio::sync::mpsc::Receiver<TransactionBatch>,
+        )>,
 }
 
 impl JsonRpcService {
@@ -539,16 +550,31 @@ impl JsonRpcService {
                 client_runtime,
                 cancel,
             ) => {
-                let client = TpuClientNextClient::new(
-                    client_runtime,
-                    config.cluster_info.clone(),
-                    config.send_transaction_service_config.tpu_peers.clone(),
-                    leader_info,
-                    config.send_transaction_service_config.leader_forward_count,
-                    Some(identity_keypair),
-                    tpu_client_socket,
-                    cancel,
-                );
+                let client = if let Some((sender, receiver)) = config.tpu_client_next_channel {
+                    TpuClientNextClient::new_with_channel(
+                        client_runtime,
+                        sender,
+                        receiver,
+                        config.cluster_info.clone(),
+                        config.send_transaction_service_config.tpu_peers.clone(),
+                        leader_info,
+                        config.send_transaction_service_config.leader_forward_count,
+                        Some(identity_keypair),
+                        tpu_client_socket,
+                        cancel,
+                    )
+                } else {
+                    TpuClientNextClient::new(
+                        client_runtime,
+                        config.cluster_info.clone(),
+                        config.send_transaction_service_config.tpu_peers.clone(),
+                        leader_info,
+                        config.send_transaction_service_config.leader_forward_count,
+                        Some(identity_keypair),
+                        tpu_client_socket,
+                        cancel,
+                    )
+                };
 
                 let json_rpc_service = Self::new_with_client(
                     config.rpc_addr,
