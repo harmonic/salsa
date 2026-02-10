@@ -2,7 +2,10 @@ use {
     crate::{
         consensus::tower_storage::{SavedTowerVersions, TowerStorage},
         mock_alpenglow_consensus::MockAlpenglowConsensus,
-        next_leader::upcoming_leader_tpu_vote_sockets,
+        next_leader::{
+            upcoming_leader_tpu_forward_sockets, upcoming_leader_tpu_sockets,
+            upcoming_leader_tpu_vote_sockets,
+        },
     },
     bincode::serialize,
     crossbeam_channel::Receiver,
@@ -179,6 +182,42 @@ impl VotingService {
         } else {
             // Send to our own tpu vote socket if we cannot find a leader to send to
             let _ = send_vote_transaction(cluster_info, vote_op.tx(), None, &connection_cache);
+        }
+
+        // Also send the vote to TPU (QUIC) and TPU forward (QUIC) sockets of
+        // the upcoming leaders. During an identity switch the validator's new
+        // identity may not yet appear in the StakedNodes map (keyed by node
+        // pubkey), so the QUIC connection to tpu_vote can be treated as
+        // unstaked and deprioritized or dropped. Sending to tpu and
+        // tpu_forwards as well gives the vote additional chances to land.
+        let upcoming_tpu_sockets = upcoming_leader_tpu_sockets(
+            cluster_info,
+            poh_recorder,
+            UPCOMING_LEADER_FANOUT_SLOTS,
+            connection_cache.protocol(),
+        );
+        for tpu_socket in upcoming_tpu_sockets {
+            let _ = send_vote_transaction(
+                cluster_info,
+                vote_op.tx(),
+                Some(tpu_socket),
+                &connection_cache,
+            );
+        }
+
+        let upcoming_forward_sockets = upcoming_leader_tpu_forward_sockets(
+            cluster_info,
+            poh_recorder,
+            UPCOMING_LEADER_FANOUT_SLOTS,
+            connection_cache.protocol(),
+        );
+        for tpu_forward_socket in upcoming_forward_sockets {
+            let _ = send_vote_transaction(
+                cluster_info,
+                vote_op.tx(),
+                Some(tpu_forward_socket),
+                &connection_cache,
+            );
         }
 
         match vote_op {

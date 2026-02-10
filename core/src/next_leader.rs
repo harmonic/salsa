@@ -10,6 +10,17 @@ use {
     std::{net::SocketAddr, sync::RwLock},
 };
 
+/// Returns the deduplicated upcoming leader pubkeys for the next N fanout slots.
+fn upcoming_leader_pubkeys(
+    poh_recorder: &RwLock<PohRecorder>,
+    fanout_slots: u64,
+) -> Vec<solana_pubkey::Pubkey> {
+    let poh_recorder = poh_recorder.read().unwrap();
+    (0..fanout_slots)
+        .filter_map(|n_slots| poh_recorder.leader_after_n_slots(n_slots))
+        .collect_vec()
+}
+
 /// Returns a list of tpu vote sockets for the leaders of the next N fanout
 /// slots. Leaders and sockets are deduped.
 pub(crate) fn upcoming_leader_tpu_vote_sockets(
@@ -18,20 +29,50 @@ pub(crate) fn upcoming_leader_tpu_vote_sockets(
     fanout_slots: u64,
     protocol: Protocol,
 ) -> Vec<SocketAddr> {
-    let upcoming_leaders = {
-        let poh_recorder = poh_recorder.read().unwrap();
-        (0..fanout_slots)
-            .filter_map(|n_slots| poh_recorder.leader_after_n_slots(n_slots))
-            .collect_vec()
-    };
-
-    upcoming_leaders
+    upcoming_leader_pubkeys(poh_recorder, fanout_slots)
         .into_iter()
         .dedup()
         .filter_map(|leader_pubkey| {
             cluster_info.lookup_contact_info(&leader_pubkey, |node| node.tpu_vote(protocol))?
         })
         // dedup again since leaders could potentially share the same tpu vote socket
+        .dedup()
+        .collect()
+}
+
+/// Returns a list of tpu (QUIC) sockets for the leaders of the next N fanout
+/// slots. Leaders and sockets are deduped.
+pub(crate) fn upcoming_leader_tpu_sockets(
+    cluster_info: &ClusterInfo,
+    poh_recorder: &RwLock<PohRecorder>,
+    fanout_slots: u64,
+    protocol: Protocol,
+) -> Vec<SocketAddr> {
+    upcoming_leader_pubkeys(poh_recorder, fanout_slots)
+        .into_iter()
+        .dedup()
+        .filter_map(|leader_pubkey| {
+            cluster_info.lookup_contact_info(&leader_pubkey, |node| node.tpu(protocol))?
+        })
+        .dedup()
+        .collect()
+}
+
+/// Returns a list of tpu_forwards (QUIC) sockets for the leaders of the next
+/// N fanout slots. Leaders and sockets are deduped.
+pub(crate) fn upcoming_leader_tpu_forward_sockets(
+    cluster_info: &ClusterInfo,
+    poh_recorder: &RwLock<PohRecorder>,
+    fanout_slots: u64,
+    protocol: Protocol,
+) -> Vec<SocketAddr> {
+    upcoming_leader_pubkeys(poh_recorder, fanout_slots)
+        .into_iter()
+        .dedup()
+        .filter_map(|leader_pubkey| {
+            cluster_info
+                .lookup_contact_info(&leader_pubkey, |node| node.tpu_forwards(protocol))?
+        })
         .dedup()
         .collect()
 }
