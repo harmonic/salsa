@@ -7,7 +7,7 @@ use {
     solana_hash::Hash,
     solana_keypair::Keypair,
     solana_ledger::shred::{
-        get_data_shred_bytes_per_batch_typical, max_entries_per_n_shred, max_ticks_per_n_shreds,
+        get_chained_merkle_fec_set_capacity_no_retransmit, max_entries_per_n_shred, max_ticks_per_n_shreds,
         recover, ProcessShredsStats, ReedSolomonCache, Shred, Shredder,
         CODING_SHREDS_PER_FEC_BLOCK, DATA_SHREDS_PER_FEC_BLOCK,
     },
@@ -28,7 +28,7 @@ fn make_large_unchained_entries(txs_per_entry: u64, num_entries: u64) -> Vec<Ent
         .collect()
 }
 const SHRED_SIZE_TYPICAL: usize = {
-    let batch_payload = get_data_shred_bytes_per_batch_typical() as usize;
+    let batch_payload = get_chained_merkle_fec_set_capacity_no_retransmit() as usize;
     batch_payload / DATA_SHREDS_PER_FEC_BLOCK
 };
 
