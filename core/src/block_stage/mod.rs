@@ -143,8 +143,9 @@ impl BlockStage {
                         continue;
                     }
 
-                    // Sanity check we are leader
-                    let keypair = cluster_info.keypair();
+                    // Sanity check we are leader (use block_producer_keypair since
+                    // collector_id is set to the block-producer identity)
+                    let keypair = cluster_info.block_producer_keypair();
                     if !keypair.pubkey().eq(working_bank.collector_id()) {
                         warn!("received block for which we are not leader");
                         continue;

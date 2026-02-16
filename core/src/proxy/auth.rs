@@ -128,7 +128,7 @@ pub async fn maybe_refresh_auth_tokens(
         refresh_token_expiry.checked_sub(now).unwrap_or_default() <= refresh_within_s;
 
     if should_generate_new_tokens {
-        let kp = cluster_info.keypair().clone();
+        let kp = cluster_info.block_producer_keypair().clone();
 
         let (new_access_token, new_refresh_token) = timeout(
             *connection_timeout,

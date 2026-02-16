@@ -497,8 +497,10 @@ impl BlockEngineStage {
         block_tx: &Sender<HarmonicBlock>,
         leader_window_sender: &tokio::sync::broadcast::Sender<(std::time::SystemTime, u64)>,
     ) -> crate::proxy::Result<()> {
-        // Get a copy of configs here in case they have changed at runtime
-        let keypair = cluster_info.keypair().clone();
+        // Get a copy of configs here in case they have changed at runtime.
+        // Use the block-producer keypair for auth so the block engine recognizes us as the
+        // block producer (relevant during identity transitions).
+        let keypair = cluster_info.block_producer_keypair().clone();
 
         debug!("connecting to auth: {}", backend_endpoint.uri());
         let auth_channel = timeout(*connection_timeout, backend_endpoint.connect())
@@ -926,9 +928,9 @@ impl BlockEngineStage {
                 _ = metrics_and_auth_tick.tick() => {
                     stats.report();
 
-                    if cluster_info.id() != keypair.pubkey() {
+                    if cluster_info.block_producer_keypair().pubkey() != keypair.pubkey() {
                         tasks.abort_all();
-                        return Err(ProxyError::AuthenticationConnectionError("validator identity changed".to_string()));
+                        return Err(ProxyError::AuthenticationConnectionError("block producer identity changed".to_string()));
                     }
 
                     if !global_config.lock().unwrap().eq(&local_config) {

@@ -192,8 +192,10 @@ impl RelayerStage {
         exit: &Arc<AtomicBool>,
         connection_timeout: &Duration,
     ) -> crate::proxy::Result<()> {
-        // Get a copy of configs here in case they have changed at runtime
-        let keypair = cluster_info.keypair().clone();
+        // Get a copy of configs here in case they have changed at runtime.
+        // Use the block-producer keypair for auth so the relayer recognizes us as the
+        // block producer (relevant during identity transitions).
+        let keypair = cluster_info.block_producer_keypair().clone();
 
         let mut backend_endpoint = Endpoint::from_shared(local_relayer_config.relayer_url.clone())
             .map_err(|_| {
@@ -382,8 +384,8 @@ impl RelayerStage {
                     relayer_stats.report();
                     relayer_stats = RelayerStageStats::default();
 
-                    if cluster_info.id() != keypair.pubkey() {
-                        return Err(ProxyError::AuthenticationConnectionError("validator identity changed".to_string()));
+                    if cluster_info.block_producer_keypair().pubkey() != keypair.pubkey() {
+                        return Err(ProxyError::AuthenticationConnectionError("block producer identity changed".to_string()));
                     }
 
                     let global_config = global_config.clone();

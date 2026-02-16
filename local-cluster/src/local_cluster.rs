@@ -416,6 +416,7 @@ impl LocalCluster {
             let leader_server = Validator::new(
                 leader_node,
                 leader_keypair.clone(),
+                None, // block_producer_keypair
                 &leader_ledger_path,
                 &leader_vote_keypair.pubkey(),
                 Arc::new(RwLock::new(vec![leader_vote_keypair.clone()])),
@@ -629,6 +630,7 @@ impl LocalCluster {
         let validator_server = Validator::new(
             validator_node,
             validator_keypair.clone(),
+            None, // block_producer_keypair
             &ledger_path,
             &voting_keypair.pubkey(),
             Arc::new(RwLock::new(vec![voting_keypair.clone()])),
@@ -695,6 +697,7 @@ impl LocalCluster {
             let leader_server = Validator::new(
                 leader_node,
                 leader_keypair.clone(),
+                None, // block_producer_keypair
                 &leader_ledger_path,
                 &leader_vote_keypair.pubkey(),
                 Arc::new(RwLock::new(vec![leader_vote_keypair.clone()])),
@@ -761,6 +764,7 @@ impl LocalCluster {
                 let validator_server = Validator::new(
                     validator_node,
                     validator_keypair.clone(),
+                    None, // block_producer_keypair
                     &ledger_path,
                     &voting_keypair.pubkey(),
                     Arc::new(RwLock::new(vec![voting_keypair.clone()])),
@@ -1321,6 +1325,7 @@ impl Cluster for LocalCluster {
         let restarted_node = Validator::new(
             node,
             validator_info.keypair.clone(),
+            None, // block_producer_keypair
             &validator_info.ledger_path,
             &validator_info.voting_keypair.pubkey(),
             Arc::new(RwLock::new(vec![validator_info.voting_keypair.clone()])),

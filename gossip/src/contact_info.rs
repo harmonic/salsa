@@ -262,6 +262,13 @@ impl ContactInfo {
         self.outset = get_node_outset();
     }
 
+    /// Sets the pubkey without modifying the outset timestamp.
+    /// Use this when creating a secondary ContactInfo (e.g. block-producer)
+    /// that shares the same node instance and outset as the primary identity.
+    pub fn set_pubkey(&mut self, pubkey: Pubkey) {
+        self.pubkey = pubkey;
+    }
+
     pub fn set_wallclock(&mut self, wallclock: u64) {
         self.wallclock = wallclock;
     }

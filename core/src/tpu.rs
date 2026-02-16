@@ -356,7 +356,7 @@ impl Tpu {
         };
 
         let block_builder_fee_info = Arc::new(Mutex::new(BlockBuilderFeeInfo {
-            block_builder: cluster_info.keypair().pubkey(),
+            block_builder: cluster_info.block_producer_keypair().pubkey(),
             block_builder_commission: 0,
         }));
 

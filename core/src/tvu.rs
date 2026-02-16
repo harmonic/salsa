@@ -132,6 +132,7 @@ impl Tvu {
     pub fn new(
         vote_account: &Pubkey,
         authorized_voter_keypairs: Arc<RwLock<Vec<Arc<Keypair>>>>,
+        block_producer_keypair: Option<Arc<Keypair>>,
         bank_forks: &Arc<RwLock<BankForks>>,
         cluster_info: &Arc<ClusterInfo>,
         sockets: TvuSockets,
@@ -335,6 +336,7 @@ impl Tvu {
         let replay_stage_config = ReplayStageConfig {
             vote_account: *vote_account,
             authorized_voter_keypairs,
+            block_producer_keypair,
             exit: exit.clone(),
             leader_schedule_cache: leader_schedule_cache.clone(),
             block_commitment_cache,

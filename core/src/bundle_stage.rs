@@ -742,7 +742,7 @@ impl BundleStage {
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         consume_worker_metrics: &ConsumeWorkerMetrics,
     ) -> BundleExecutionResult<()> {
-        let keypair = cluster_info.keypair();
+        let keypair = cluster_info.block_producer_keypair();
 
         Self::handle_initialize_tip_programs(
             bank,

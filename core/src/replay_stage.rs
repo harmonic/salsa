@@ -269,6 +269,7 @@ impl PartitionInfo {
 pub struct ReplayStageConfig {
     pub vote_account: Pubkey,
     pub authorized_voter_keypairs: Arc<RwLock<Vec<Arc<Keypair>>>>,
+    pub block_producer_keypair: Option<Arc<Keypair>>,
     pub exit: Arc<AtomicBool>,
     pub leader_schedule_cache: Arc<LeaderScheduleCache>,
     pub block_commitment_cache: Arc<RwLock<BlockCommitmentCache>>,
@@ -578,6 +579,7 @@ impl ReplayStage {
         let ReplayStageConfig {
             vote_account,
             authorized_voter_keypairs,
+            block_producer_keypair,
             exit,
             leader_schedule_cache,
             block_commitment_cache,
@@ -657,6 +659,10 @@ impl ReplayStage {
 
             let mut identity_keypair = cluster_info.keypair();
             let mut my_pubkey = identity_keypair.pubkey();
+            let block_producer_pubkey = block_producer_keypair
+                .as_ref()
+                .map(|kp| kp.pubkey())
+                .unwrap_or(my_pubkey);
             if !is_alpenglow_migration_complete && my_pubkey != tower.node_pubkey {
                 // set-identity was called during the startup procedure, ensure the tower is consistent
                 // before starting the loop. further calls to set-identity will reload the tower in the loop
@@ -744,7 +750,7 @@ impl ReplayStage {
             if !is_alpenglow_migration_complete {
                 // This reset is handled by Votor instead when alpenglow is active
                 Self::reset_poh_recorder(
-                    &my_pubkey,
+                    &block_producer_pubkey,
                     &blockstore,
                     working_bank,
                     &mut poh_controller,
@@ -786,7 +792,7 @@ impl ReplayStage {
                 let did_complete_bank = Self::replay_active_banks(
                     &blockstore,
                     &bank_forks,
-                    &my_pubkey,
+                    &block_producer_pubkey,
                     &vote_account,
                     &mut progress,
                     transaction_status_sender.as_ref(),
@@ -1140,7 +1146,7 @@ impl ReplayStage {
 
                             if !poh_controller.has_pending_message() {
                                 Self::reset_poh_recorder(
-                                    &my_pubkey,
+                                    &block_producer_pubkey,
                                     &blockstore,
                                     reset_bank.clone(),
                                     &mut poh_controller,
@@ -1212,7 +1218,7 @@ impl ReplayStage {
                     drop(descendants);
                     if !tpu_has_bank && !poh_controller.has_pending_message() {
                         if let Some(poh_slot) = Self::maybe_start_leader(
-                            &my_pubkey,
+                            &block_producer_pubkey,
                             &bank_forks,
                             &poh_recorder,
                             &mut poh_controller,
@@ -1232,7 +1238,7 @@ impl ReplayStage {
                                 &my_pubkey,
                                 poh_slot,
                                 &mut current_leader,
-                                &my_pubkey,
+                                &block_producer_pubkey,
                             );
                         }
                     }
