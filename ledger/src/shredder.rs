@@ -69,50 +69,27 @@ impl Shredder {
         keypair: &Keypair,
         entries: &[Entry],
         is_last_in_slot: bool,
-        mut chained_merkle_root: Hash,
-        mut next_shred_index: u32,
-        mut next_code_index: u32,
+        chained_merkle_root: Hash,
+        next_shred_index: u32,
+        next_code_index: u32,
         reed_solomon_cache: &ReedSolomonCache,
         stats: &mut ProcessShredsStats,
     ) -> impl Iterator<Item = Shred> {
-        let mut all_shreds = Vec::new();
-        let mut chunks: Vec<&[Entry]> = entries.chunks(128).collect();
-        if chunks.is_empty() {
-            chunks.push(&[]);
-        }
-        let num_chunks = chunks.len();
-        for (i, chunk) in chunks.into_iter().enumerate() {
-            let now = Instant::now();
-            let serialized = wincode::serialize(chunk).unwrap();
-            stats.serialize_elapsed += now.elapsed().as_micros() as u64;
-            let is_last_chunk = i + 1 == num_chunks;
-            let shreds: Vec<Shred> = Self::make_shreds_from_data_slice(
-                self,
-                keypair,
-                &serialized,
-                is_last_in_slot && is_last_chunk,
-                chained_merkle_root,
-                next_shred_index,
-                next_code_index,
-                reed_solomon_cache,
-                stats,
-            )
-            .unwrap()
-            .collect();
-            // Update indices and chained merkle root for the next chunk.
-            for shred in &shreds {
-                if shred.is_data() {
-                    next_shred_index = next_shred_index.max(shred.index() + 1);
-                } else {
-                    next_code_index = next_code_index.max(shred.index() + 1);
-                }
-            }
-            if let Some(shred) = shreds.iter().max_by_key(|shred| shred.fec_set_index()) {
-                chained_merkle_root = shred.merkle_root().unwrap();
-            }
-            all_shreds.extend(shreds);
-        }
-        all_shreds.into_iter()
+        let now = Instant::now();
+        let entries = wincode::serialize(entries).unwrap();
+        stats.serialize_elapsed += now.elapsed().as_micros() as u64;
+        Self::make_shreds_from_data_slice(
+            self,
+            keypair,
+            &entries,
+            is_last_in_slot,
+            chained_merkle_root,
+            next_shred_index,
+            next_code_index,
+            reed_solomon_cache,
+            stats,
+        )
+        .unwrap()
     }
 
     #[allow(clippy::too_many_arguments)]
