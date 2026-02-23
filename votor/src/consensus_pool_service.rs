@@ -24,7 +24,7 @@ use {
     std::{
         sync::{
             atomic::{AtomicBool, Ordering},
-            Arc, Condvar, Mutex,
+            Arc, Condvar, Mutex, RwLock,
         },
         thread::{self, Builder, JoinHandle},
         time::{Duration, Instant},
@@ -41,6 +41,7 @@ pub(crate) struct ConsensusPoolContext {
 
     pub(crate) cluster_info: Arc<ClusterInfo>,
     pub(crate) my_vote_pubkey: Pubkey,
+    pub(crate) shared_vote_account: Arc<RwLock<Pubkey>>,
     pub(crate) blockstore: Arc<Blockstore>,
     pub(crate) sharable_banks: SharableBanks,
     pub(crate) leader_schedule_cache: Arc<LeaderScheduleCache>,
@@ -211,6 +212,17 @@ impl ConsensusPoolService {
             if my_pubkey != new_pubkey {
                 my_pubkey = new_pubkey;
                 info!("Consensus pool pubkey updated to {my_pubkey}");
+
+                // Re-read the vote account in case it was changed alongside
+                // identity via set-identity-and-vote-account
+                let new_vote_pubkey = *ctx.shared_vote_account.read().unwrap();
+                if ctx.my_vote_pubkey != new_vote_pubkey {
+                    warn!(
+                        "Consensus pool vote account updated from {} to {new_vote_pubkey}",
+                        ctx.my_vote_pubkey
+                    );
+                    ctx.my_vote_pubkey = new_vote_pubkey;
+                }
             }
 
             Self::add_produce_block_event(
@@ -486,11 +498,13 @@ mod tests {
         let exit = Arc::new(AtomicBool::new(false));
         let leader_schedule_cache =
             Arc::new(LeaderScheduleCache::new_from_bank(&sharable_banks.root()));
+        let my_vote_pubkey = Pubkey::new_unique();
         let ctx = ConsensusPoolContext {
             exit: exit.clone(),
             start: Arc::new((Mutex::new(true), Condvar::new())),
             cluster_info: Arc::new(cluster_info),
-            my_vote_pubkey: Pubkey::new_unique(),
+            my_vote_pubkey,
+            shared_vote_account: Arc::new(RwLock::new(my_vote_pubkey)),
             blockstore: Arc::new(blockstore),
             sharable_banks: sharable_banks.clone(),
             leader_schedule_cache: leader_schedule_cache.clone(),

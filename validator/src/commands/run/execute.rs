@@ -1377,12 +1377,14 @@ fn tip_manager_config_from_matches(
                     }
                     Pubkey::new_unique()
                 }),
-            vote_account: pubkey_of(matches, "vote_account").unwrap_or_else(|| {
-                if !voting_disabled {
-                    panic!("--vote-account argument required when validator is voting");
-                }
-                Pubkey::new_unique()
-            }),
+            vote_account: Arc::new(RwLock::new(
+                pubkey_of(matches, "vote_account").unwrap_or_else(|| {
+                    if !voting_disabled {
+                        panic!("--vote-account argument required when validator is voting");
+                    }
+                    Pubkey::new_unique()
+                }),
+            )),
             commission_bps: value_t!(matches, "commission_bps", u16).unwrap_or_else(|_| {
                 if !voting_disabled {
                     panic!("--commission-bps argument required when validator is voting");

@@ -1139,7 +1139,7 @@ impl TestValidator {
                 tip_distribution_program_id: jito_tip_distribution::id(),
                 tip_distribution_account_config: TipDistributionAccountConfig {
                     merkle_root_upload_authority: validator_identity.pubkey(),
-                    vote_account: vote_account_address,
+                    vote_account: Arc::new(RwLock::new(vote_account_address)),
                     commission_bps: 10,
                 },
             },
