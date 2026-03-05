@@ -129,7 +129,7 @@ impl Tvu {
     /// * `blockstore` - the ledger itself
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        vote_account: &Pubkey,
+        vote_account: Arc<RwLock<Pubkey>>,
         authorized_voter_keypairs: Arc<RwLock<Vec<Arc<Keypair>>>>,
         bank_forks: &Arc<RwLock<BankForks>>,
         cluster_info: &Arc<ClusterInfo>,
@@ -331,7 +331,7 @@ impl Tvu {
         };
 
         let replay_stage_config = ReplayStageConfig {
-            vote_account: *vote_account,
+            vote_account: vote_account.clone(),
             authorized_voter_keypairs,
             exit: exit.clone(),
             leader_schedule_cache: leader_schedule_cache.clone(),
@@ -562,7 +562,7 @@ pub mod tests {
         };
 
         let tvu = Tvu::new(
-            &vote_keypair.pubkey(),
+            Arc::new(RwLock::new(vote_keypair.pubkey())),
             Arc::new(RwLock::new(vec![Arc::new(vote_keypair)])),
             &bank_forks,
             &cref1,

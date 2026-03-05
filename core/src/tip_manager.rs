@@ -27,7 +27,10 @@ use {
         versioned::VersionedTransaction,
         Transaction,
     },
-    std::collections::HashSet,
+    std::{
+        collections::HashSet,
+        sync::{Arc, RwLock},
+    },
     thiserror::Error,
 };
 
@@ -78,8 +81,9 @@ pub struct TipDistributionAccountConfig {
     /// The account with authority to upload merkle-roots to this validator's [TipDistributionAccount].
     pub merkle_root_upload_authority: Pubkey,
 
-    /// This validator's vote account.
-    pub vote_account: Pubkey,
+    /// This validator's vote account. Wrapped in Arc<RwLock<>> so it can be updated at runtime
+    /// via set-identity-and-vote-account without restarting.
+    pub vote_account: Arc<RwLock<Pubkey>>,
 
     /// This validator's commission rate BPS for tips in the [TipDistributionAccount].
     pub commission_bps: u16,
@@ -89,7 +93,7 @@ impl Default for TipDistributionAccountConfig {
     fn default() -> Self {
         Self {
             merkle_root_upload_authority: Pubkey::new_unique(),
-            vote_account: Pubkey::new_unique(),
+            vote_account: Arc::new(RwLock::new(Pubkey::new_unique())),
             commission_bps: 0,
         }
     }
@@ -247,9 +251,10 @@ impl TipManager {
 
     /// Returns this validator's [TipDistributionAccount] PDA derived from the provided epoch.
     pub fn get_my_tip_distribution_pda(&self, epoch: Epoch) -> Pubkey {
+        let vote_account = *self.tip_distribution_account_config.vote_account.read().unwrap();
         TipDistributionAccount::find_program_address(
             &self.tip_distribution_program_info.program_id,
-            &self.tip_distribution_account_config.vote_account,
+            &vote_account,
             epoch,
         )
         .0
@@ -329,9 +334,10 @@ impl TipManager {
         bank: &Bank,
         kp: &Keypair,
     ) -> Result<RuntimeTransaction<SanitizedTransaction>> {
+        let vote_account = *self.tip_distribution_account_config.vote_account.read().unwrap();
         let (tip_distribution_account, bump) = TipDistributionAccount::find_program_address(
             &self.tip_distribution_program_info.program_id,
-            &self.tip_distribution_account_config.vote_account,
+            &vote_account,
             bank.epoch(),
         );
 
@@ -349,7 +355,7 @@ impl TipManager {
                     false,
                 ),
                 AccountMeta::new(tip_distribution_account, false),
-                AccountMeta::new_readonly(self.tip_distribution_account_config.vote_account, false),
+                AccountMeta::new_readonly(vote_account, false),
                 AccountMeta::new(kp.pubkey(), true),
                 AccountMeta::new_readonly(system_program::id(), false),
             ],

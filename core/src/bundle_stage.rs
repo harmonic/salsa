@@ -1108,7 +1108,7 @@ mod tests {
                 tip_distribution_program_id: Pubkey::from(jito_tip_distribution::id().to_bytes()),
                 tip_distribution_account_config: TipDistributionAccountConfig {
                     merkle_root_upload_authority: Pubkey::new_unique(),
-                    vote_account: genesis_config_info.voting_keypair.pubkey(),
+                    vote_account: Arc::new(RwLock::new(genesis_config_info.voting_keypair.pubkey())),
                     commission_bps: 10,
                 },
             }),
@@ -1248,7 +1248,7 @@ mod tests {
                 tip_distribution_program_id: Pubkey::from(jito_tip_distribution::id().to_bytes()),
                 tip_distribution_account_config: TipDistributionAccountConfig {
                     merkle_root_upload_authority: Pubkey::new_unique(),
-                    vote_account: genesis_config_info.voting_keypair.pubkey(),
+                    vote_account: Arc::new(RwLock::new(genesis_config_info.voting_keypair.pubkey())),
                     commission_bps: 10,
                 },
             }),
@@ -1346,7 +1346,7 @@ mod tests {
                 tip_distribution_program_id: Pubkey::from(jito_tip_distribution::id().to_bytes()),
                 tip_distribution_account_config: TipDistributionAccountConfig {
                     merkle_root_upload_authority: Pubkey::new_unique(),
-                    vote_account: genesis_config_info.voting_keypair.pubkey(),
+                    vote_account: Arc::new(RwLock::new(genesis_config_info.voting_keypair.pubkey())),
                     commission_bps: 10,
                 },
             }),
@@ -1472,7 +1472,7 @@ mod tests {
                 tip_distribution_program_id: Pubkey::from(jito_tip_distribution::id().to_bytes()),
                 tip_distribution_account_config: TipDistributionAccountConfig {
                     merkle_root_upload_authority: Pubkey::new_unique(),
-                    vote_account: genesis_config_info.voting_keypair.pubkey(),
+                    vote_account: Arc::new(RwLock::new(genesis_config_info.voting_keypair.pubkey())),
                     commission_bps: 10,
                 },
             }),
@@ -1601,7 +1601,7 @@ mod tests {
                 tip_distribution_program_id: Pubkey::from(jito_tip_distribution::id().to_bytes()),
                 tip_distribution_account_config: TipDistributionAccountConfig {
                     merkle_root_upload_authority: Pubkey::new_unique(),
-                    vote_account: genesis_config_info.voting_keypair.pubkey(),
+                    vote_account: Arc::new(RwLock::new(genesis_config_info.voting_keypair.pubkey())),
                     commission_bps: 10,
                 },
             }),

@@ -116,6 +116,7 @@ pub enum VoteError {
 pub struct VotingContext {
     pub vote_history: VoteHistory,
     pub vote_account_pubkey: Pubkey,
+    pub shared_vote_account: Arc<std::sync::RwLock<Pubkey>>,
     pub identity_keypair: Arc<Keypair>,
     pub authorized_voter_keypairs: Arc<std::sync::RwLock<Vec<Arc<Keypair>>>>,
     // The BLS keypair should always change with authorized_voter_keypairs.
@@ -373,9 +374,11 @@ mod tests {
 
         let my_keys = &validator_keypairs[my_index];
         let sharable_banks = bank_forks.read().unwrap().sharable_banks();
+        let vote_account_pubkey = my_keys.vote_keypair.pubkey();
         VotingContext {
             vote_history: VoteHistory::new(my_keys.node_keypair.pubkey(), 0),
-            vote_account_pubkey: my_keys.vote_keypair.pubkey(),
+            vote_account_pubkey,
+            shared_vote_account: Arc::new(RwLock::new(vote_account_pubkey)),
             identity_keypair: Arc::new(my_keys.node_keypair.insecure_clone()),
             authorized_voter_keypairs: Arc::new(RwLock::new(vec![Arc::new(
                 my_keys.vote_keypair.insecure_clone(),
