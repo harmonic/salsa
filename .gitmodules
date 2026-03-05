@@ -1,3 +1,3 @@
 [submodule "jito-protos/protos"]
         path = jito-protos/protos
-        url = ssh://git@github.com/meijilabs/protos
+        url = https://github.com/harmonic/validator-protos.git

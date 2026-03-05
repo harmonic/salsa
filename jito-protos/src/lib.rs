@@ -3,10 +3,6 @@ pub mod proto {
         tonic::include_proto!("auth");
     }
 
-    pub mod block {
-        tonic::include_proto!("block");
-    }
-
     pub mod block_engine {
         tonic::include_proto!("block_engine");
     }
