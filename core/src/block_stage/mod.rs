@@ -219,25 +219,28 @@ impl BlockStage {
                     if let BufferedPacketsDecision::Consume(working_bank) =
                         DecisionMaker::maybe_consume::<false>(decision)
                     {
-                        // Claimed! Wait for any in-flight vote batch to finish
-                        // before proceeding with block execution.
-                        scheduler_synchronization::wait_for_votes_to_finish();
+                        // Claimed! Process blocks for this slot in a single loop.
+                        let mut current_block = block;
+                        let mut failed = false;
 
-                        // Process first message
-                        let mut failed = !Self::process_single_message(
-                            &mut consumer,
-                            &block,
-                            &working_bank,
-                            &root_bank,
-                            &tip_manager,
-                            &block_builder_fee_info,
-                            &keypair,
-                            &mut crank_buffer,
-                            &mut crank_lens,
-                        );
+                        loop {
+                            scheduler_synchronization::wait_for_votes_to_finish();
 
-                        // Stream loop: keep receiving messages for this slot
-                        while !failed {
+                            failed = !Self::process_single_message(
+                                &mut consumer,
+                                &current_block,
+                                &working_bank,
+                                &root_bank,
+                                &tip_manager,
+                                &block_builder_fee_info,
+                                &keypair,
+                                &mut crank_buffer,
+                                &mut crank_lens,
+                            );
+                            if failed {
+                                break;
+                            }
+
                             if Self::past_delegation_period(&working_bank) {
                                 break;
                             }
@@ -251,21 +254,7 @@ impl BlockStage {
                                         );
                                         break;
                                     }
-
-                                    // Wait for any in-flight vote batch before each message
-                                    scheduler_synchronization::wait_for_votes_to_finish();
-
-                                    failed = !Self::process_single_message(
-                                        &mut consumer,
-                                        &next_block,
-                                        &working_bank,
-                                        &root_bank,
-                                        &tip_manager,
-                                        &block_builder_fee_info,
-                                        &keypair,
-                                        &mut crank_buffer,
-                                        &mut crank_lens,
-                                    );
+                                    current_block = next_block;
                                 }
                                 Err(RecvTimeoutError::Timeout) => continue,
                                 Err(RecvTimeoutError::Disconnected) => break,
