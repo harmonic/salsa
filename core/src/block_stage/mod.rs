@@ -116,7 +116,7 @@ impl BlockStage {
         ticks_into_slot >= delegation_period_length
     }
 
-    /// Process a single streamed message: translate packets and execute.
+    /// Process a single streamed message: translate packets, prepend crank if needed, and execute.
     /// Returns true on success, false on failure.
     #[allow(clippy::too_many_arguments)]
     fn process_single_message(
@@ -129,7 +129,6 @@ impl BlockStage {
         keypair: &Keypair,
         crank_buffer: &mut [[u8; Self::MAX_TXN_SIZE]; Self::MAX_CRANK_TXNS],
         crank_lens: &mut [usize; Self::MAX_CRANK_TXNS],
-        prepend_crank: bool,
     ) -> bool {
         let (mut transactions, mut max_ages) = Self::translate_packets_to_transactions(
             block.transactions(),
@@ -137,19 +136,17 @@ impl BlockStage {
             working_bank,
         );
 
-        if prepend_crank {
-            Self::maybe_prepend_crank(
-                working_bank,
-                root_bank,
-                tip_manager,
-                block_builder_fee_info,
-                keypair,
-                crank_buffer,
-                crank_lens,
-                &mut transactions,
-                &mut max_ages,
-            );
-        }
+        Self::maybe_prepend_crank(
+            working_bank,
+            root_bank,
+            tip_manager,
+            block_builder_fee_info,
+            keypair,
+            crank_buffer,
+            crank_lens,
+            &mut transactions,
+            &mut max_ages,
+        );
 
         let output = consumer.process_and_record_block_transactions(
             working_bank,
@@ -226,7 +223,7 @@ impl BlockStage {
                         // before proceeding with block execution.
                         scheduler_synchronization::wait_for_votes_to_finish();
 
-                        // Process first message (with crank prepend)
+                        // Process first message
                         let mut failed = !Self::process_single_message(
                             &mut consumer,
                             &block,
@@ -237,7 +234,6 @@ impl BlockStage {
                             &keypair,
                             &mut crank_buffer,
                             &mut crank_lens,
-                            true, // prepend crank on first message
                         );
 
                         // Stream loop: keep receiving messages for this slot
@@ -269,7 +265,6 @@ impl BlockStage {
                                         &keypair,
                                         &mut crank_buffer,
                                         &mut crank_lens,
-                                        false, // no crank after first message
                                     );
                                 }
                                 Err(RecvTimeoutError::Timeout) => continue,
