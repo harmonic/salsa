@@ -5,12 +5,14 @@
 //!
 use {
     crate::{
-        block_cost_limits::*, cost_tracker_post_analysis::CostTrackerPostAnalysis,
-        transaction_cost::TransactionCost,
+        block_cost_limits::*, cost_model::CostModel,
+        cost_tracker_post_analysis::CostTrackerPostAnalysis, transaction_cost::TransactionCost,
     },
+    agave_feature_set::FeatureSet,
     solana_metrics::datapoint_info,
     solana_pubkey::Pubkey,
     solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
+    solana_svm_transaction::svm_message::SVMMessage,
     solana_transaction_error::TransactionError,
     std::{
         collections::HashMap,
@@ -174,39 +176,26 @@ impl CostTracker {
         }
     }
 
-    /// Add actual executed transaction costs to the tracker in batch.
-    /// Used after block execution to track real CUs consumed.
-    /// Takes iterator of (transaction, compute_units, loaded_accounts_data_size) to add all at once.
-    pub fn add_executed_transaction_costs<'a, Tx: TransactionWithMeta + 'a>(
+    /// Add executed transaction costs to the tracker using actual execution results.
+    /// Uses add_transaction_cost to add estimated costs, then immediately
+    /// update_execution_cost to correct to actual values — estimate and rebate
+    /// in one step. Skips only would_fit since the block is already committed.
+    pub fn add_executed_transaction_costs<'a, Tx: TransactionWithMeta + SVMMessage + 'a>(
         &mut self,
+        feature_set: &FeatureSet,
         executed_txs: impl Iterator<Item = (&'a Tx, u64, u32)>,
     ) {
-        for (tx, actual_compute_units, loaded_accounts_data_size) in executed_txs {
-            self.transaction_count += 1;
-            self.allocated_accounts_data_size += loaded_accounts_data_size as u64;
-            self.block_cost.fetch_add(actual_compute_units);
-
-            // Track signature counts
-            self.transaction_signature_count += tx.num_transaction_signatures();
-            self.secp256k1_instruction_signature_count += tx.num_secp256k1_signatures();
-            self.ed25519_instruction_signature_count += tx.num_ed25519_signatures();
-            self.secp256r1_instruction_signature_count += tx.num_secp256r1_signatures();
-
-            if tx.is_simple_vote_transaction() {
-                self.vote_cost = self.vote_cost.saturating_add(actual_compute_units);
-            }
-
-            // Add per-account costs for writable accounts
-            let account_keys = tx.account_keys();
-            for (i, account_key) in account_keys.iter().enumerate() {
-                if tx.is_writable(i) {
-                    let account_cost = self
-                        .cost_by_writable_accounts
-                        .entry(*account_key)
-                        .or_insert(0);
-                    *account_cost = account_cost.saturating_add(actual_compute_units);
-                }
-            }
+        for (tx, actual_execution_units, loaded_accounts_data_size) in executed_txs {
+            let tx_cost = CostModel::calculate_cost(tx, feature_set);
+            self.add_transaction_cost(&tx_cost);
+            self.update_execution_cost(
+                &tx_cost,
+                actual_execution_units,
+                CostModel::calculate_loaded_accounts_data_size_cost(
+                    loaded_accounts_data_size,
+                    feature_set,
+                ),
+            );
         }
     }
 

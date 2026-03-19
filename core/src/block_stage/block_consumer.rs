@@ -328,6 +328,7 @@ impl BlockConsumer {
         if let Ok(ref commit_details) = execute_and_commit_output.commit_transactions_result {
             let mut cost_tracker = bank.write_cost_tracker().unwrap();
             cost_tracker.add_executed_transaction_costs(
+                &bank.feature_set,
                 transactions
                     .iter()
                     .zip(commit_details.iter())
