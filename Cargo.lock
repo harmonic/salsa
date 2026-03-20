@@ -4302,7 +4302,7 @@ dependencies = [
 
 [[package]]
 name = "jito-protos"
-version = "3.1.10"
+version = "3.1.11"
 dependencies = [
  "bytes",
  "prost",
@@ -7799,7 +7799,7 @@ dependencies = [
 
 [[package]]
 name = "solana-bundle"
-version = "3.1.10"
+version = "3.1.11"
 dependencies = [
  "itertools 0.12.1",
  "sha2 0.10.9",

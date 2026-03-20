@@ -299,7 +299,7 @@ itertools = "0.12.1"
 jemallocator = { package = "tikv-jemallocator", version = "0.6.0", features = [
     "unprefixed_malloc_on_supported_platforms",
 ] }
-jito-protos = { path = "jito-protos", version = "=3.1.10" }
+jito-protos = { path = "jito-protos", version = "=3.1.11" }
 js-sys = "0.3.81"
 json5 = "0.4.1"
 jsonrpc-core = "18.0.0"
