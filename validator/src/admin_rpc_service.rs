@@ -41,7 +41,6 @@ use {
         net::{IpAddr, SocketAddr},
         num::NonZeroUsize,
         path::{Path, PathBuf},
-        str::FromStr,
         sync::{
             atomic::{AtomicBool, Ordering},
             Arc, RwLock,
