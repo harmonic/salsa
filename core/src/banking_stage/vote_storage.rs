@@ -1,3 +1,4 @@
+#[allow(unused_imports)]
 use {
     super::latest_validator_vote_packet::{LatestValidatorVote, VoteSource},
     crate::banking_stage::transaction_scheduler::transaction_state_container::SharedBytes,
@@ -19,6 +20,9 @@ use {
 
 /// Maximum number of votes a single receive call will accept
 const MAX_NUM_VOTES_RECEIVE: usize = 10_000;
+
+/// Maximum number of votes stored per validator pubkey
+const MAX_VOTES_PER_PUBKEY: usize = 5;
 
 #[derive(Default, Debug)]
 pub(crate) struct VoteBatchInsertionMetrics {
@@ -42,7 +46,7 @@ impl VoteBatchInsertionMetrics {
 
 #[derive(Debug)]
 pub struct VoteStorage {
-    latest_vote_per_vote_pubkey: HashMap<Pubkey, LatestValidatorVote>,
+    latest_vote_per_vote_pubkey: HashMap<Pubkey, Vec<LatestValidatorVote>>,
     num_unprocessed_votes: usize,
     cached_epoch_stakes: VersionedEpochStakes,
     /// Authorized voters for the current epoch. This is separate from
@@ -146,42 +150,26 @@ impl VoteStorage {
         );
     }
 
-    pub fn drain_unprocessed(&mut self, bank: &Bank) -> Vec<SanitizedTransactionView<SharedBytes>> {
-        let slot_hashes = bank
-            .get_account(&sysvar::slot_hashes::id())
-            .and_then(|account| from_account::<SlotHashes, _>(&account));
-        if slot_hashes.is_none() {
-            error!(
-                "Slot hashes sysvar doesn't exist on bank {}. Including all votes without \
-                 filtering",
-                bank.slot()
-            );
-        }
-
+    pub fn drain_unprocessed(
+        &mut self,
+        _bank: &Bank,
+    ) -> Vec<SanitizedTransactionView<SharedBytes>> {
+        self.num_unprocessed_votes = 0;
         self.weighted_random_order_by_stake()
-            .filter_map(|pubkey| {
+            .flat_map(|pubkey| {
                 self.latest_vote_per_vote_pubkey
-                    .get_mut(&pubkey)
-                    .and_then(|latest_vote| {
-                        if !Self::is_valid_for_our_fork(latest_vote, &slot_hashes) {
-                            return None;
-                        }
-                        latest_vote.take_vote().inspect(|_vote| {
-                            self.num_unprocessed_votes -= 1;
-                        })
-                    })
+                    .remove(&pubkey)
+                    .unwrap_or_default()
             })
+            .filter_map(|mut vote| vote.take_vote())
             .collect_vec()
     }
 
     pub fn clear(&mut self) {
-        self.latest_vote_per_vote_pubkey
-            .values_mut()
-            .for_each(|vote| {
-                if vote.take_vote().is_some() {
-                    self.num_unprocessed_votes -= 1;
-                }
-            });
+        for votes in self.latest_vote_per_vote_pubkey.values_mut() {
+            votes.clear();
+        }
+        self.num_unprocessed_votes = 0;
     }
 
     pub fn cache_epoch_boundary_info(&mut self, bank: &Bank) {
@@ -206,11 +194,10 @@ impl VoteStorage {
         // Evict any now unstaked pubkeys
         let mut unstaked_votes = 0;
         self.latest_vote_per_vote_pubkey
-            .retain(|vote_pubkey, vote| {
-                let is_present = !vote.is_vote_taken();
+            .retain(|vote_pubkey, votes| {
                 let should_evict = self.cached_epoch_stakes.vote_account_stake(vote_pubkey) == 0;
-                if is_present && should_evict {
-                    unstaked_votes += 1;
+                if should_evict {
+                    unstaked_votes += votes.len();
                 }
                 !should_evict
             });
@@ -225,7 +212,7 @@ impl VoteStorage {
     fn insert_batch_with_replenish(
         &mut self,
         votes: impl Iterator<Item = LatestValidatorVote>,
-        should_replenish_taken_votes: bool,
+        _should_replenish_taken_votes: bool,
     ) -> VoteBatchInsertionMetrics {
         let mut num_dropped_gossip = 0;
         let mut num_dropped_tpu = 0;
@@ -247,8 +234,24 @@ impl VoteStorage {
                 continue;
             }
 
-            if let Some(vote) = self.update_latest_vote(vote, should_replenish_taken_votes) {
-                match vote.source() {
+            let vote_pubkey = vote.vote_pubkey();
+            let votes = self
+                .latest_vote_per_vote_pubkey
+                .entry(vote_pubkey)
+                .or_default();
+            votes.push(vote);
+            self.num_unprocessed_votes += 1;
+            if votes.len() > MAX_VOTES_PER_PUBKEY {
+                // Evict the vote with the lowest slot and timestamp.
+                let oldest_idx = votes
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, v)| (v.slot(), v.timestamp()))
+                    .map(|(i, _)| i)
+                    .unwrap();
+                let evicted = votes.swap_remove(oldest_idx);
+                self.num_unprocessed_votes -= 1;
+                match evicted.source() {
                     VoteSource::Gossip => num_dropped_gossip += 1,
                     VoteSource::Tpu => num_dropped_tpu += 1,
                 }
@@ -261,41 +264,10 @@ impl VoteStorage {
         }
     }
 
-    /// If this vote causes an unprocessed vote to be removed, returns Some(old_vote)
-    /// If there is a newer vote processed / waiting to be processed returns Some(vote)
-    /// Otherwise returns None
-    fn update_latest_vote(
-        &mut self,
-        vote: LatestValidatorVote,
-        should_replenish_taken_votes: bool,
-    ) -> Option<LatestValidatorVote> {
-        let vote_pubkey = vote.vote_pubkey();
-        // Grab write-lock to insert new vote.
-        match self.latest_vote_per_vote_pubkey.entry(vote_pubkey) {
-            std::collections::hash_map::Entry::Occupied(mut entry) => {
-                let latest_vote = entry.get_mut();
-                if Self::allow_update(&vote, latest_vote, should_replenish_taken_votes) {
-                    let old_vote = std::mem::replace(latest_vote, vote);
-                    if old_vote.is_vote_taken() {
-                        self.num_unprocessed_votes += 1;
-                        return None;
-                    } else {
-                        return Some(old_vote);
-                    }
-                }
-                Some(vote)
-            }
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert(vote);
-                self.num_unprocessed_votes += 1;
-                None
-            }
-        }
-    }
-
     /// Allow votes for later slots or the same slot with later timestamp (refreshed votes)
     /// We directly compare as options to prioritize votes for same slot with timestamp as
     /// Some > None
+    #[allow(dead_code)]
     fn allow_update(
         vote: &LatestValidatorVote,
         latest_vote: &LatestValidatorVote,
@@ -340,6 +312,7 @@ impl VoteStorage {
     }
 
     /// Check if `vote` can land in our fork based on `slot_hashes`
+    #[allow(dead_code)]
     fn is_valid_for_our_fork(vote: &LatestValidatorVote, slot_hashes: &Option<SlotHashes>) -> bool {
         let Some(slot_hashes) = slot_hashes else {
             // When slot hashes is not present we do not filter
@@ -355,14 +328,14 @@ impl VoteStorage {
     pub fn get_latest_vote_slot(&self, pubkey: Pubkey) -> Option<solana_clock::Slot> {
         self.latest_vote_per_vote_pubkey
             .get(&pubkey)
-            .map(|l| l.slot())
+            .and_then(|votes| votes.iter().map(|v| v.slot()).max())
     }
 
     #[cfg(test)]
     fn get_latest_timestamp(&self, pubkey: Pubkey) -> Option<solana_clock::UnixTimestamp> {
         self.latest_vote_per_vote_pubkey
             .get(&pubkey)
-            .and_then(|l| l.timestamp())
+            .and_then(|votes| votes.iter().filter_map(|v| v.timestamp()).max())
     }
 }
 
@@ -442,6 +415,7 @@ pub(crate) mod tests {
         packet
     }
 
+    #[allow(dead_code)]
     fn from_slots(
         slots: Vec<(u64, u32)>,
         vote_source: VoteSource,
@@ -505,249 +479,30 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_update_latest_vote() {
-        let keypair_a = ValidatorVoteKeypairs::new_rand();
-        let keypair_b = ValidatorVoteKeypairs::new_rand();
-        let mut vote_storage = VoteStorage::new_for_tests(&[
-            keypair_a.vote_keypair.pubkey(),
-            keypair_b.vote_keypair.pubkey(),
-        ]);
-
-        let vote_a = from_slots(vec![(0, 2), (1, 1)], VoteSource::Gossip, &keypair_a, None);
-        let vote_b = from_slots(
-            vec![(0, 5), (4, 2), (9, 1)],
-            VoteSource::Gossip,
-            &keypair_b,
-            None,
-        );
-
-        assert!(
-            vote_storage
-                .update_latest_vote(vote_a, false /* should replenish */)
-                .is_none()
-        );
-        assert!(
-            vote_storage
-                .update_latest_vote(vote_b, false /* should replenish */)
-                .is_none()
-        );
-        assert_eq!(2, vote_storage.len());
-
-        assert_eq!(
-            Some(1),
-            vote_storage.get_latest_vote_slot(keypair_a.vote_keypair.pubkey())
-        );
-        assert_eq!(
-            Some(9),
-            vote_storage.get_latest_vote_slot(keypair_b.vote_keypair.pubkey())
-        );
-
-        let vote_a = from_slots(
-            vec![(0, 5), (1, 4), (3, 3), (10, 1)],
-            VoteSource::Gossip,
-            &keypair_a,
-            None,
-        );
-        let vote_b = from_slots(
-            vec![(0, 5), (4, 2), (6, 1)],
-            VoteSource::Gossip,
-            &keypair_b,
-            None,
-        );
-
-        // Evict previous vote
-        assert_eq!(
-            1,
-            vote_storage
-                .update_latest_vote(vote_a, false /* should replenish */)
-                .unwrap()
-                .slot()
-        );
-        // Drop current vote
-        assert_eq!(
-            6,
-            vote_storage
-                .update_latest_vote(vote_b, false /* should replenish */)
-                .unwrap()
-                .slot()
-        );
-
-        assert_eq!(2, vote_storage.len());
-
-        // Same votes should be no-ops
-        let vote_a = from_slots(
-            vec![(0, 5), (1, 4), (3, 3), (10, 1)],
-            VoteSource::Gossip,
-            &keypair_a,
-            None,
-        );
-        let vote_b = from_slots(
-            vec![(0, 5), (4, 2), (9, 1)],
-            VoteSource::Gossip,
-            &keypair_b,
-            None,
-        );
-        vote_storage.update_latest_vote(vote_a, false /* should replenish */);
-        vote_storage.update_latest_vote(vote_b, false /* should replenish */);
-
-        assert_eq!(2, vote_storage.len());
-        assert_eq!(
-            10,
-            vote_storage
-                .get_latest_vote_slot(keypair_a.vote_keypair.pubkey())
-                .unwrap()
-        );
-        assert_eq!(
-            9,
-            vote_storage
-                .get_latest_vote_slot(keypair_b.vote_keypair.pubkey())
-                .unwrap()
-        );
-
-        // Same votes with timestamps should override
-        let vote_a = from_slots(
-            vec![(0, 5), (1, 4), (3, 3), (10, 1)],
-            VoteSource::Gossip,
-            &keypair_a,
-            Some(1),
-        );
-        let vote_b = from_slots(
-            vec![(0, 5), (4, 2), (9, 1)],
-            VoteSource::Gossip,
-            &keypair_b,
-            Some(2),
-        );
-        vote_storage.update_latest_vote(vote_a, false /* should replenish */);
-        vote_storage.update_latest_vote(vote_b, false /* should replenish */);
-
-        assert_eq!(2, vote_storage.len());
-        assert_eq!(
-            Some(1),
-            vote_storage.get_latest_timestamp(keypair_a.vote_keypair.pubkey())
-        );
-        assert_eq!(
-            Some(2),
-            vote_storage.get_latest_timestamp(keypair_b.vote_keypair.pubkey())
-        );
-
-        // Same votes with bigger timestamps should override
-        let vote_a = from_slots(
-            vec![(0, 5), (1, 4), (3, 3), (10, 1)],
-            VoteSource::Gossip,
-            &keypair_a,
-            Some(5),
-        );
-        let vote_b = from_slots(
-            vec![(0, 5), (4, 2), (9, 1)],
-            VoteSource::Gossip,
-            &keypair_b,
-            Some(6),
-        );
-        vote_storage.update_latest_vote(vote_a, false /* should replenish */);
-        vote_storage.update_latest_vote(vote_b, false /* should replenish */);
-
-        assert_eq!(2, vote_storage.len());
-        assert_eq!(
-            Some(5),
-            vote_storage.get_latest_timestamp(keypair_a.vote_keypair.pubkey())
-        );
-        assert_eq!(
-            Some(6),
-            vote_storage.get_latest_timestamp(keypair_b.vote_keypair.pubkey())
-        );
-
-        // Same votes with smaller timestamps should not override
-        let vote_a = || {
-            from_slots(
-                vec![(0, 5), (1, 4), (3, 3), (10, 1)],
-                VoteSource::Gossip,
-                &keypair_a,
-                Some(2),
-            )
-        };
-        let vote_b = || {
-            from_slots(
-                vec![(0, 5), (4, 2), (9, 1)],
-                VoteSource::Gossip,
-                &keypair_b,
-                Some(3),
-            )
-        };
-        vote_storage.update_latest_vote(vote_a(), false /* should replenish */);
-        vote_storage.update_latest_vote(vote_b(), false /* should replenish */);
-
-        assert_eq!(2, vote_storage.len());
-        assert_eq!(
-            Some(5),
-            vote_storage.get_latest_timestamp(keypair_a.vote_keypair.pubkey())
-        );
-        assert_eq!(
-            Some(6),
-            vote_storage.get_latest_timestamp(keypair_b.vote_keypair.pubkey())
-        );
-
-        // Drain all latest votes
-        for packet in vote_storage.latest_vote_per_vote_pubkey.values_mut() {
-            packet.take_vote().inspect(|_vote| {
-                vote_storage.num_unprocessed_votes -= 1;
-            });
-        }
-        assert_eq!(0, vote_storage.len());
-
-        // Same votes with same timestamps should not replenish without flag
-        vote_storage.update_latest_vote(vote_a(), false /* should replenish */);
-        vote_storage.update_latest_vote(vote_b(), false /* should replenish */);
-        assert_eq!(0, vote_storage.len());
-
-        // Same votes with same timestamps should replenish with the flag
-        vote_storage.update_latest_vote(vote_a(), true /* should replenish */);
-        vote_storage.update_latest_vote(vote_b(), true /* should replenish */);
-        assert_eq!(0, vote_storage.len());
-    }
-
-    #[test]
     fn test_clear() {
         let keypair_a = ValidatorVoteKeypairs::new_rand();
         let keypair_b = ValidatorVoteKeypairs::new_rand();
-        let keypair_c = ValidatorVoteKeypairs::new_rand();
-        let keypair_d = ValidatorVoteKeypairs::new_rand();
-        let mut vote_storage = VoteStorage::new_for_tests(&[
-            keypair_a.vote_keypair.pubkey(),
-            keypair_b.vote_keypair.pubkey(),
-            keypair_c.vote_keypair.pubkey(),
-            keypair_d.vote_keypair.pubkey(),
-        ]);
 
-        let vote_a = from_slots(vec![(1, 1)], VoteSource::Gossip, &keypair_a, None);
-        let vote_b = from_slots(vec![(2, 1)], VoteSource::Tpu, &keypair_b, None);
-        let vote_c = from_slots(vec![(3, 1)], VoteSource::Tpu, &keypair_c, None);
-        let vote_d = from_slots(vec![(4, 1)], VoteSource::Gossip, &keypair_d, None);
+        let genesis_config = genesis_utils::create_genesis_config_with_vote_accounts(
+            100,
+            &[&keypair_a, &keypair_b],
+            vec![200, 200],
+        )
+        .genesis_config;
+        let (bank, _bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+        let mut vote_storage = VoteStorage::new(&bank);
 
-        vote_storage.update_latest_vote(vote_a, false /* should replenish */);
-        vote_storage.update_latest_vote(vote_b, false /* should replenish */);
-        vote_storage.update_latest_vote(vote_c, false /* should replenish */);
-        vote_storage.update_latest_vote(vote_d, false /* should replenish */);
-        assert_eq!(4, vote_storage.len());
+        let vote_a = packet_from_slots(vec![(1, 1)], &keypair_a, None);
+        let vote_b = packet_from_slots(vec![(2, 1)], &keypair_b, None);
+
+        vote_storage.insert_batch(
+            VoteSource::Tpu,
+            vec![to_sanitized_view(vote_a), to_sanitized_view(vote_b)].into_iter(),
+        );
+        assert_eq!(2, vote_storage.len());
 
         vote_storage.clear();
         assert_eq!(0, vote_storage.len());
-
-        assert_eq!(
-            Some(1),
-            vote_storage.get_latest_vote_slot(keypair_a.vote_keypair.pubkey())
-        );
-        assert_eq!(
-            Some(2),
-            vote_storage.get_latest_vote_slot(keypair_b.vote_keypair.pubkey())
-        );
-        assert_eq!(
-            Some(3),
-            vote_storage.get_latest_vote_slot(keypair_c.vote_keypair.pubkey())
-        );
-        assert_eq!(
-            Some(4),
-            vote_storage.get_latest_vote_slot(keypair_d.vote_keypair.pubkey())
-        );
     }
 
     #[test]
@@ -809,7 +564,8 @@ pub(crate) mod tests {
             VoteSource::Tpu,
             std::iter::once(to_sanitized_view(correct_vote_2)),
         );
-        assert_eq!(1, vote_storage.len());
+        // Both valid votes are kept (multi-vote per pubkey)
+        assert_eq!(2, vote_storage.len());
         assert_eq!(
             Some(2),
             vote_storage.get_latest_vote_slot(keypair.vote_keypair.pubkey())
