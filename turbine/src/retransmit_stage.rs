@@ -2,14 +2,16 @@
 
 use {
     crate::{
-        XdpSender,
+        MulticastRootConfig, ShredReceiverAddresses, XdpSender,
         cluster_nodes::{
             ClusterNodes, ClusterNodesCache, DATA_PLANE_FANOUT, Error, MAX_NUM_TURBINE_HOPS,
         },
+        multicast_root_forwarder,
     },
     agave_votor::event::VotorEvent,
     agave_votor_messages::migration::MigrationStatus,
     agave_worker_pool::{WorkerPool, WorkerPoolConfig},
+    arc_swap::ArcSwap,
     crossbeam_channel::{Receiver, Sender, TrySendError},
     lru::LruCache,
     rand::Rng,
@@ -23,7 +25,7 @@ use {
         },
     },
     solana_measure::measure::Measure,
-    solana_net_utils::SocketAddrSpace,
+    solana_net_utils::{SocketAddrSpace, bind_to_unspecified},
     solana_perf::deduper::Deduper,
     solana_pubkey::Pubkey,
     solana_rpc::{
@@ -107,6 +109,8 @@ struct RetransmitStats {
     num_addrs_failed: usize,
     num_shreds_dropped_xdp_full: usize,
     num_loopback_errs: usize,
+    num_external_sent: usize,
+    num_external_failed: usize,
     num_shreds: usize,
     num_shreds_skipped: usize,
     num_small_batches: usize,
@@ -138,6 +142,9 @@ struct WorkerContext {
     shred_deduper: Arc<ShredDeduper>,
     max_slots: Arc<MaxSlots>,
     stats_sender: Sender<BatchStats>,
+    shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+    external_sender_socket: UdpSocket,
+    multicast_root: Option<MulticastRootConfig>,
 }
 
 impl RetransmitStats {
@@ -175,6 +182,8 @@ impl RetransmitStats {
                 i64
             ),
             ("num_loopback_errs", self.num_loopback_errs, i64),
+            ("num_external_sent", self.num_external_sent, i64),
+            ("num_external_failed", self.num_external_failed, i64),
             ("num_shreds", self.num_shreds, i64),
             ("num_shreds_skipped", self.num_shreds_skipped, i64),
             ("retransmit_total", self.retransmit_total, i64),
@@ -251,6 +260,8 @@ struct BatchStats {
     num_addrs_failed: usize,
     num_shreds_dropped_xdp_full: usize,
     num_loopback_errs: usize,
+    num_external_sent: usize,
+    num_external_failed: usize,
     num_shreds_skipped: usize,
     retransmit_total: u64,
     compute_turbine_peers_total: u64,
@@ -386,6 +397,9 @@ fn retransmit_batch(mut shreds: ShredBatch, worker_index: usize, context: &Worke
         context.xdp_sender.as_ref(),
         &context.cluster_info,
     );
+    let shred_receiver_addresses = context.shred_receiver_addresses.load();
+    let multicast_root_addr =
+        multicast_root_forwarder::receiver_address(context.multicast_root.as_ref());
     for shred in shreds.drain(..) {
         let shred_stats = retransmit_shred(
             shred,
@@ -394,7 +408,10 @@ fn retransmit_batch(mut shreds: ShredBatch, worker_index: usize, context: &Worke
             &cache,
             socket_addr_space,
             &socket,
+            &context.external_sender_socket,
             &mut stats,
+            &shred_receiver_addresses,
+            multicast_root_addr,
         );
         if let Some(shred_stats) = shred_stats {
             stats.record_slot_stats(shred_stats);
@@ -408,6 +425,7 @@ fn retransmit_batch(mut shreds: ShredBatch, worker_index: usize, context: &Worke
 }
 
 // Retransmit a single shred to all downstream nodes
+#[allow(clippy::too_many_arguments)]
 fn retransmit_shred(
     shred: shred::Payload,
     root_bank: &Bank,
@@ -415,7 +433,10 @@ fn retransmit_shred(
     slot_leader_cache: &SlotLeaderCache,
     socket_addr_space: &SocketAddrSpace,
     socket: &RetransmitSocket<'_>,
+    external_sender_socket: &UdpSocket,
     stats: &mut BatchStats,
+    shred_receiver_addresses: &ShredReceiverAddresses,
+    multicast_root_addr: Option<SocketAddr>,
 ) -> Option<RetransmitShredOutput> {
     let key = shred::layout::get_shred_id(shred.as_ref())?;
     if key.slot() < root_bank.slot()
@@ -438,7 +459,7 @@ fn retransmit_shred(
         RetransmitSocket::Xdp(sender) => {
             let mut sent = num_addrs;
             if num_addrs > 0
-                && let Err(e) = sender.try_send(key.index() as usize, addrs, shred.bytes)
+                && let Err(e) = sender.try_send(key.index() as usize, addrs, shred.bytes.clone())
             {
                 log::warn!("xdp channel full: {e:?}");
                 stats.num_shreds_dropped_xdp_full += num_addrs;
@@ -448,7 +469,7 @@ fn retransmit_shred(
         }
         RetransmitSocket::Socket(_) | RetransmitSocket::Multihomed { .. } => {
             let socket = socket.get_socket();
-            match multi_target_send(socket, shred, addrs.as_ref()) {
+            match multi_target_send(socket, &shred, addrs.as_ref()) {
                 Ok(num_sent) => num_sent,
                 Err(SendPktsError::IoError(ioerr)) => {
                     error!(
@@ -461,6 +482,19 @@ fn retransmit_shred(
         }
     };
     retransmit_time.stop();
+
+    // Sent after turbine so external receivers never delay turbine fanout. They go through the
+    // 0.0.0.0-bound socket in both socket and XDP modes so the kernel routing table picks the
+    // path. XDP only consults the main routing table, so it cannot deliver to addresses local to
+    // this host. The multicast group stays out of `addrs`, which the turbine cache replays.
+    send_to_external_receivers(
+        external_sender_socket,
+        shred.as_ref(),
+        multicast_root_forwarder::maybe_external_addr(multicast_root_addr, root_distance),
+        shred_receiver_addresses,
+        stats,
+    );
+
     stats.num_addrs_failed += num_addrs - num_nodes;
     stats.num_nodes += num_nodes;
     stats.retransmit_total += retransmit_time.as_us();
@@ -470,6 +504,37 @@ fn retransmit_shred(
         root_distance,
         num_nodes,
     })
+}
+
+/// Send `shred` once to the multicast root group, if any, and each shred receiver
+fn send_to_external_receivers(
+    socket: &UdpSocket,
+    shred: &[u8],
+    multicast_addr: Option<SocketAddr>,
+    shred_receiver_addresses: &ShredReceiverAddresses,
+    stats: &mut BatchStats,
+) {
+    let mut dests = ShredReceiverAddresses::new();
+    for addr in multicast_addr
+        .into_iter()
+        .chain(shred_receiver_addresses.iter().copied())
+    {
+        if !dests.contains(&addr) {
+            dests.push(addr);
+        }
+    }
+    if dests.is_empty() {
+        return;
+    }
+    let num_sent = match multi_target_send(socket, shred, &dests) {
+        Ok(num_sent) => num_sent.min(dests.len()),
+        Err(SendPktsError::IoError(err)) => {
+            debug!("external receiver forward failed: {err}");
+            0
+        }
+    };
+    stats.num_external_sent += num_sent;
+    stats.num_external_failed += dests.len() - num_sent;
 }
 
 fn get_retransmit_addrs(
@@ -515,6 +580,8 @@ impl RetransmitStage {
         slot_status_notifier: Option<SlotStatusNotifier>,
         xdp_sender: Option<XdpSender>,
         votor_event_sender: Sender<VotorEvent>,
+        shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+        multicast_root: Option<MulticastRootConfig>,
     ) -> (RetransmitSender, Self) {
         let (sharable_banks, migration_status) = {
             let bank_forks = bank_forks.read().unwrap();
@@ -532,6 +599,16 @@ impl RetransmitStage {
         let (stats_sender, stats_receiver) =
             crossbeam_channel::bounded(STATS_BATCHES_PER_WORKER * num_workers.get());
         let is_xdp = xdp_sender.is_some();
+        // Dedicated socket for external receivers: shred receivers and the
+        // multicast-root forward. Bound to 0.0.0.0:0 (not --bind-address) so the
+        // OS routing table selects the outbound interface per destination,
+        // regardless of which interface Turbine retransmit uses for unicast peers.
+        let external_sender_socket =
+            bind_to_unspecified().expect("bind retransmit external_sender_socket 0.0.0.0:0");
+        // Without it multicast stays on the local subnet; unicast receivers still work
+        if let Err(err) = external_sender_socket.set_multicast_ttl_v4(64) {
+            log::warn!("retransmit external_sender_socket: failed to set multicast TTL: {err}");
+        }
         let context = Arc::new(WorkerContext {
             sharable_banks: sharable_banks.clone(),
             leader_schedule_cache,
@@ -542,6 +619,9 @@ impl RetransmitStage {
             shred_deduper: shred_deduper.clone(),
             max_slots,
             stats_sender,
+            shred_receiver_addresses,
+            external_sender_socket,
+            multicast_root,
         });
 
         // Match workers to retransmit sockets to preserve socket affinity.
@@ -686,6 +766,8 @@ impl RetransmitStats {
             num_addrs_failed: 0usize,
             num_shreds_dropped_xdp_full: 0usize,
             num_loopback_errs: 0usize,
+            num_external_sent: 0usize,
+            num_external_failed: 0usize,
             num_shreds: 0usize,
             num_shreds_skipped: 0usize,
             total_batches: 0usize,
@@ -748,6 +830,8 @@ impl RetransmitStats {
         self.num_addrs_failed += job_stats.num_addrs_failed;
         self.num_shreds_dropped_xdp_full += job_stats.num_shreds_dropped_xdp_full;
         self.num_loopback_errs += job_stats.num_loopback_errs;
+        self.num_external_sent += job_stats.num_external_sent;
+        self.num_external_failed += job_stats.num_external_failed;
         self.num_shreds_skipped += job_stats.num_shreds_skipped;
         self.total_worker_time_us += job_stats.total_time;
         self.epoch_fetch += job_stats.epoch_fetch;
@@ -862,6 +946,7 @@ mod tests {
         solana_keypair::Keypair,
         solana_leader_schedule::NUM_CONSECUTIVE_LEADER_SLOTS,
         solana_ledger::shred::{ProcessShredsStats, Shredder},
+        solana_net_utils::sockets::bind_to_localhost_unique,
     };
 
     fn get_keypair() -> Keypair {
@@ -1047,5 +1132,43 @@ mod tests {
             votor_event_receiver.try_recv(),
             Err(TryRecvError::Empty)
         ));
+    }
+
+    #[test]
+    fn test_send_to_external_receivers() {
+        let sender = bind_to_unspecified().unwrap();
+        let receivers: Vec<_> = (0..2)
+            .map(|_| {
+                let socket = bind_to_localhost_unique().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(1)))
+                    .unwrap();
+                socket
+            })
+            .collect();
+        let addrs: ShredReceiverAddresses = receivers
+            .iter()
+            .map(|socket| socket.local_addr().unwrap())
+            .collect();
+        let mut stats = BatchStats::default();
+        let shred = [7u8; 64];
+
+        send_to_external_receivers(
+            &sender,
+            &shred,
+            None,
+            &ShredReceiverAddresses::new(),
+            &mut stats,
+        );
+        // The multicast address duplicates a receiver: each gets the shred once
+        send_to_external_receivers(&sender, &shred, Some(addrs[0]), &addrs, &mut stats);
+
+        for receiver in &receivers {
+            let mut buf = [0u8; 128];
+            let (len, _) = receiver.recv_from(&mut buf).unwrap();
+            assert_eq!(&buf[..len], &shred);
+        }
+        assert_eq!(stats.num_external_sent, 2);
+        assert_eq!(stats.num_external_failed, 0);
     }
 }
