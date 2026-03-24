@@ -89,6 +89,7 @@ fn broadcast_shreds_bench(b: &mut Bencher) {
             &cluster_info,
             &bank_forks,
             &SocketAddrSpace::Unspecified,
+            &solana_turbine::ShredReceiverAddresses::new(),
         )
         .unwrap();
     });
