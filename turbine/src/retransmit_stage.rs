@@ -2,6 +2,7 @@
 
 use {
     crate::{
+        ShredReceiverAddresses,
         addr_cache::AddrCache,
         cluster_nodes::{
             ClusterNodes, ClusterNodesCache, DATA_PLANE_FANOUT, Error, MAX_NUM_TURBINE_HOPS,
@@ -10,6 +11,7 @@ use {
     agave_votor::event::VotorEvent,
     agave_votor_messages::migration::MigrationStatus,
     agave_xdp::xdp_retransmitter::XdpSender,
+    arc_swap::ArcSwap,
     crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError},
     lru::LruCache,
     rand::Rng,
@@ -303,6 +305,7 @@ fn retransmit(
     shred_buf: &mut Vec<Vec<shred::Payload>>,
     votor_event_sender: &Sender<VotorEvent>,
     migration_status: &MigrationStatus,
+    shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
 ) -> Result<(), ()> {
     // Try to receive shreds from the channel without blocking. If the channel
     // is empty precompute turbine trees speculatively. If no cache updates are
@@ -389,6 +392,7 @@ fn retransmit(
         entry.record(now, out);
         stats
     };
+    let shred_receiver_addresses_local = shred_receiver_addresses.load();
     let retransmit_shred = |shred, socket, stats| {
         retransmit_shred(
             shred,
@@ -399,6 +403,7 @@ fn retransmit(
             socket_addr_space,
             socket,
             stats,
+            &shred_receiver_addresses_local,
         )
     };
 
@@ -461,6 +466,7 @@ fn retransmit_shred(
     socket_addr_space: &SocketAddrSpace,
     socket: RetransmitSocket<'_>,
     stats: &RetransmitStats,
+    shred_receiver_addresses: &ShredReceiverAddresses,
 ) -> Option<RetransmitShredOutput> {
     let key = shred::layout::get_shred_id(shred.as_ref())?;
     if key.slot() < root_bank.slot()
@@ -480,6 +486,14 @@ fn retransmit_shred(
         .map(|flags| flags.contains(ShredFlags::LAST_SHRED_IN_SLOT))
         .unwrap_or_default();
     let mut retransmit_time = Measure::start("retransmit_to");
+    // Extend addresses with external shred receivers
+    let addrs = if shred_receiver_addresses.is_empty() {
+        addrs
+    } else {
+        let mut extended = addrs.into_owned();
+        extended.extend(shred_receiver_addresses.iter().copied());
+        Cow::Owned(extended)
+    };
     let num_addrs = addrs.len();
     let num_nodes = match socket {
         RetransmitSocket::Xdp(sender) => {
@@ -643,6 +657,7 @@ impl RetransmitStage {
         slot_status_notifier: Option<SlotStatusNotifier>,
         xdp_sender: Option<XdpSender>,
         votor_event_sender: Sender<VotorEvent>,
+        shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
     ) -> Self {
         let migration_status = bank_forks.read().unwrap().migration_status();
         let cluster_nodes_cache = ClusterNodesCache::<RetransmitStage>::new(
@@ -686,6 +701,7 @@ impl RetransmitStage {
                         &mut shred_buf,
                         &votor_event_sender,
                         &migration_status,
+                        &shred_receiver_addresses,
                     )
                     .is_ok()
                     {}

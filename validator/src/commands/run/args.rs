@@ -459,6 +459,30 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
             ),
     )
     .arg(
+        Arg::with_name("shred_receiver_address")
+            .long("shred-receiver-address")
+            .value_name("HOST:PORT")
+            .takes_value(true)
+            .multiple(true)
+            .help(
+                "Forward all leader shreds to these addresses. May be specified multiple times or \
+                 as comma-separated entries. Hostnames resolve to IPv4 only. Up to 32 unique \
+                 addresses. Empty string disables.",
+            ),
+    )
+    .arg(
+        Arg::with_name("shred_retransmit_receiver_address")
+            .long("shred-retransmit-receiver-address")
+            .value_name("HOST:PORT")
+            .takes_value(true)
+            .multiple(true)
+            .help(
+                "Forward all retransmit shreds to these addresses. May be specified multiple \
+                 times or as comma-separated entries. Hostnames resolve to IPv4 only. Up to 32 \
+                 unique addresses. Empty string disables.",
+            ),
+    )
+    .arg(
         Arg::with_name("minimal_snapshot_download_speed")
             .long("minimal-snapshot-download-speed")
             .value_name("MINIMAL_SNAPSHOT_DOWNLOAD_SPEED")
