@@ -44,6 +44,7 @@ use {
         VerifiedVoterSlotsReceiver, VerifiedVoterSlotsSender, consensus_message::Block,
         metric_types::MAX_IN_FLIGHT_CONSENSUS_EVENTS,
     },
+    arc_swap::ArcSwap,
     crossbeam_channel::{Receiver, Sender, bounded, unbounded},
     solana_client::connection_cache::ConnectionCache,
     solana_clock::Slot,
@@ -86,7 +87,9 @@ use {
         quic::{QuicStreamerConfig, SpawnServerResult, spawn_simple_qos_server},
         streamer::StakedNodes,
     },
-    solana_turbine::{XdpSender as TurbineXdpSender, retransmit_stage::RetransmitStage},
+    solana_turbine::{
+        ShredReceiverAddresses, XdpSender as TurbineXdpSender, retransmit_stage::RetransmitStage,
+    },
     std::{
         collections::HashSet,
         net::UdpSocket,
@@ -254,6 +257,7 @@ impl Tvu {
         vote_connection_cache: Arc<ConnectionCache>,
         votor_init: AlpenglowInitializationState,
         reward_aggregates_sender: Sender<RewardInput>,
+        shred_retransmit_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
     ) -> Result<Self, String> {
         let migration_status = bank_forks.read().unwrap().migration_status();
 
@@ -410,6 +414,7 @@ impl Tvu {
             slot_status_notifier.clone(),
             tvu_config.turbine_xdp_sender,
             votor_event_sender.clone(),
+            shred_retransmit_receiver_addresses,
         );
 
         let (ancestor_duplicate_slots_sender, ancestor_duplicate_slots_receiver) = unbounded();
@@ -918,6 +923,7 @@ pub mod tests {
                 bank_forks_controller_receiver,
             },
             reward_vote_aggregates_sender,
+            Arc::new(ArcSwap::from_pointee(ShredReceiverAddresses::new())),
         )
         .expect("assume success");
         exit.store(true, Ordering::Relaxed);
