@@ -17,6 +17,8 @@ use {
             verify_blockstore_root_with_vote_history,
         },
         forwarding_stage::ForwardingClientConfig,
+        multicast_root_receiver::{addresses_for_cluster, spawn_shred_check_services},
+        multicast_shred_check_service::MulticastShredCheckService,
         repair::{
             self, repair_handler::RepairHandlerType, serve_repair_service::ServeRepairService,
         },
@@ -154,7 +156,9 @@ use {
     },
     solana_time_utils::timestamp,
     solana_tpu_client::tpu_client::{DEFAULT_TPU_CONNECTION_POOL_SIZE, DEFAULT_VOTE_USE_QUIC},
-    solana_turbine::{self, broadcast_stage::BroadcastStageType},
+    solana_turbine::{
+        self, MulticastRootConfig, ShredReceiverAddresses, broadcast_stage::BroadcastStageType,
+    },
     solana_unified_scheduler_pool::DefaultSchedulerPool,
     solana_validator_exit::Exit,
     solana_vote_program::vote_state::{VoteStateV4, handler::VoteStateHandler},
@@ -413,6 +417,15 @@ pub struct ValidatorConfig {
     pub repair_handler_type: RepairHandlerType,
     // Thread niceness adjustment for snapshot packager service
     pub snapshot_packager_niceness_adj: i8,
+    /// Configured leader shred receiver addresses. This list may be empty.
+    /// Auto-detected multicast may still be appended when the cluster
+    /// route exists and the multicast address is not already present.
+    pub shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+    pub shred_retransmit_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+    /// Automatically detected multicast destination for leader shreds.
+    pub multicast_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+    /// Skips automatic multicast route detection and multicast receiver updates.
+    pub disable_multicast_shred_check: bool,
 }
 
 impl ValidatorConfig {
@@ -498,6 +511,14 @@ impl ValidatorConfig {
             delay_leader_block_for_pending_fork: true,
             repair_handler_type: RepairHandlerType::default(),
             snapshot_packager_niceness_adj: 0,
+            shred_receiver_addresses: Arc::new(
+                ArcSwap::from_pointee(ShredReceiverAddresses::new()),
+            ),
+            shred_retransmit_receiver_addresses: Arc::new(ArcSwap::from_pointee(
+                ShredReceiverAddresses::new(),
+            )),
+            multicast_receiver_address: Arc::new(ArcSwap::from_pointee(None)),
+            disable_multicast_shred_check: false,
         }
     }
 
@@ -705,6 +726,11 @@ pub struct Validator {
     transaction_status_service: Option<TransactionStatusService>,
     entry_notifier_service: Option<EntryNotifierService>,
     system_monitor_service: Option<SystemMonitorService>,
+    /// Background watchers that keep the cluster multicast shred addresses in
+    /// sync with kernel route availability. One per multicast destination
+    /// (leader broadcast and retransmit root forwarding). Empty on cluster
+    /// types that do not advertise a multicast group.
+    multicast_shred_check_services: Vec<MulticastShredCheckService>,
     sample_performance_service: Option<SamplePerformanceService>,
     stats_reporter_service: StatsReporterService,
     gossip_service: GossipService,
@@ -1702,6 +1728,15 @@ impl Validator {
             into_quic_sockets(node.sockets.votor_server, votor_xdp_sender.as_ref()).collect();
         let votor_client_socket =
             into_quic_socket(node.sockets.quic_votor_client, votor_xdp_sender.as_ref());
+        // Updated by `MulticastShredCheckService`, read by the retransmit stage.
+        let multicast_root_receiver_address: Arc<ArcSwap<Option<SocketAddr>>> =
+            Arc::new(ArcSwap::from_pointee(None));
+        let multicast_addresses = (!config.disable_multicast_shred_check)
+            .then(|| addresses_for_cluster(genesis_config.cluster_type))
+            .flatten();
+        let multicast_root = multicast_addresses.map(|_| MulticastRootConfig {
+            receiver_address: multicast_root_receiver_address.clone(),
+        });
 
         let tvu = Tvu::new(
             vote_account,
@@ -1753,6 +1788,7 @@ impl Validator {
                 turbine_xdp_sender: turbine_xdp_sender.clone(),
                 repair_xdp_sender,
                 replay_arena,
+                multicast_root,
             },
             &max_slots,
             block_metadata_notifier,
@@ -1783,6 +1819,7 @@ impl Validator {
                 highest_finalized,
             },
             reward_aggregates_sender,
+            config.shred_retransmit_receiver_addresses.clone(),
         )
         .map_err(ValidatorError::Other)?;
 
@@ -1861,6 +1898,8 @@ impl Validator {
             }),
             cancel,
             votor_event_sender.clone(),
+            config.shred_receiver_addresses.clone(),
+            config.multicast_receiver_address.clone(),
         );
 
         datapoint_info!(
@@ -1895,7 +1934,16 @@ impl Validator {
             snapshot_controller,
             blockstore: blockstore.clone(),
             votor_event_sender,
+            shred_receiver_addresses: config.shred_receiver_addresses.clone(),
+            shred_retransmit_receiver_addresses: config.shred_retransmit_receiver_addresses.clone(),
         });
+
+        let multicast_shred_check_services = spawn_shred_check_services(
+            exit.clone(),
+            multicast_addresses,
+            config.multicast_receiver_address.clone(),
+            multicast_root_receiver_address,
+        );
 
         Ok(Self {
             log_config: config.log_config.clone(),
@@ -1910,6 +1958,7 @@ impl Validator {
             transaction_status_service,
             entry_notifier_service,
             system_monitor_service,
+            multicast_shred_check_services,
             sample_performance_service,
             snapshot_packager_service,
             completed_data_sets_service,
@@ -2060,6 +2109,12 @@ impl Validator {
             system_monitor_service
                 .join()
                 .expect("system_monitor_service");
+        }
+
+        for multicast_shred_check_service in self.multicast_shred_check_services {
+            multicast_shred_check_service
+                .join()
+                .expect("multicast_shred_check_service");
         }
 
         if let Some(sample_performance_service) = self.sample_performance_service {

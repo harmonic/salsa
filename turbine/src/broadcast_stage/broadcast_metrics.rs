@@ -1,4 +1,4 @@
-use super::*;
+use {super::*, std::collections::HashMap};
 
 pub(crate) trait BroadcastStats {
     fn update(&mut self, new_stats: &Self);
@@ -23,6 +23,9 @@ pub struct TransmitShredsStats {
     pub total_packets: usize,
     pub(crate) dropped_packets_udp: usize,
     pub(crate) dropped_packets_xdp: usize,
+    /// Packets to shred receivers and the multicast group
+    pub(crate) external_packets_sent: usize,
+    pub(crate) external_packets_dropped: usize,
     pub(crate) is_xdp: bool,
 }
 
@@ -35,6 +38,8 @@ impl BroadcastStats for TransmitShredsStats {
         self.total_packets += new_stats.total_packets;
         self.dropped_packets_udp += new_stats.dropped_packets_udp;
         self.dropped_packets_xdp += new_stats.dropped_packets_xdp;
+        self.external_packets_sent += new_stats.external_packets_sent;
+        self.external_packets_dropped += new_stats.external_packets_dropped;
     }
     fn report_stats(&mut self, slot: Slot, slot_start: Instant, was_interrupted: bool) {
         if was_interrupted {
@@ -48,6 +53,8 @@ impl BroadcastStats for TransmitShredsStats {
                 ("total_packets", self.total_packets as i64, i64),
                 ("dropped_packets_udp", self.dropped_packets_udp as i64, i64),
                 ("dropped_packets_xdp", self.dropped_packets_xdp as i64, i64),
+                ("external_packets_sent", self.external_packets_sent as i64, i64),
+                ("external_packets_dropped", self.external_packets_dropped as i64, i64),
             );
         } else {
             datapoint_info!(
@@ -67,6 +74,8 @@ impl BroadcastStats for TransmitShredsStats {
                 ("total_packets", self.total_packets as i64, i64),
                 ("dropped_packets_udp", self.dropped_packets_udp as i64, i64),
                 ("dropped_packets_xdp", self.dropped_packets_xdp as i64, i64),
+                ("external_packets_sent", self.external_packets_sent as i64, i64),
+                ("external_packets_dropped", self.external_packets_dropped as i64, i64),
             );
         }
     }
@@ -213,6 +222,7 @@ mod test {
                 dropped_packets_udp: 8,
                 dropped_packets_xdp: 10,
                 is_xdp: false,
+                ..TransmitShredsStats::default()
             },
             &Some(BroadcastShredBatchInfo {
                 slot: 0,
@@ -242,6 +252,7 @@ mod test {
                 dropped_packets_udp: 18,
                 dropped_packets_xdp: 20,
                 is_xdp: false,
+                ..TransmitShredsStats::default()
             },
             &None,
         );
@@ -268,6 +279,7 @@ mod test {
                 dropped_packets_udp: 1,
                 dropped_packets_xdp: 1,
                 is_xdp: false,
+                ..TransmitShredsStats::default()
             },
             &Some(BroadcastShredBatchInfo {
                 slot: 0,
