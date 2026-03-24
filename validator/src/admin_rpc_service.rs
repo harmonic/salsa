@@ -1,4 +1,5 @@
 use {
+    crate::shred_receiver_addresses::parse_shred_receiver_addresses,
     agave_event_system::stream_policy::StreamPolicy,
     agave_votor::{
         event::VotorEvent, vote_history::VoteHistory, vote_history_storage::VoteHistoryStorage,
@@ -259,6 +260,16 @@ pub trait AdminRpc {
 
     #[rpc(meta, name = "setStakedNodesOverrides")]
     fn set_staked_nodes_overrides(&self, meta: Self::Metadata, path: String) -> Result<()>;
+
+    #[rpc(meta, name = "setShredReceiverAddress")]
+    fn set_shred_receiver_address(&self, meta: Self::Metadata, addr: String) -> Result<()>;
+
+    #[rpc(meta, name = "setShredRetransmitReceiverAddress")]
+    fn set_shred_retransmit_receiver_address(
+        &self,
+        meta: Self::Metadata,
+        addr: String,
+    ) -> Result<()>;
 
     #[rpc(meta, name = "contactInfo")]
     fn contact_info(&self, meta: Self::Metadata) -> Result<AdminRpcContactInfo>;
@@ -661,6 +672,42 @@ impl AdminRpc for AdminRpcImpl {
         info!("Staked nodes overrides loaded from {path}");
         debug!("overrides map: {write_staked_nodes:?}");
         Ok(())
+    }
+
+    fn set_shred_receiver_address(&self, meta: Self::Metadata, addr: String) -> Result<()> {
+        debug!("set_shred_receiver_address request received");
+        let shred_receiver_addresses =
+            parse_shred_receiver_addresses([addr.as_str()]).map_err(|err| {
+                jsonrpc_core::error::Error::invalid_params(format!(
+                    "invalid shred receiver address for {addr}: {err}",
+                ))
+            })?;
+        meta.with_post_init(|post_init| {
+            post_init
+                .shred_receiver_addresses
+                .store(Arc::new(shred_receiver_addresses));
+            Ok(())
+        })
+    }
+
+    fn set_shred_retransmit_receiver_address(
+        &self,
+        meta: Self::Metadata,
+        addr: String,
+    ) -> Result<()> {
+        debug!("set_shred_retransmit_receiver_address request received");
+        let shred_retransmit_receiver_addresses = parse_shred_receiver_addresses([addr.as_str()])
+            .map_err(|err| {
+            jsonrpc_core::error::Error::invalid_params(format!(
+                "invalid shred retransmit receiver address for {addr}: {err}",
+            ))
+        })?;
+        meta.with_post_init(|post_init| {
+            post_init
+                .shred_retransmit_receiver_addresses
+                .store(Arc::new(shred_retransmit_receiver_addresses));
+            Ok(())
+        })
     }
 
     fn contact_info(&self, meta: Self::Metadata) -> Result<AdminRpcContactInfo> {
@@ -1200,6 +1247,7 @@ mod tests {
         super::*,
         agave_snapshots::snapshot_config::SnapshotConfig,
         agave_votor::event::VotorEventSender,
+        arc_swap::ArcSwap,
         crossbeam_channel::bounded,
         serde_json::Value,
         solana_accounts_db::{
@@ -1226,6 +1274,7 @@ mod tests {
             bank_forks::BankForks,
             genesis_utils::{ValidatorVoteKeypairs, create_genesis_config_with_vote_accounts},
         },
+        solana_turbine::ShredReceiverAddresses,
         std::{assert_matches, collections::HashSet, fs::remove_dir_all, sync::atomic::AtomicBool},
         tokio::sync::mpsc,
     };
@@ -1309,6 +1358,12 @@ mod tests {
                     snapshot_controller,
                     blockstore,
                     votor_event_sender,
+                    shred_receiver_addresses: Arc::new(ArcSwap::from_pointee(
+                        ShredReceiverAddresses::new(),
+                    )),
+                    shred_retransmit_receiver_addresses: Arc::new(ArcSwap::from_pointee(
+                        ShredReceiverAddresses::new(),
+                    )),
                 }))),
                 staked_nodes_overrides: Arc::new(RwLock::new(HashMap::new())),
                 rpc_to_plugin_manager_sender: None,

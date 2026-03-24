@@ -23,6 +23,7 @@ agave-shred-wire-format = { workspace = true }
 agave-votor = { workspace = true }
 agave-votor-messages = { workspace = true }
 agave-worker-pool = { workspace = true }
+arc-swap = { workspace = true }
 bytes = { workspace = true }
 crossbeam-channel = { workspace = true }
 itertools = { workspace = true }
@@ -31,6 +32,7 @@ log = { workspace = true }
 lru = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
+smallvec = { workspace = true }
 rayon = { workspace = true }
 solana-clock = { workspace = true }
 solana-cluster-type = { workspace = true }

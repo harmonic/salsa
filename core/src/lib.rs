@@ -20,6 +20,8 @@ pub mod epoch_specs;
 pub mod fetch_stage;
 pub mod forwarding_stage;
 pub mod gen_keys;
+pub mod multicast_root_receiver;
+pub mod multicast_shred_check_service;
 pub mod repair;
 pub mod replay_stage;
 pub mod resource_limits;

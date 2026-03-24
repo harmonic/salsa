@@ -68,7 +68,10 @@ use {
         validated_block_finalization::ValidatedBlockFinalizationCert,
     },
     solana_streamer::evicting_sender::EvictingSender,
-    solana_turbine::{XdpSender as TurbineXdpSender, retransmit_stage::RetransmitStage},
+    solana_turbine::{
+        MulticastRootConfig, ShredReceiverAddresses, XdpSender as TurbineXdpSender,
+        retransmit_stage::RetransmitStage,
+    },
     solana_validator_exit::Exit,
     std::{
         collections::{HashMap, HashSet},
@@ -134,6 +137,9 @@ pub struct TvuConfig {
     pub turbine_xdp_sender: Option<TurbineXdpSender>,
     pub repair_xdp_sender: Option<PinnedXdpSender>,
     pub(crate) replay_arena: Option<Arena>,
+    /// Drives the retransmit stage's multicast-root forwarding decision.
+    /// `None` disables the feature.
+    pub multicast_root: Option<MulticastRootConfig>,
 }
 
 impl Default for TvuConfig {
@@ -150,6 +156,7 @@ impl Default for TvuConfig {
             turbine_xdp_sender: None,
             repair_xdp_sender: None,
             replay_arena: None,
+            multicast_root: None,
         }
     }
 }
@@ -223,6 +230,7 @@ impl Tvu {
         slot_status_notifier: Option<SlotStatusNotifier>,
         votor_init: AlpenglowInitializationState,
         reward_aggregates_sender: Sender<RewardInput>,
+        shred_retransmit_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
     ) -> Result<Self, String> {
         let migration_status = bank_forks.read().unwrap().migration_status();
 
@@ -367,6 +375,8 @@ impl Tvu {
             slot_status_notifier.clone(),
             tvu_config.turbine_xdp_sender,
             votor_event_sender.clone(),
+            shred_retransmit_receiver_addresses,
+            tvu_config.multicast_root,
         );
 
         let shred_sigverify = solana_turbine::sigverify_shreds::spawn_shred_sigverify(
@@ -761,6 +771,7 @@ pub mod tests {
                 bank_forks_controller_receiver,
             },
             reward_vote_aggregates_sender,
+            Arc::new(ArcSwap::from_pointee(ShredReceiverAddresses::new())),
         )
         .expect("assume success");
         exit.store(true, Ordering::Relaxed);
