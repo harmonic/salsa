@@ -155,6 +155,7 @@ impl BroadcastRun for BroadcastFakeShredsRun {
         cluster_info: &ClusterInfo,
         sock: BroadcastSocket,
         _bank_forks: &RwLock<BankForks>,
+        _shred_receiver_addresses: &ShredReceiverAddresses,
     ) -> Result<()> {
         let sock = match sock {
             BroadcastSocket::Udp(sock) => sock,

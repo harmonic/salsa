@@ -852,6 +852,9 @@ impl BankingSimulator {
             shred_version,
             None,
             completed_block_sender,
+            Arc::new(arc_swap::ArcSwap::from_pointee(
+                solana_turbine::ShredReceiverAddresses::new(),
+            )),
         );
 
         info!("Start banking stage!...");

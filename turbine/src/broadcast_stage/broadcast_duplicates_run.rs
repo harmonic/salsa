@@ -328,6 +328,7 @@ impl BroadcastRun for BroadcastDuplicatesRun {
         cluster_info: &ClusterInfo,
         sock: BroadcastSocket,
         bank_forks: &RwLock<BankForks>,
+        _shred_receiver_addresses: &ShredReceiverAddresses,
     ) -> Result<()> {
         let (shreds, _) = receiver.recv()?;
         if shreds.is_empty() {

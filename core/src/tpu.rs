@@ -26,6 +26,7 @@ use {
     },
     agave_votor::event::VotorEventSender,
     agave_xdp::xdp_retransmitter::XdpSender,
+    arc_swap::ArcSwap,
     crossbeam_channel::{Receiver, bounded, unbounded},
     solana_clock::Slot,
     solana_gossip::cluster_info::ClusterInfo,
@@ -55,7 +56,10 @@ use {
         },
         streamer::StakedNodes,
     },
-    solana_turbine::broadcast_stage::{BroadcastStage, BroadcastStageType},
+    solana_turbine::{
+        ShredReceiverAddresses,
+        broadcast_stage::{BroadcastStage, BroadcastStageType},
+    },
     std::{
         collections::HashMap,
         net::UdpSocket,
@@ -148,6 +152,7 @@ impl Tpu {
         scheduler_bindings: Option<(PathBuf, mpsc::Sender<BankingControlMsg>)>,
         cancel: CancellationToken,
         votor_event_sender: VotorEventSender,
+        shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
     ) -> Self {
         let TpuSockets {
             vote: tpu_vote_sockets,
@@ -350,6 +355,7 @@ impl Tpu {
             shred_version,
             xdp_sender,
             votor_event_sender,
+            shred_receiver_addresses,
         );
 
         let mut key_notifiers = key_notifiers.write().unwrap();
