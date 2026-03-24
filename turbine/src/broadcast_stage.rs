@@ -7,10 +7,11 @@ use {
         standard_broadcast_run::StandardBroadcastRun,
     },
     crate::{
-        XdpSender,
+        ShredReceiverAddresses, XdpSender,
         cluster_nodes::{ClusterNodes, ClusterNodesCache},
     },
     agave_votor::event::VotorEventSender,
+    arc_swap::ArcSwap,
     crossbeam_channel::{Receiver, RecvError, RecvTimeoutError, Sender, unbounded},
     itertools::Itertools,
     solana_clock::Slot,
@@ -119,6 +120,7 @@ impl BroadcastStageType {
         shred_version: u16,
         xdp_sender: Option<XdpSender>,
         votor_event_sender: VotorEventSender,
+        shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
     ) -> BroadcastStage {
         let migration_status = bank_forks.read().unwrap().migration_status();
         match self {
@@ -132,6 +134,7 @@ impl BroadcastStageType {
                 bank_forks,
                 StandardBroadcastRun::new(shred_version, migration_status, votor_event_sender),
                 xdp_sender,
+                shred_receiver_addresses,
             ),
 
             BroadcastStageType::BroadcastDuplicates(config) => BroadcastStage::new(
@@ -149,6 +152,7 @@ impl BroadcastStageType {
                     votor_event_sender,
                 ),
                 xdp_sender,
+                Arc::new(ArcSwap::from_pointee(ShredReceiverAddresses::new())),
             ),
         }
     }
@@ -169,6 +173,7 @@ trait BroadcastRun {
         cluster_info: &ClusterInfo,
         sock: BroadcastSocket,
         bank_forks: &RwLock<BankForks>,
+        shred_receiver_addresses: &ShredReceiverAddresses,
     ) -> Result<()>;
     fn record(&mut self, receiver: &RecordReceiver, blockstore: &Blockstore) -> Result<()>;
 }
@@ -265,6 +270,7 @@ impl BroadcastStage {
         bank_forks: Arc<RwLock<BankForks>>,
         mut broadcast_stage_run: impl BroadcastRun + Send + 'static + Clone,
         xdp_sender: Option<XdpSender>,
+        shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
     ) -> Self {
         let (socket_sender, socket_receiver) = unbounded();
         let (blockstore_sender, blockstore_receiver) = unbounded();
@@ -323,6 +329,7 @@ impl BroadcastStage {
             let cluster_info = cluster_info.clone();
             let bank_forks = bank_forks.clone();
             let xdp_sender = xdp_sender.clone();
+            let shred_receiver_addresses = shred_receiver_addresses.clone();
             let run_transmit = move || loop {
                 let sock_variant = match xdp_sender.as_ref() {
                     Some(xdp) => BroadcastSocket::Xdp(xdp),
@@ -332,11 +339,13 @@ impl BroadcastStage {
                         BroadcastSocket::Udp(active_socket)
                     }
                 };
+                let addrs = shred_receiver_addresses.load();
                 let res = bs_transmit.transmit(
                     &socket_receiver,
                     &cluster_info,
                     sock_variant,
                     &bank_forks,
+                    &addrs,
                 );
                 if let Some(res) = Self::handle_error(res, "solana-broadcaster-transmit") {
                     return res;
@@ -466,6 +475,7 @@ pub fn broadcast_shreds(
     cluster_info: &ClusterInfo,
     bank_forks: &RwLock<BankForks>,
     socket_addr_space: &SocketAddrSpace,
+    shred_receiver_addresses: &ShredReceiverAddresses,
 ) -> Result<()> {
     let mut result = Ok(());
     // Compute destinations for each of the shreds to be sent
@@ -474,7 +484,7 @@ pub fn broadcast_shreds(
         let bank_forks = bank_forks.read().unwrap();
         (bank_forks.root_bank(), bank_forks.working_bank())
     };
-    let packets: Vec<_> = shreds
+    let mut packets: Vec<_> = shreds
         .iter()
         .chunk_by(|shred| shred.slot())
         .into_iter()
@@ -494,6 +504,11 @@ pub fn broadcast_shreds(
             })
         })
         .collect();
+
+    // Forward shreds to external receiver addresses
+    for addr in shred_receiver_addresses.iter() {
+        packets.extend(shreds.iter().map(|shred| (shred.payload(), *addr)));
+    }
 
     shred_select.stop();
     transmit_stats.shred_select += shred_select.as_us();
@@ -725,6 +740,7 @@ pub mod test {
             bank_forks,
             StandardBroadcastRun::new(0, Arc::new(MigrationStatus::default()), votor_event_sender),
             None,
+            Arc::new(ArcSwap::from_pointee(ShredReceiverAddresses::new())),
         );
 
         MockBroadcastStage {

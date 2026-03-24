@@ -4,11 +4,13 @@ use {
         repair::repair_service::OutstandingShredRepairs,
     },
     agave_votor::event::VotorEventSender,
+    arc_swap::ArcSwap,
     solana_gossip::{cluster_info::ClusterInfo, node::NodeMultihoming},
     solana_ledger::blockstore::Blockstore,
     solana_pubkey::Pubkey,
     solana_runtime::{bank_forks::BankForks, snapshot_controller::SnapshotController},
     solana_tls_utils::NotifyKeyUpdate,
+    solana_turbine::ShredReceiverAddresses,
     std::{
         collections::{HashMap, HashSet},
         net::UdpSocket,
@@ -90,4 +92,6 @@ pub struct AdminRpcRequestMetadataPostInit {
     pub snapshot_controller: Arc<SnapshotController>,
     pub blockstore: Arc<Blockstore>,
     pub votor_event_sender: VotorEventSender,
+    pub shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+    pub shred_retransmit_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
 }
