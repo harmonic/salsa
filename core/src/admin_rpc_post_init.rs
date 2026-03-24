@@ -4,11 +4,13 @@ use {
         cluster_slots_service::cluster_slots::ClusterSlots,
         repair::{outstanding_requests::OutstandingRequests, serve_repair::ShredRepairType},
     },
+    arc_swap::ArcSwap,
     solana_gossip::{cluster_info::ClusterInfo, node::NodeMultihoming},
     solana_ledger::blockstore::Blockstore,
     solana_pubkey::Pubkey,
     solana_runtime::{bank_forks::BankForks, snapshot_controller::SnapshotController},
     solana_tls_utils::NotifyKeyUpdate,
+    solana_turbine::ShredReceiverAddresses,
     std::{
         collections::{HashMap, HashSet},
         net::UdpSocket,
@@ -89,4 +91,6 @@ pub struct AdminRpcRequestMetadataPostInit {
     pub banking_control_sender: mpsc::Sender<BankingControlMsg>,
     pub snapshot_controller: Arc<SnapshotController>,
     pub blockstore: Arc<Blockstore>,
+    pub shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+    pub shred_retransmit_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
 }

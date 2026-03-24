@@ -129,6 +129,12 @@ pub fn main() {
         ("blockstore", Some(subcommand_matches)) => {
             commands::blockstore::execute(subcommand_matches, &ledger_path)
         }
+        ("set-shred-receiver-address", Some(subcommand_matches)) => {
+            commands::set_shred_receiver::execute(subcommand_matches, &ledger_path)
+        }
+        ("set-shred-retransmit-receiver-address", Some(subcommand_matches)) => {
+            commands::set_shred_retransmit_receiver::execute(subcommand_matches, &ledger_path)
+        }
         _ => unreachable!(),
     }
     .unwrap_or_else(|err| {
