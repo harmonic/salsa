@@ -44,6 +44,7 @@ use {
     },
     agave_xdp::xdp_retransmitter::{XdpRetransmitBuilder, XdpRetransmitter},
     anyhow::{Context, Result, anyhow},
+    arc_swap::ArcSwap,
     crossbeam_channel::{Receiver, bounded, unbounded},
     quinn::Endpoint,
     serde::{Deserialize, Serialize},
@@ -143,7 +144,7 @@ use {
     },
     solana_time_utils::timestamp,
     solana_tpu_client::tpu_client::{DEFAULT_TPU_CONNECTION_POOL_SIZE, DEFAULT_VOTE_USE_QUIC},
-    solana_turbine::{self, broadcast_stage::BroadcastStageType},
+    solana_turbine::{self, ShredReceiverAddresses, broadcast_stage::BroadcastStageType},
     solana_unified_scheduler_logic::SchedulingMode,
     solana_unified_scheduler_pool::{DefaultSchedulerPool, SupportedSchedulingMode},
     solana_validator_exit::Exit,
@@ -403,6 +404,10 @@ pub struct ValidatorConfig {
     pub repair_handler_type: RepairHandlerType,
     // Thread niceness adjustment for snapshot packager service
     pub snapshot_packager_niceness_adj: i8,
+    /// Addresses to forward leader shreds to
+    pub shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+    /// Addresses to forward retransmit shreds to
+    pub shred_retransmit_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
 }
 
 impl ValidatorConfig {
@@ -483,6 +488,12 @@ impl ValidatorConfig {
             voting_service_test_override: None,
             repair_handler_type: RepairHandlerType::default(),
             snapshot_packager_niceness_adj: 0,
+            shred_receiver_addresses: Arc::new(
+                ArcSwap::from_pointee(ShredReceiverAddresses::new()),
+            ),
+            shred_retransmit_receiver_addresses: Arc::new(ArcSwap::from_pointee(
+                ShredReceiverAddresses::new(),
+            )),
         }
     }
 
@@ -1690,6 +1701,7 @@ impl Validator {
                 bls_connection_cache,
                 voting_service_test_override: config.voting_service_test_override.clone(),
             },
+            config.shred_retransmit_receiver_addresses.clone(),
         )
         .map_err(ValidatorError::Other)?;
 
@@ -1764,6 +1776,7 @@ impl Validator {
             }),
             cancel,
             votor_event_sender,
+            config.shred_receiver_addresses.clone(),
         );
 
         datapoint_info!(
@@ -1797,6 +1810,8 @@ impl Validator {
             banking_control_sender,
             snapshot_controller,
             blockstore: blockstore.clone(),
+            shred_receiver_addresses: config.shred_receiver_addresses.clone(),
+            shred_retransmit_receiver_addresses: config.shred_retransmit_receiver_addresses.clone(),
         });
 
         Ok(Self {

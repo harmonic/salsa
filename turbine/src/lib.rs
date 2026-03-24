@@ -20,3 +20,8 @@ extern crate solana_metrics;
 #[cfg(test)]
 #[macro_use]
 extern crate assert_matches;
+
+use {smallvec::SmallVec, std::net::SocketAddr};
+
+/// Addresses to forward shreds to in addition to normal turbine propagation.
+pub type ShredReceiverAddresses = SmallVec<[SocketAddr; 5]>;

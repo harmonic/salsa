@@ -5,6 +5,7 @@ use {
         cli::{self},
         commands::{FromClapArgMatches, run::args::RunArgs},
         ledger_lockfile, lock_ledger,
+        shred_receiver_addresses::parse_shred_receiver_addresses,
     },
     agave_snapshots::{
         ArchiveFormat, SnapshotInterval, SnapshotVersion,
@@ -13,6 +14,7 @@ use {
     },
     agave_votor::vote_history_storage,
     agave_xdp::{set_cpu_affinity, xdp_retransmitter::XdpConfig},
+    arc_swap::ArcSwap,
     clap::{ArgMatches, crate_name, value_t, value_t_or_exit, values_t, values_t_or_exit},
     crossbeam_channel::unbounded,
     log::*,
@@ -791,6 +793,25 @@ pub fn execute(
         UseSnapshotArchivesAtStartup
     );
 
+    let shred_receiver_addresses = Arc::new(ArcSwap::from_pointee(
+        parse_shred_receiver_addresses(
+            matches
+                .values_of("shred_receiver_address")
+                .into_iter()
+                .flatten(),
+        )
+        .map_err(|err| format!("invalid shred_receiver_address: {err}"))?,
+    ));
+    let shred_retransmit_receiver_addresses = Arc::new(ArcSwap::from_pointee(
+        parse_shred_receiver_addresses(
+            matches
+                .values_of("shred_retransmit_receiver_address")
+                .into_iter()
+                .flatten(),
+        )
+        .map_err(|err| format!("invalid shred_retransmit_receiver_address: {err}"))?,
+    ));
+
     let mut validator_config = ValidatorConfig {
         log_config,
         require_tower: matches.is_present("require_tower"),
@@ -910,6 +931,8 @@ pub fn execute(
             "snapshot_packager_niceness_adj",
             i8
         ),
+        shred_receiver_addresses: shred_receiver_addresses.clone(),
+        shred_retransmit_receiver_addresses: shred_retransmit_receiver_addresses.clone(),
     };
     validator_config
         .block_production_method
