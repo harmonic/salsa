@@ -332,7 +332,17 @@ impl StandardBroadcastRun {
             &mut ProcessShredsStats::default(),
         )?;
         // Data and coding shreds are sent in a single batch.
-        let _ = self.transmit(&srecv, cluster_info, BroadcastSocket::Udp(sock), bank_forks);
+        let shred_receiver_socket =
+            solana_net_utils::bind_to_unspecified().expect("bind test shred_receiver_socket");
+        let _ = self.transmit(
+            &srecv,
+            cluster_info,
+            BroadcastSocket::Udp(sock),
+            bank_forks,
+            &ShredReceiverAddresses::new(),
+            &None,
+            &shred_receiver_socket,
+        );
         let _ = self.record(&brecv, blockstore, &mut pinnable_slice, &mut write_batch);
         Ok(())
     }
@@ -573,13 +583,17 @@ impl StandardBroadcastRun {
         insert_shreds_stats.update(new_insertion_shreds_stats, broadcast_shred_batch_info);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn broadcast(
         &mut self,
         sock: BroadcastSocket,
+        shred_receiver_socket: &UdpSocket,
         cluster_info: &ClusterInfo,
         shreds: Arc<Vec<Shred>>,
         broadcast_shred_batch_info: Option<BroadcastShredBatchInfo>,
         bank_forks: &RwLock<BankForks>,
+        shred_receiver_addresses: &ShredReceiverAddresses,
+        multicast_receiver_address: &Option<SocketAddr>,
     ) -> Result<()> {
         trace!("Broadcasting {:?} shreds", shreds.len());
         let mut transmit_stats = TransmitShredsStats {
@@ -593,6 +607,7 @@ impl StandardBroadcastRun {
 
         broadcast_shreds(
             sock,
+            shred_receiver_socket,
             &shreds,
             &self.cluster_nodes_cache,
             &self.last_datapoint_submit,
@@ -601,6 +616,8 @@ impl StandardBroadcastRun {
             bank_forks,
             &self.leader_schedule_cache,
             cluster_info.socket_addr_space(),
+            shred_receiver_addresses,
+            multicast_receiver_address,
         )?;
         transmit_time.stop();
 
@@ -671,9 +688,21 @@ impl BroadcastRun for StandardBroadcastRun {
         cluster_info: &ClusterInfo,
         sock: BroadcastSocket,
         bank_forks: &RwLock<BankForks>,
+        shred_receiver_addresses: &ShredReceiverAddresses,
+        multicast_receiver_address: &Option<SocketAddr>,
+        shred_receiver_socket: &UdpSocket,
     ) -> Result<()> {
         let (shreds, batch_info) = receiver.recv()?;
-        self.broadcast(sock, cluster_info, shreds, batch_info, bank_forks)
+        self.broadcast(
+            sock,
+            shred_receiver_socket,
+            cluster_info,
+            shreds,
+            batch_info,
+            bank_forks,
+            shred_receiver_addresses,
+            multicast_receiver_address,
+        )
     }
     fn record<'db>(
         &mut self,
