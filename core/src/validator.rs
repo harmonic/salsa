@@ -389,6 +389,8 @@ pub struct ValidatorConfig {
     pub shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
     /// Addresses to forward retransmit shreds to
     pub shred_retransmit_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+    /// Harmonic: TPU address to advertise in gossip when external scheduler is connected
+    pub proxy_tpu_address: Option<SocketAddr>,
 }
 
 impl ValidatorConfig {
@@ -475,6 +477,7 @@ impl ValidatorConfig {
             shred_retransmit_receiver_addresses: Arc::new(ArcSwap::from_pointee(
                 ShredReceiverAddresses::new(),
             )),
+            proxy_tpu_address: None,
         }
     }
 
@@ -1759,6 +1762,7 @@ impl Validator {
             cancel,
             votor_event_sender,
             config.shred_receiver_addresses.clone(),
+            config.proxy_tpu_address,
         );
 
         datapoint_info!(

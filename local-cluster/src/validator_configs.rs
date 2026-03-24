@@ -83,6 +83,7 @@ pub fn safe_clone_config(config: &ValidatorConfig) -> ValidatorConfig {
         snapshot_packager_niceness_adj: config.snapshot_packager_niceness_adj,
         shred_receiver_addresses: config.shred_receiver_addresses.clone(),
         shred_retransmit_receiver_addresses: config.shred_retransmit_receiver_addresses.clone(),
+        proxy_tpu_address: config.proxy_tpu_address,
     }
 }
 

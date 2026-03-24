@@ -62,7 +62,7 @@ use {
     },
     std::{
         collections::HashMap,
-        net::UdpSocket,
+        net::{SocketAddr, UdpSocket},
         num::NonZeroUsize,
         path::PathBuf,
         sync::{Arc, RwLock, atomic::AtomicBool},
@@ -153,6 +153,7 @@ impl Tpu {
         cancel: CancellationToken,
         votor_event_sender: VotorEventSender,
         shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+        proxy_tpu_address: Option<SocketAddr>,
     ) -> Self {
         let TpuSockets {
             vote: tpu_vote_sockets,
@@ -310,6 +311,8 @@ impl Tpu {
             log_messages_bytes_limit,
             bank_forks.clone(),
             prioritization_fee_cache,
+            cluster_info.clone(),
+            proxy_tpu_address,
         );
 
         #[cfg(unix)]

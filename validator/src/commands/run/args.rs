@@ -464,6 +464,7 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
             .value_name("HOST:PORT")
             .takes_value(true)
             .multiple(true)
+            .required(true)
             .help(
                 "Forward all leader shreds to these addresses. May be specified multiple times or \
                  as comma-separated entries. Hostnames resolve to IPv4 only. Up to 32 unique \
@@ -480,6 +481,19 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
                 "Forward all retransmit shreds to these addresses. May be specified multiple \
                  times or as comma-separated entries. Hostnames resolve to IPv4 only. Up to 32 \
                  unique addresses. Empty string disables.",
+            ),
+    )
+    // Harmonic: external scheduler proxy TPU address
+    .arg(
+        Arg::with_name("proxy_tpu_address")
+            .long("proxy-tpu-address")
+            .value_name("HOST:PORT")
+            .takes_value(true)
+            .required(true)
+            .help(
+                "When an external scheduler is connected, advertise this address as the \
+                 validator's TPU address in gossip. Reverts to the original address when the \
+                 scheduler disconnects.",
             ),
     )
     .arg(
@@ -1238,10 +1252,14 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
             ),
     )
     .arg(
+        // Harmonic: scheduler bindings are always enabled; flag kept for compatibility
         Arg::with_name("enable_scheduler_bindings")
             .long("enable-scheduler-bindings")
             .takes_value(false)
-            .help("Enables external processes to connect and manage block production"),
+            .help(
+                "Enables external processes to connect and manage block production. Always \
+                 enabled in Harmonic.",
+            ),
     )
     .arg(
         Arg::with_name("unified_scheduler_handler_threads")

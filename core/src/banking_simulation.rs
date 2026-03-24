@@ -843,7 +843,7 @@ impl BankingSimulator {
         .expect("should bind");
         let broadcast_stage = BroadcastStageType::Standard.new_broadcast_stage(
             vec![socket],
-            cluster_info_for_broadcast,
+            cluster_info_for_broadcast.clone(),
             entry_receiver,
             retransmit_slots_receiver,
             exit.clone(),
@@ -872,6 +872,8 @@ impl BankingSimulator {
             replay_vote_sender,
             None,
             bank_forks.clone(),
+            None,
+            cluster_info_for_broadcast,
             None,
         );
 

@@ -26,7 +26,10 @@ use {
     crossbeam_channel::{Receiver, Sender, unbounded},
     futures::{StreamExt, stream::FuturesUnordered},
     histogram::Histogram,
-    solana_gossip::{cluster_info::ClusterInfo, contact_info::ContactInfoQuery},
+    solana_gossip::{
+        cluster_info::ClusterInfo,
+        contact_info::{ContactInfoQuery, Protocol},
+    },
     solana_ledger::blockstore_processor::TransactionStatusSender,
     solana_perf::packet::PACKETS_PER_BATCH,
     solana_poh::{
@@ -41,6 +44,7 @@ use {
     solana_time_utils::AtomicInterval,
     solana_unified_scheduler_logic::SchedulingMode,
     std::{
+        net::SocketAddr,
         num::{NonZeroU64, NonZeroUsize, Saturating},
         ops::Deref,
         sync::{
@@ -382,6 +386,15 @@ pub struct BankingStage {
     committer: Committer,
     log_messages_bytes_limit: Option<usize>,
     threads: FuturesUnordered<NamedTask<std::thread::Result<()>>>,
+    // Harmonic: external scheduler support
+    /// ClusterInfo for reading/writing the advertised TPU address in gossip.
+    cluster_info: Arc<ClusterInfo>,
+    /// TPU address to advertise when external scheduler is connected (from --proxy-tpu-address).
+    proxy_tpu_address: Option<SocketAddr>,
+    /// Original TPU address cached when external scheduler connects, restored on disconnect.
+    saved_tpu_address: Option<SocketAddr>,
+    /// True when an external scheduler is connected. Gates vote/transaction tick isolation.
+    external_scheduler_active: Arc<AtomicBool>,
 }
 
 impl BankingStage {
@@ -401,6 +414,8 @@ impl BankingStage {
         log_messages_bytes_limit: Option<usize>,
         bank_forks: Arc<RwLock<BankForks>>,
         prioritization_fee_cache: Option<Arc<PrioritizationFeeCache>>,
+        cluster_info: Arc<ClusterInfo>,
+        proxy_tpu_address: Option<SocketAddr>,
     ) -> BankingStageHandle {
         let committer = Committer::new(
             transaction_status_sender,
@@ -423,6 +438,10 @@ impl BankingStage {
             committer,
             log_messages_bytes_limit,
             threads: FuturesUnordered::default(),
+            cluster_info,
+            proxy_tpu_address,
+            saved_tpu_address: None,
+            external_scheduler_active: Arc::new(AtomicBool::new(false)),
         };
 
         // Spawn the manager thread.
@@ -508,6 +527,36 @@ impl BankingStage {
     }
 
     fn spawn_scheduler(&mut self, args: BankingControlMsg) -> Result<(), ()> {
+        match &args {
+            BankingControlMsg::Internal { .. } => {
+                // Harmonic: restore original TPU address on fallback to internal scheduler
+                if let Some(saved) = self.saved_tpu_address.take() {
+                    if let Err(err) = self.cluster_info.set_tpu_quic(saved) {
+                        error!("Failed to restore TPU address: {err}");
+                    } else {
+                        info!("Restored TPU address to {saved}");
+                    }
+                }
+                self.external_scheduler_active
+                    .store(false, Ordering::Release);
+            }
+            #[cfg(unix)]
+            BankingControlMsg::External { .. } => {
+                // Harmonic: save current TPU and set proxy before external scheduler is fully active
+                if let Some(proxy) = self.proxy_tpu_address {
+                    self.saved_tpu_address =
+                        self.cluster_info.my_contact_info().tpu(Protocol::QUIC);
+                    if let Err(err) = self.cluster_info.set_tpu_quic(proxy) {
+                        error!("Failed to set proxy TPU address: {err}");
+                    } else {
+                        info!("Set proxy TPU address to {proxy}");
+                    }
+                }
+                self.external_scheduler_active
+                    .store(true, Ordering::Release);
+            }
+        }
+
         let threads = (match args {
             BankingControlMsg::Internal {
                 block_production_method,
@@ -606,6 +655,7 @@ impl BankingStage {
             ($scheduler:ident) => {
                 let exit = exit.clone();
                 let shutdown_signal = self.banking_shutdown_signal.clone();
+                let external_scheduler_active = self.external_scheduler_active.clone();
                 threads.push(
                     Builder::new()
                         .name("solBnkTxSched".to_string())
@@ -618,6 +668,7 @@ impl BankingStage {
                                 sharable_banks,
                                 $scheduler,
                                 worker_metrics,
+                                external_scheduler_active,
                             );
 
                             match scheduler_controller.run() {
@@ -684,6 +735,7 @@ impl BankingStage {
         let worker_exit_signal = self.worker_exit_signal.clone();
         let shutdown_signal = self.banking_shutdown_signal.clone();
         let bank_forks = self.bank_forks.clone();
+        let external_scheduler_active = self.external_scheduler_active.clone();
         Builder::new()
             .name("solBanknStgVote".to_string())
             .spawn(move || {
@@ -696,6 +748,7 @@ impl BankingStage {
                     vote_storage,
                     bank_forks,
                     consumer,
+                    external_scheduler_active,
                 )
                 .run()
             })
@@ -914,6 +967,7 @@ mod tests {
         crossbeam_channel::unbounded,
         itertools::Itertools,
         solana_entry::entry::{self, EntrySlice},
+        solana_gossip::{cluster_info::ClusterInfo, node::Node},
         solana_hash::Hash,
         solana_keypair::Keypair,
         solana_ledger::{
@@ -923,6 +977,7 @@ mod tests {
             },
             get_tmp_ledger_path_auto_delete,
         },
+        solana_net_utils::SocketAddrSpace,
         solana_perf::packet::to_packet_batches,
         solana_poh::{
             poh_recorder::{PohRecorderError, create_test_recorder},
@@ -994,6 +1049,8 @@ mod tests {
             None,
             bank_forks,
             None,
+            test_cluster_info(),
+            None,
         );
         drop(non_vote_sender);
         drop(tpu_vote_sender);
@@ -1057,6 +1114,8 @@ mod tests {
             replay_vote_sender,
             None,
             bank_forks,
+            None,
+            test_cluster_info(),
             None,
         );
         trace!("sending bank");
@@ -1133,6 +1192,8 @@ mod tests {
             replay_vote_sender,
             None,
             bank_forks, // keep a local-copy of bank-forks so worker threads do not lose weak access to bank-forks
+            None,
+            test_cluster_info(),
             None,
         );
 
@@ -1288,6 +1349,8 @@ mod tests {
                 None,
                 bank_forks,
                 None,
+                test_cluster_info(),
+                None,
             );
 
             // wait for banking_stage to eat the packets
@@ -1370,6 +1433,16 @@ mod tests {
         assert!(record_receiver.try_recv().is_err());
     }
 
+    fn test_cluster_info() -> Arc<ClusterInfo> {
+        let keypair = Arc::new(Keypair::new());
+        let node = Node::new_localhost_with_pubkey(&keypair.pubkey());
+        Arc::new(ClusterInfo::new(
+            node.info,
+            keypair,
+            SocketAddrSpace::Unspecified,
+        ))
+    }
+
     pub(crate) fn create_slow_genesis_config(lamports: u64) -> GenesisConfigInfo {
         create_slow_genesis_config_with_leader(lamports, &solana_pubkey::new_rand())
     }
@@ -1440,6 +1513,8 @@ mod tests {
             replay_vote_sender,
             None,
             bank_forks,
+            None,
+            test_cluster_info(),
             None,
         );
 

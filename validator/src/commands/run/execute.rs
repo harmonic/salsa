@@ -767,6 +767,14 @@ pub fn execute(
         UseSnapshotArchivesAtStartup
     );
 
+    let proxy_tpu_address = matches
+        .value_of("proxy_tpu_address")
+        .map(|addr| {
+            solana_net_utils::parse_host_port(addr)
+                .map_err(|err| format!("failed to parse --proxy-tpu-address {addr}: {err}"))
+        })
+        .transpose()?;
+
     let shred_receiver_addresses = Arc::new(ArcSwap::from_pointee(
         parse_shred_receiver_addresses(
             matches
@@ -891,7 +899,7 @@ pub fn execute(
             ),
         },
         enable_block_production_forwarding: staked_nodes_overrides_path.is_some(),
-        enable_scheduler_bindings: matches.is_present("enable_scheduler_bindings"),
+        enable_scheduler_bindings: true, // Harmonic: always enabled
         banking_trace_dir_byte_limit: parse_banking_trace_dir_byte_limit(matches),
         validator_exit: Arc::new(RwLock::new(Exit::default())),
         validator_exit_backpressure: [(
@@ -907,6 +915,7 @@ pub fn execute(
         ),
         shred_receiver_addresses: shred_receiver_addresses.clone(),
         shred_retransmit_receiver_addresses: shred_retransmit_receiver_addresses.clone(),
+        proxy_tpu_address,
     };
 
     let vote_account = pubkey_of(matches, "vote_account").unwrap_or_else(|| {
