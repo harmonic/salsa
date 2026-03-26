@@ -524,7 +524,7 @@ impl ClusterInfo {
                     now.saturating_sub(last_updated),
                     node.pubkey().to_string(),
                     if let Some(node_version) = node_version {
-                        node_version.to_string()
+                        solana_version::v4::Version::from(node_version).to_string()
                     } else {
                         "-".to_string()
                     },
@@ -590,7 +590,7 @@ impl ClusterInfo {
                         now.saturating_sub(last_updated),
                         node.pubkey().to_string(),
                         if let Some(node_version) = node_version {
-                            node_version.to_string()
+                            solana_version::v4::Version::from(node_version).to_string()
                         } else {
                             "-".to_string()
                         },
