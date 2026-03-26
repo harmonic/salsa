@@ -7,7 +7,7 @@ use {
             committer::{CommitTransactionDetails, Committer},
             consume_worker::ConsumeWorkerMetrics,
             consumer::ProcessTransactionBatchOutput,
-            decision_maker::{BufferedPacketsDecision, DecisionMaker},
+            decision_maker::{BufferedPacketsDecision, DecisionMaker, MaybeConsumeContext},
             qos_service::QosService,
             scheduler_messages::MaxAge,
         },
@@ -579,7 +579,7 @@ impl BundleStage {
         let decision = decision_maker.make_consume_or_forward_decision();
         // cavey: gate bundle scheduling behind vanilla scheduler - bundles only
         // run after the delegation threshold if no block was received
-        let decision = DecisionMaker::maybe_consume::<true /* VANILLA */>(decision);
+        let decision = DecisionMaker::maybe_consume(decision, MaybeConsumeContext::Vanilla);
 
         match decision {
             // BufferedPacketsDecision::Consume means this leader is scheduled to be running at the moment.

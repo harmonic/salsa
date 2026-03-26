@@ -40,6 +40,7 @@ use {
     solana_ledger::{
         blockstore::Blockstore, blockstore_processor::TransactionStatusSender,
         entry_notifier_service::EntryNotifierSender,
+        leader_schedule_cache::LeaderScheduleCache,
     },
     solana_perf::data_budget::DataBudget,
     solana_poh::{
@@ -196,6 +197,7 @@ impl Tpu {
         tip_manager_config: TipManagerConfig,
         shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
         leader_window_sender: tokio::sync::broadcast::Sender<(std::time::SystemTime, u64)>,
+        leader_schedule_cache: Arc<LeaderScheduleCache>,
     ) -> Self {
         let TpuSockets {
             transactions: transactions_sockets,
@@ -483,6 +485,7 @@ impl Tpu {
             &prioritization_fee_cache,
             tip_manager,
             block_builder_fee_info,
+            leader_schedule_cache,
         );
 
         let (entry_receiver, tpu_entry_notifier) =

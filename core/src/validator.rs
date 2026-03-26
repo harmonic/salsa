@@ -1798,6 +1798,7 @@ impl Validator {
             },
             config.shred_receiver_addresses.clone(),
             leader_window_sender,
+            leader_schedule_cache.clone(),
         );
 
         datapoint_info!(

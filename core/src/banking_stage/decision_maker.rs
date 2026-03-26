@@ -32,6 +32,19 @@ impl BufferedPacketsDecision {
     }
 }
 
+/// Which consumer is asking [`DecisionMaker::maybe_consume`]; drives scheduler sync and
+/// delegation timing. Delegation fraction of the slot is defined in one place inside
+/// `maybe_consume` (currently first 7/8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaybeConsumeContext {
+    /// Banking / bundle: [`scheduler_synchronization::vanilla_should_schedule`].
+    Vanilla,
+    /// Block stage: [`scheduler_synchronization::block_should_schedule`].
+    Block,
+    /// Vote worker: hold during delegation, consume only in fallback (no scheduler sync).
+    Votes,
+}
+
 #[derive(Clone)]
 pub struct DecisionMaker {
     shared_leader_state: SharedLeaderState,
@@ -72,45 +85,67 @@ impl DecisionMaker {
         }
     }
 
-    /// Gate consume decisions based on scheduler synchronization.
-    ///
-    /// vanilla: consume if we are in fallback period with no external signal.
-    ///          there are no other preconditions
-    /// block: consume if we are in delegation period.
-    ///        preconditions: there is a bundle (for this slot) to consume
-    pub fn maybe_consume<const VANILLA: bool>(
-        decision: BufferedPacketsDecision,
-    ) -> BufferedPacketsDecision {
-        debug!("maybe_consume VANILLA {VANILLA:?} decision {decision:?}");
-        let BufferedPacketsDecision::Consume(bank) = decision else {
-            return decision;
-        };
-
+    /// True while the bank is in the first 7/8 of the slot (delegation window).
+    /// Single place to change the fraction (e.g. 7/8 vs 15/16).
+    pub(crate) fn in_delegation_period(bank: &Bank) -> bool {
         let current_tick_height = bank.tick_height();
         let max_tick_height = bank.max_tick_height();
         let bank_ticks_per_slot = bank.ticks_per_slot();
         let start_tick = max_tick_height - bank_ticks_per_slot;
         let ticks_into_slot = current_tick_height.saturating_sub(start_tick);
         let delegation_period_length = bank_ticks_per_slot * 7 / 8;
-        let in_delegation_period = ticks_into_slot < delegation_period_length;
+        ticks_into_slot < delegation_period_length
+    }
 
-        debug!("maybe_consume current_tick_height {current_tick_height} max_tick_height {max_tick_height} bank_ticks_per_slot {bank_ticks_per_slot} start_tick {start_tick} ticks_into_slot {ticks_into_slot} delegation_period_length {delegation_period_length} in_delegation_period {in_delegation_period}");
-
-        let current_slot = bank.slot();
-
-        // Call the appropriate scheduler function
-        // vanilla_should_schedule and block_should_schedule are now idempotent -
-        // multiple threads calling for the same slot will get consistent results
-        let should_schedule: fn(u64, bool) -> Option<bool> = if VANILLA {
-            scheduler_synchronization::vanilla_should_schedule
-        } else {
-            scheduler_synchronization::block_should_schedule
+    /// Gate `Consume` using slot phase and (for vanilla/block) scheduler synchronization.
+    ///
+    /// - [`MaybeConsumeContext::Vanilla`]: consume in fallback when `vanilla_should_schedule` allows.
+    /// - [`MaybeConsumeContext::Block`]: consume in delegation when `block_should_schedule` allows.
+    /// - [`MaybeConsumeContext::Votes`]: consume only in fallback (inverse of delegation window).
+    pub fn maybe_consume(
+        decision: BufferedPacketsDecision,
+        context: MaybeConsumeContext,
+    ) -> BufferedPacketsDecision {
+        debug!("maybe_consume context {context:?} decision {decision:?}");
+        let BufferedPacketsDecision::Consume(bank) = decision else {
+            return decision;
         };
 
-        match should_schedule(current_slot, in_delegation_period) {
-            Some(true) => BufferedPacketsDecision::Consume(bank),
-            Some(false) => BufferedPacketsDecision::Hold,
-            None => BufferedPacketsDecision::Hold,
+        let in_delegation_period = Self::in_delegation_period(&bank);
+
+        debug!(
+            "maybe_consume slot {} in_delegation_period {in_delegation_period}",
+            bank.slot()
+        );
+
+        match context {
+            MaybeConsumeContext::Votes => {
+                if in_delegation_period {
+                    BufferedPacketsDecision::Hold
+                } else {
+                    BufferedPacketsDecision::Consume(bank)
+                }
+            }
+            MaybeConsumeContext::Vanilla => {
+                let current_slot = bank.slot();
+                match scheduler_synchronization::vanilla_should_schedule(
+                    current_slot,
+                    in_delegation_period,
+                ) {
+                    Some(true) => BufferedPacketsDecision::Consume(bank),
+                    Some(false) | None => BufferedPacketsDecision::Hold,
+                }
+            }
+            MaybeConsumeContext::Block => {
+                let current_slot = bank.slot();
+                match scheduler_synchronization::block_should_schedule(
+                    current_slot,
+                    in_delegation_period,
+                ) {
+                    Some(true) => BufferedPacketsDecision::Consume(bank),
+                    Some(false) | None => BufferedPacketsDecision::Hold,
+                }
+            }
         }
     }
 }
