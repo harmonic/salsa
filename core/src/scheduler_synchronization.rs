@@ -7,33 +7,32 @@
 //!
 //! The state is stored in a single atomic u64:
 //! - Bit 63: 1 = claimed by block, 0 = claimed by vanilla
-//! - Bit 62: 1 = block is actively executing a message (blocks votes)
-//! - Lower 62 bits: slot number
+//! - Lower 63 bits: slot number
 //! - Sentinel value (u64::MAX) indicates no slot has been scheduled yet
 
 use {
     log::info,
-    std::sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    solana_pubkey::Pubkey,
+    std::{
+        collections::HashMap,
+        sync::{
+            atomic::{AtomicU64, Ordering},
+            LazyLock, Mutex,
+        },
+    },
 };
 
 /// Top bit indicates block claimed (1) vs vanilla claimed (0)
 const BLOCK_CLAIMED_BIT: u64 = 1 << 63;
-/// Second bit indicates block is actively executing a message
-const BLOCK_EXECUTING_BIT: u64 = 1 << 62;
-/// Mask to extract the slot number (lower 62 bits)
-const SLOT_MASK: u64 = !(BLOCK_CLAIMED_BIT | BLOCK_EXECUTING_BIT);
+/// Mask to extract the slot number (lower 63 bits)
+const SLOT_MASK: u64 = !BLOCK_CLAIMED_BIT;
 /// Sentinel value - all bits set, indicates no slot scheduled yet.
-/// Note: get_slot(SENTINEL) = 0x3FFFFFFFFFFFFFFF which is far larger than any real slot.
+/// Note: get_slot(SENTINEL) is far larger than any real slot.
 const SENTINEL: u64 = u64::MAX;
 
 /// Module private state. Shared with block & vanilla schedulers.
 /// Encodes both the slot and who claimed it in a single atomic.
 static SCHEDULER_STATE: AtomicU64 = AtomicU64::new(SENTINEL);
-
-/// Vote processing flag for mutual exclusion with block stage.
-/// Set by vote worker before each batch, cleared after. Block stage
-/// spins on this after claiming a slot to wait for any in-flight batch.
-static VOTE_PROCESSING: AtomicBool = AtomicBool::new(false);
 
 /// Extract the slot number from the combined state value.
 #[inline]
@@ -174,61 +173,11 @@ pub fn block_should_schedule(current_slot: u64, in_delegation_period: bool) -> O
     Some(did_claim)
 }
 
-/// Check if a block is currently executing for the given slot.
-/// Used by vote worker to defer vote processing during block execution.
-///
-/// Returns true if the executing bit is set for the current slot.
-pub fn is_block_executing(current_slot: u64) -> bool {
-    let state = SCHEDULER_STATE.load(Ordering::Acquire);
-    if state == SENTINEL {
-        return false;
-    }
-    get_slot(state) == current_slot && state & BLOCK_EXECUTING_BIT != 0
-}
-
-/// Check if the slot is claimed by block (consuming, regardless of executing).
+/// Check if the slot is claimed by block (consuming).
 /// Used by block stage to know when to restore vote limit after delegation ends.
 pub fn is_block_consuming(current_slot: u64) -> bool {
     let state = SCHEDULER_STATE.load(Ordering::Acquire);
     state != SENTINEL && get_slot(state) == current_slot && is_block_claim(state)
-}
-
-/// Called by vote worker before processing a vote batch.
-/// Uses SeqCst store + check pattern (Peterson's algorithm) to ensure mutual
-/// exclusion with the block stage. Returns true if safe to process votes.
-pub fn begin_vote_processing(current_slot: u64) -> bool {
-    VOTE_PROCESSING.store(true, Ordering::SeqCst);
-    if is_block_executing(current_slot) {
-        VOTE_PROCESSING.store(false, Ordering::SeqCst);
-        return false;
-    }
-    true
-}
-
-/// Called by vote worker after processing a vote batch.
-pub fn end_vote_processing() {
-    VOTE_PROCESSING.store(false, Ordering::Release);
-}
-
-/// Called by block stage after claiming slot. Spins until any in-flight
-/// vote batch finishes (at most UNPROCESSED_BUFFER_STEP_SIZE transactions).
-pub fn wait_for_votes_to_finish() {
-    std::sync::atomic::fence(Ordering::SeqCst);
-    while VOTE_PROCESSING.load(Ordering::Acquire) {
-        std::hint::spin_loop();
-    }
-}
-
-/// Called by block stage before executing a message. Sets the executing bit
-/// so that vote processing is deferred during execution.
-pub fn begin_block_execution() {
-    SCHEDULER_STATE.fetch_or(BLOCK_EXECUTING_BIT, Ordering::SeqCst);
-}
-
-/// Called by block stage after executing a message. Clears the executing bit
-/// so that votes can process between messages.
-pub fn end_block_execution() {
-    SCHEDULER_STATE.fetch_and(!BLOCK_EXECUTING_BIT, Ordering::Release);
 }
 
 /// Called when block execution has finished successfully.
@@ -260,12 +209,67 @@ pub fn block_execution_finished(current_slot: u64) -> bool {
         .is_ok()
 }
 
+// ---------------------------------------------------------------------------
+// Block account locks: refcount map of accounts referenced by in-flight
+// block stage transactions. Used by the vote worker to defer votes that
+// overlap with accounts the block stage is currently executing against.
+// ---------------------------------------------------------------------------
+
+struct BlockAccountLocks {
+    accounts: Mutex<HashMap<Pubkey, u32>>,
+}
+
+impl BlockAccountLocks {
+    fn new() -> Self {
+        Self {
+            accounts: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+static BLOCK_ACCOUNT_LOCKS: LazyLock<BlockAccountLocks> =
+    LazyLock::new(BlockAccountLocks::new);
+
+/// Increment refcounts for every key the block stage is about to process.
+/// Must be called **before** re-checking the delegation period so that the
+/// vote worker sees the keys if it races with the end of delegation.
+pub fn lock_block_accounts(keys: &[Pubkey]) {
+    let mut map = BLOCK_ACCOUNT_LOCKS.accounts.lock().unwrap();
+    for key in keys {
+        *map.entry(*key).or_insert(0) += 1;
+    }
+}
+
+/// Decrement refcounts after the block stage has committed (or bailed out).
+pub fn unlock_block_accounts(keys: &[Pubkey]) {
+    let mut map = BLOCK_ACCOUNT_LOCKS.accounts.lock().unwrap();
+    for key in keys {
+        if let Some(count) = map.get_mut(key) {
+            *count -= 1;
+            if *count == 0 {
+                map.remove(key);
+            }
+        }
+    }
+}
+
+/// Returns true if any key is currently held by the block stage.
+pub fn block_accounts_conflict(keys: &[Pubkey]) -> bool {
+    let map = BLOCK_ACCOUNT_LOCKS.accounts.lock().unwrap();
+    keys.iter().any(|k| map.contains_key(k))
+}
+
+/// Drop all refcounts (slot transition, failure, etc.).
+pub fn clear_block_account_locks() {
+    BLOCK_ACCOUNT_LOCKS.accounts.lock().unwrap().clear();
+}
+
 /// Reset the scheduler synchronization state. Used in tests to ensure
 /// a clean slate for each test.
 #[cfg(test)]
 pub fn reset_for_tests() {
     SCHEDULER_STATE.store(SENTINEL, Ordering::Release);
-    VOTE_PROCESSING.store(false, Ordering::Release);
+    clear_block_account_locks();
 }
 
 /// Force claim a slot for vanilla scheduling. Used in tests to simulate
@@ -376,36 +380,6 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_is_block_executing() {
-        reset_for_tests();
-
-        // No block executing initially (sentinel value)
-        assert!(!is_block_executing(100));
-
-        // Block claims slot 100 - consuming but not yet executing
-        block_should_schedule(100, true);
-        assert!(!is_block_executing(100));
-
-        // Begin execution - now executing
-        begin_block_execution();
-        assert!(is_block_executing(100));
-        assert!(!is_block_executing(99)); // Wrong slot
-        assert!(!is_block_executing(101)); // Wrong slot
-
-        // End execution - back to consuming, not executing
-        end_block_execution();
-        assert!(!is_block_executing(100));
-        // Still claimed by block though
-        assert!(is_slot_claimed_by_block());
-
-        // After vanilla claims, block is not executing
-        reset_for_tests();
-        force_vanilla_claim(100);
-        assert!(!is_block_executing(100));
-    }
-
-    #[test]
-    #[serial]
     fn test_block_execution_finished() {
         reset_for_tests();
 
@@ -419,7 +393,6 @@ mod tests {
 
         // Block claim should be cleared
         assert!(!is_slot_claimed_by_block());
-        assert!(!is_block_executing(100));
         // Slot should still be 100, but now vanilla claim
         assert_eq!(last_slot_scheduled(), 100);
     }

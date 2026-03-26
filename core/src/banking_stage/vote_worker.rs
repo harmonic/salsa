@@ -1,7 +1,7 @@
 use {
     super::{
         consumer::Consumer,
-        decision_maker::{BufferedPacketsDecision, DecisionMaker},
+        decision_maker::{BufferedPacketsDecision, DecisionMaker, MaybeConsumeContext},
         latest_validator_vote_packet::VoteSource,
         leader_slot_metrics::{
             CommittedTransactionsCounts, LeaderSlotMetricsTracker, ProcessTransactionsSummary,
@@ -134,8 +134,10 @@ impl VoteWorker {
         slot_metrics_tracker: &mut LeaderSlotMetricsTracker,
         reservation_cb: &impl Fn(&Bank) -> u64,
     ) {
-        let (decision, make_decision_us) =
-            measure_us!(self.decision_maker.make_consume_or_forward_decision());
+        let (decision, make_decision_us) = measure_us!({
+            let d = self.decision_maker.make_consume_or_forward_decision();
+            DecisionMaker::maybe_consume(d, MaybeConsumeContext::Votes)
+        });
         let metrics_action = slot_metrics_tracker.check_leader_slot_boundary(decision.bank());
         slot_metrics_tracker.increment_make_decision_us(make_decision_us);
 
@@ -276,10 +278,25 @@ impl VoteWorker {
                 break;
             }
 
-            // Per-batch mutual exclusion with block stage. If a block just
-            // claimed the slot, reinsert unprocessed votes and stop.
-            if !scheduler_synchronization::begin_vote_processing(bank.slot()) {
-                self.storage.reinsert_votes(votes_batch.drain(..));
+            // Separate votes whose accounts overlap with in-flight block
+            // stage transactions. Conflicting votes are reinserted for a
+            // later retry; the rest proceed normally.
+            let mut i = 0;
+            while i < votes_batch.len() {
+                let dominated = {
+                    let keys: Vec<solana_pubkey::Pubkey> =
+                        votes_batch[i].account_keys().iter().copied().collect();
+                    scheduler_synchronization::block_accounts_conflict(&keys)
+                };
+                if dominated {
+                    let vote = votes_batch.swap_remove(i);
+                    self.storage.reinsert_votes(std::iter::once(vote));
+                } else {
+                    i += 1;
+                }
+            }
+
+            if votes_batch.is_empty() {
                 break;
             }
 
@@ -300,7 +317,6 @@ impl VoteWorker {
             } else {
                 self.storage.reinsert_votes(votes_batch.drain(..));
             }
-            scheduler_synchronization::end_vote_processing();
         }
 
         debug!(

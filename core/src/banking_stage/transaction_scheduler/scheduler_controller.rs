@@ -12,7 +12,7 @@ use {
         banking_stage::{
             consume_worker::ConsumeWorkerMetrics,
             consumer::Consumer,
-            decision_maker::{BufferedPacketsDecision, DecisionMaker},
+            decision_maker::{BufferedPacketsDecision, DecisionMaker, MaybeConsumeContext},
             transaction_scheduler::{
                 receive_and_buffer::ReceivingStats, transaction_state_container::StateContainer,
             },
@@ -132,7 +132,7 @@ where
                 measure_us!(self.decision_maker.make_consume_or_forward_decision());
             // cavey: gate non-vote transaction scheduling behind vanilla scheduler -
             // only run after the delegation threshold if no block was received
-            let decision = DecisionMaker::maybe_consume::<true /* VANILLA */>(decision);
+            let decision = DecisionMaker::maybe_consume(decision, MaybeConsumeContext::Vanilla);
             self.timing_metrics.update(|timing_metrics| {
                 timing_metrics.decision_time_us += decision_time_us;
             });

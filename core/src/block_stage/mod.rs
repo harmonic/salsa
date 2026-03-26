@@ -12,7 +12,9 @@ pub use harmonic_block::HarmonicBlock;
 use solana_signer::Signer;
 pub use timer::Timer;
 
-use crate::banking_stage::decision_maker::{BufferedPacketsDecision, DecisionMaker};
+use crate::banking_stage::decision_maker::{
+    BufferedPacketsDecision, DecisionMaker, MaybeConsumeContext,
+};
 
 use {
     crate::{
@@ -41,7 +43,9 @@ use {
         bank::Bank, bank_forks::BankForks, prioritization_fee_cache::PrioritizationFeeCache,
         vote_sender_types::ReplayVoteSender,
     },
+    solana_pubkey::Pubkey,
     solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
+    solana_svm_transaction::svm_message::SVMMessage,
     std::{
         sync::{
             atomic::{AtomicBool, Ordering},
@@ -170,19 +174,13 @@ impl BlockStage {
                     // Claim the slot (or continue if already claimed by block for this slot)
                     let decision = BufferedPacketsDecision::Consume(working_bank.clone());
                     if let BufferedPacketsDecision::Consume(_) =
-                        DecisionMaker::maybe_consume::<false>(decision)
+                        DecisionMaker::maybe_consume(decision, MaybeConsumeContext::Block)
                     {
                         // Skip execution for a slot that had a failure
                         if failed_slot == Some(current_slot) {
                             continue;
                         }
 
-                        // Enter executing state and wait for any in-flight vote batch
-                        scheduler_synchronization::begin_block_execution();
-                        scheduler_synchronization::wait_for_votes_to_finish();
-
-                        // Translate packets to RuntimeTransaction<ResolvedTransactionView>
-                        // using zerocopy TransactionView instead of bincode deserialization
                         let (mut transactions, mut max_ages) =
                             Self::translate_packets_to_transactions(
                                 &block.transactions(),
@@ -190,7 +188,6 @@ impl BlockStage {
                                 &working_bank,
                             );
 
-                        // Prepend crank transactions if needed
                         Self::maybe_prepend_crank(
                             &working_bank,
                             &root_bank,
@@ -203,7 +200,22 @@ impl BlockStage {
                             &mut max_ages,
                         );
 
-                        // Process block message
+                        // Collect all account keys so the vote worker can see them.
+                        let locked_keys: Vec<Pubkey> = transactions
+                            .iter()
+                            .flat_map(|tx| tx.account_keys().iter().copied())
+                            .collect();
+                        scheduler_synchronization::lock_block_accounts(&locked_keys);
+
+                        // Re-check delegation period after locking to close the
+                        // race with the vote worker: if delegation just ended,
+                        // back out so votes that already passed the time gate
+                        // don't collide with us.
+                        if !DecisionMaker::in_delegation_period(&working_bank) {
+                            scheduler_synchronization::unlock_block_accounts(&locked_keys);
+                            continue;
+                        }
+
                         let output = consumer.process_and_record_block_transactions(
                             &working_bank,
                             &transactions,
@@ -211,8 +223,7 @@ impl BlockStage {
                             intended_slot,
                         );
 
-                        // Exit executing state so votes can process between messages
-                        scheduler_synchronization::end_block_execution();
+                        scheduler_synchronization::unlock_block_accounts(&locked_keys);
 
                         if let Err(e) = output
                             .execute_and_commit_transactions_output
@@ -223,6 +234,7 @@ impl BlockStage {
                                 current_slot, e
                             );
                             failed_slot = Some(current_slot);
+                            scheduler_synchronization::clear_block_account_locks();
                             working_bank.restore_vote_limit();
                             vote_limit_restored_slot = Some(current_slot);
                         }
