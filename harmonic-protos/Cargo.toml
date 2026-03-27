@@ -1,0 +1,17 @@
+[package]
+name = "harmonic-protos"
+version = { workspace = true }
+edition = { workspace = true }
+publish = false
+
+[dependencies]
+bytes = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
+tonic = { workspace = true }
+
+[build-dependencies]
+tonic-build = { workspace = true }
+
+[target."cfg(not(windows))".build-dependencies]
+protobuf-src = { workspace = true }
