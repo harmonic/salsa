@@ -218,14 +218,14 @@ impl<D: TransactionData> TransactionView<true, D> {
 
     /// Return the number of writable unsigned static accounts.
     #[inline]
-    pub(crate) fn num_writable_unsigned_static_accounts(&self) -> u8 {
+    pub fn num_writable_unsigned_static_accounts(&self) -> u8 {
         self.num_static_unsigned_static_accounts()
             .wrapping_sub(self.num_readonly_unsigned_static_accounts())
     }
 
-    /// Return the number of writable unsigned static accounts.
+    /// Return the number of writable signed static accounts.
     #[inline]
-    pub(crate) fn num_writable_signed_static_accounts(&self) -> u8 {
+    pub fn num_writable_signed_static_accounts(&self) -> u8 {
         self.num_required_signatures()
             .wrapping_sub(self.num_readonly_signed_static_accounts())
     }

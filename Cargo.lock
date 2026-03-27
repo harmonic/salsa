@@ -3366,6 +3366,45 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eabb4a44450da02c90444cf74558da904edde8fb4e9035a9a6a4e15445af0bd7"
 
 [[package]]
+name = "harmonic-protos"
+version = "4.0.0-beta.4"
+dependencies = [
+ "bytes",
+ "prost",
+ "prost-types",
+ "protobuf-src",
+ "tonic",
+ "tonic-build",
+]
+
+[[package]]
+name = "harmonic-scheduler"
+version = "4.0.0-beta.4"
+dependencies = [
+ "agave-scheduler-bindings",
+ "agave-scheduling-utils",
+ "agave-transaction-view",
+ "arc-swap",
+ "clap 4.5.31",
+ "crossbeam-channel",
+ "env_logger",
+ "harmonic-protos",
+ "log",
+ "lru",
+ "prost-types",
+ "rts-alloc",
+ "rustc-hash 2.1.1",
+ "shaq",
+ "smallvec",
+ "solana-keypair",
+ "solana-pubkey 4.1.0",
+ "solana-signature",
+ "solana-signer",
+ "tokio",
+ "tonic",
+]
+
+[[package]]
 name = "hash32"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

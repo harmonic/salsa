@@ -1,0 +1,36 @@
+[package]
+name = "harmonic-scheduler"
+description = "Harmonic external scheduler for Agave validator"
+# TODO: Update these to Harmonic-specific values (version, authors, homepage, license)
+version = { workspace = true }
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+
+[dependencies]
+arc-swap = { workspace = true }
+agave-scheduler-bindings = { workspace = true, features = ["agave-unstable-api"] }
+agave-transaction-view = { workspace = true }
+agave-scheduling-utils = { workspace = true, features = ["agave-unstable-api"] }
+clap = { version = "4", features = ["derive"] }
+crossbeam-channel = { workspace = true }
+env_logger = { workspace = true }
+harmonic-protos = { workspace = true }
+log = { workspace = true }
+lru = { workspace = true }
+rustc-hash = "2"
+prost-types = { workspace = true }
+rts-alloc = { workspace = true }
+shaq = { workspace = true }
+smallvec = { workspace = true }
+solana-keypair = { workspace = true }
+solana-pubkey = { workspace = true }
+solana-signature = { workspace = true }
+solana-signer = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
+tonic = { workspace = true, features = ["transport", "tls"] }
+
+[lints]
+workspace = true
