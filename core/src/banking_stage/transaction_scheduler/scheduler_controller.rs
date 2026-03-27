@@ -88,10 +88,6 @@ where
     recheck_cursor: Option<TransactionPriorityId>,
     /// Recheck IDs scratch space.
     recheck_chunk: Vec<TransactionPriorityId>,
-    // Harmonic: external scheduler support
-    /// True when an external scheduler is connected. Non-vote scheduling
-    /// is suppressed in the last 1/8 of each slot to reserve that window for votes.
-    external_scheduler_active: Arc<AtomicBool>,
 }
 
 impl<R, S> SchedulerController<R, S>
@@ -107,7 +103,6 @@ where
         sharable_banks: SharableBanks,
         scheduler: S,
         worker_metrics: Vec<Arc<ConsumeWorkerMetrics>>,
-        external_scheduler_active: Arc<AtomicBool>,
     ) -> Self {
         Self {
             exit,
@@ -123,7 +118,6 @@ where
             scheduling_details: SchedulingDetails::default(),
             recheck_cursor: None,
             recheck_chunk: Vec::with_capacity(CHECK_CHUNK),
-            external_scheduler_active,
         }
     }
 
@@ -229,13 +223,6 @@ where
     ) -> Result<usize, SchedulerError> {
         let scheduled = match decision {
             BufferedPacketsDecision::Consume(bank) => {
-                // Harmonic: with external scheduler, stop scheduling non-votes in the last 1/8 of slot
-                if self.external_scheduler_active.load(Ordering::Acquire) {
-                    let remaining_ticks = bank.max_tick_height() - bank.tick_height();
-                    if remaining_ticks <= bank.ticks_per_slot() / 8 {
-                        return Ok(0);
-                    }
-                }
                 let scheduling_budget = cost_pacer
                     .expect("cost pacer must be set for Consume")
                     .scheduling_budget(now);
@@ -591,7 +578,6 @@ mod tests {
             bank_forks.read().unwrap().sharable_banks(),
             scheduler,
             vec![], // no actual workers with metrics to report, this can be empty
-            Arc::new(AtomicBool::new(false)),
         );
 
         (test_frame, scheduler_controller)

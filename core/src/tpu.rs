@@ -65,7 +65,7 @@ use {
         net::{SocketAddr, UdpSocket},
         num::NonZeroUsize,
         path::PathBuf,
-        sync::{Arc, RwLock, atomic::AtomicBool},
+        sync::{Arc, Mutex, RwLock, atomic::AtomicBool},
         thread::{self, JoinHandle},
     },
     tokio::sync::mpsc,
@@ -153,7 +153,6 @@ impl Tpu {
         cancel: CancellationToken,
         votor_event_sender: VotorEventSender,
         shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
-        proxy_tpu_address: Option<SocketAddr>,
     ) -> Self {
         let TpuSockets {
             vote: tpu_vote_sockets,
@@ -312,7 +311,6 @@ impl Tpu {
             bank_forks.clone(),
             prioritization_fee_cache,
             cluster_info.clone(),
-            proxy_tpu_address,
         );
 
         #[cfg(unix)]
@@ -382,6 +380,14 @@ impl Tpu {
             tracer_thread_hdl,
             tpu_vote_quic_t,
         }
+    }
+
+    pub fn external_scheduler_active(&self) -> Arc<AtomicBool> {
+        self.banking_stage.external_scheduler_active()
+    }
+
+    pub fn configured_tpu(&self) -> Arc<Mutex<SocketAddr>> {
+        self.banking_stage.configured_tpu()
     }
 
     pub fn join(self) -> thread::Result<()> {

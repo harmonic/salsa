@@ -1,7 +1,7 @@
 pub const MAX_WORKERS: usize = 64;
 
 /// Protocol version.
-pub(crate) const VERSION: u64 = 3;
+pub(crate) const VERSION: u64 = 4;
 pub(crate) const LOGON_SUCCESS: u8 = 0x01;
 pub(crate) const LOGON_FAILURE: u8 = 0x02;
 pub(crate) const MAX_ALLOCATOR_HANDLES: usize = 128;
@@ -27,6 +27,9 @@ pub struct ClientLogon {
     pub worker_to_pack_capacity: usize,
     /// Flags that control the behavior of the new scheduling session.
     pub flags: u16,
+    /// The minimum capacity of the `control` queue in messages.
+    /// Control messages flow from the external scheduler to agave.
+    pub control_capacity: usize,
     // NB: If adding more fields please ensure:
     // - The fields are zeroable.
     // - If possible the fields are backwards compatible:

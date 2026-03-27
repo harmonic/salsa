@@ -483,19 +483,6 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
                  unique addresses. Empty string disables.",
             ),
     )
-    // Harmonic: external scheduler proxy TPU address
-    .arg(
-        Arg::with_name("proxy_tpu_address")
-            .long("proxy-tpu-address")
-            .value_name("HOST:PORT")
-            .takes_value(true)
-            .required(true)
-            .help(
-                "When an external scheduler is connected, advertise this address as the \
-                 validator's TPU address in gossip. Reverts to the original address when the \
-                 scheduler disconnects.",
-            ),
-    )
     .arg(
         Arg::with_name("minimal_snapshot_download_speed")
             .long("minimal-snapshot-download-speed")

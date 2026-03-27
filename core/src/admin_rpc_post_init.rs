@@ -12,8 +12,8 @@ use {
     solana_turbine::ShredReceiverAddresses,
     std::{
         collections::{HashMap, HashSet},
-        net::UdpSocket,
-        sync::{Arc, RwLock},
+        net::{SocketAddr, UdpSocket},
+        sync::{Arc, Mutex, RwLock, atomic::AtomicBool},
     },
     tokio::sync::mpsc,
 };
@@ -91,4 +91,9 @@ pub struct AdminRpcRequestMetadataPostInit {
     pub snapshot_controller: Arc<SnapshotController>,
     pub shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
     pub shred_retransmit_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+    /// True when an external scheduler is managing the TPU address.
+    pub external_scheduler_active: Arc<AtomicBool>,
+    /// Configured TPU address — updated by admin RPC when external scheduler is active,
+    /// restored when the scheduler disconnects.
+    pub configured_tpu: Arc<Mutex<SocketAddr>>,
 }

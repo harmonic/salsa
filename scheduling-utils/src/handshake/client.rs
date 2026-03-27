@@ -4,7 +4,7 @@ use {
         shared::{GLOBAL_ALLOCATORS, LOGON_FAILURE, MAX_WORKERS, VERSION},
     },
     agave_scheduler_bindings::{
-        PackToWorkerMessage, ProgressMessage, TpuToPackMessage, WorkerToPackMessage,
+        ControlMessage, PackToWorkerMessage, ProgressMessage, TpuToPackMessage, WorkerToPackMessage,
     },
     libc::CMSG_LEN,
     nix::sys::socket::{self, ControlMessageOwned, MsgFlags, UnixAddr},
@@ -26,7 +26,7 @@ type RtsError = rts_alloc::error::Error;
 type ShaqError = shaq::error::Error;
 
 /// Number of global shared memory objects (in addition to per worker objects).
-const GLOBAL_SHMEM: usize = 3;
+const GLOBAL_SHMEM: usize = 4;
 
 /// The maximum size in bytes of the control message containing the queues assuming [`MAX_WORKERS`]
 /// is respected.
@@ -136,7 +136,13 @@ pub fn setup_session(
     logon: &ClientLogon,
     fds: Vec<i32>,
 ) -> Result<ClientSession, ClientHandshakeError> {
-    let [allocator_fd, tpu_to_pack_fd, progress_tracker_fd] = fds[..GLOBAL_SHMEM] else {
+    let [
+        allocator_fd,
+        tpu_to_pack_fd,
+        progress_tracker_fd,
+        control_fd,
+    ] = fds[..GLOBAL_SHMEM]
+    else {
         panic!();
     };
     // SAFETY: `allocator_fd` represents a valid file descriptor that was just returned to us via
@@ -173,6 +179,7 @@ pub fn setup_session(
         allocators,
         tpu_to_pack: unsafe { shaq::Consumer::join(&File::from_raw_fd(tpu_to_pack_fd))? },
         progress_tracker: unsafe { shaq::Consumer::join(&File::from_raw_fd(progress_tracker_fd))? },
+        control: unsafe { shaq::Producer::join(&File::from_raw_fd(control_fd))? },
         workers: worker_fds
             .chunks(2)
             .map(|window| {
@@ -200,6 +207,7 @@ pub struct ClientSession {
     pub allocators: Vec<Allocator>,
     pub tpu_to_pack: shaq::Consumer<TpuToPackMessage>,
     pub progress_tracker: shaq::Consumer<ProgressMessage>,
+    pub control: shaq::Producer<ControlMessage>,
     pub workers: Vec<ClientWorkerSession>,
 }
 

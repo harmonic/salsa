@@ -801,18 +801,28 @@ impl AdminRpc for AdminRpcImpl {
                     );
                     jsonrpc_core::error::Error::internal_error()
                 })?;
-            post_init
-                .cluster_info
-                .set_tpu_quic(public_tpu_addr)
-                .map_err(|err| {
-                    error!("Failed to set public TPU QUIC address to {public_tpu_addr}: {err}");
-                    jsonrpc_core::error::Error::internal_error()
-                })?;
-            let my_contact_info = post_init.cluster_info.my_contact_info();
-            warn!(
-                "Public TPU addresses set to {:?} (quic)",
-                my_contact_info.tpu(Protocol::QUIC),
-            );
+            if post_init
+                .external_scheduler_active
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                // External scheduler is managing the TPU address.
+                // Update the configured fallback instead of the live gossip address.
+                *post_init.configured_tpu.lock().unwrap() = public_tpu_addr;
+                warn!("External scheduler active, updated configured TPU to {public_tpu_addr}");
+            } else {
+                post_init
+                    .cluster_info
+                    .set_tpu_quic(public_tpu_addr)
+                    .map_err(|err| {
+                        error!("Failed to set public TPU QUIC address to {public_tpu_addr}: {err}");
+                        jsonrpc_core::error::Error::internal_error()
+                    })?;
+                let my_contact_info = post_init.cluster_info.my_contact_info();
+                warn!(
+                    "Public TPU addresses set to {:?} (quic)",
+                    my_contact_info.tpu(Protocol::QUIC),
+                );
+            }
             Ok(())
         })
     }
@@ -1252,6 +1262,8 @@ mod tests {
                     snapshot_controller,
                     shred_receiver_addresses: Arc::new(ArcSwap::from_pointee(ShredReceiverAddresses::new())),
                     shred_retransmit_receiver_addresses: Arc::new(ArcSwap::from_pointee(ShredReceiverAddresses::new())),
+                    external_scheduler_active: Arc::new(AtomicBool::new(false)),
+                    configured_tpu: Arc::new(std::sync::Mutex::new(SOCKET_ADDR_UNSPECIFIED)),
                 }))),
                 staked_nodes_overrides: Arc::new(RwLock::new(HashMap::new())),
                 rpc_to_plugin_manager_sender: None,

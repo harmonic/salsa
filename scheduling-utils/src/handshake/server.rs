@@ -7,7 +7,8 @@ use {
         },
     },
     agave_scheduler_bindings::{
-        PackToWorkerMessage, ProgressMessage, TpuToPackMessage, WorkerToPackMessage,
+        ControlMessage as SchedulerControlMessage, PackToWorkerMessage, ProgressMessage,
+        TpuToPackMessage, WorkerToPackMessage,
     },
     nix::sys::socket::{self, ControlMessage, MsgFlags, UnixAddr},
     rts_alloc::Allocator,
@@ -158,6 +159,10 @@ impl Server {
         let (progress_tracker_file, progress_tracker) =
             Self::create_producer(logon.progress_tracker_capacity, false)?;
 
+        // Setup the control queue (scheduler writes, validator reads).
+        let (control_file, control) =
+            Self::create_consumer::<SchedulerControlMessage>(logon.control_capacity)?;
+
         // Setup the worker sessions.
         let (worker_files, workers) = (0..logon.worker_count).try_fold(
             (Vec::default(), Vec::default()),
@@ -193,12 +198,18 @@ impl Server {
                     producer: tpu_to_pack_queue,
                 },
                 progress_tracker,
+                control,
                 workers,
             },
-            [allocator_file, tpu_to_pack_file, progress_tracker_file]
-                .into_iter()
-                .chain(worker_files)
-                .collect(),
+            [
+                allocator_file,
+                tpu_to_pack_file,
+                progress_tracker_file,
+                control_file,
+            ]
+            .into_iter()
+            .chain(worker_files)
+            .collect(),
         ))
     }
 
@@ -247,12 +258,10 @@ impl Server {
         }
     }
 
-    fn create_consumer(
-        capacity: usize,
-    ) -> Result<(File, shaq::Consumer<PackToWorkerMessage>), ShaqError> {
+    fn create_consumer<T>(capacity: usize) -> Result<(File, shaq::Consumer<T>), ShaqError> {
         let create = |huge: bool| {
             let file = Self::create_shmem(huge)?;
-            let minimum_file_size = shaq::minimum_file_size::<PackToWorkerMessage>(capacity);
+            let minimum_file_size = shaq::minimum_file_size::<T>(capacity);
             let file_size = Self::align_file_size(minimum_file_size, huge);
 
             // SAFETY: uniquely creating as consumer.
@@ -347,6 +356,7 @@ pub struct AgaveSession {
     pub flags: u16,
     pub tpu_to_pack: AgaveTpuToPackSession,
     pub progress_tracker: shaq::Producer<ProgressMessage>,
+    pub control: shaq::Consumer<SchedulerControlMessage>,
     pub workers: Vec<AgaveWorkerSession>,
 }
 

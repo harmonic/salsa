@@ -26,10 +26,7 @@ use {
     crossbeam_channel::{Receiver, Sender, unbounded},
     futures::{StreamExt, stream::FuturesUnordered},
     histogram::Histogram,
-    solana_gossip::{
-        cluster_info::ClusterInfo,
-        contact_info::{ContactInfoQuery, Protocol},
-    },
+    solana_gossip::{cluster_info::ClusterInfo, contact_info::ContactInfoQuery},
     solana_ledger::blockstore_processor::TransactionStatusSender,
     solana_perf::packet::PACKETS_PER_BATCH,
     solana_poh::{
@@ -48,7 +45,7 @@ use {
         num::{NonZeroU64, NonZeroUsize, Saturating},
         ops::Deref,
         sync::{
-            Arc, RwLock,
+            Arc, Mutex, RwLock,
             atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         },
         thread::{self, Builder, JoinHandle},
@@ -96,6 +93,8 @@ pub mod unified_scheduler;
 #[cfg(not(feature = "dev-context-only-utils"))]
 pub(crate) mod unified_scheduler;
 
+#[cfg(unix)]
+mod external_control;
 #[cfg(unix)]
 mod progress_tracker;
 #[cfg(unix)]
@@ -389,12 +388,11 @@ pub struct BankingStage {
     // Harmonic: external scheduler support
     /// ClusterInfo for reading/writing the advertised TPU address in gossip.
     cluster_info: Arc<ClusterInfo>,
-    /// TPU address to advertise when external scheduler is connected (from --proxy-tpu-address).
-    proxy_tpu_address: Option<SocketAddr>,
-    /// Original TPU address cached when external scheduler connects, restored on disconnect.
-    saved_tpu_address: Option<SocketAddr>,
-    /// True when an external scheduler is connected. Gates vote/transaction tick isolation.
+    /// True when an external scheduler is connected.
     external_scheduler_active: Arc<AtomicBool>,
+    /// Configured TPU address — initialized from gossip at startup.
+    /// Updated by admin RPC when external scheduler is active; restored on disconnect.
+    configured_tpu: Arc<Mutex<SocketAddr>>,
 }
 
 impl BankingStage {
@@ -415,7 +413,6 @@ impl BankingStage {
         bank_forks: Arc<RwLock<BankForks>>,
         prioritization_fee_cache: Option<Arc<PrioritizationFeeCache>>,
         cluster_info: Arc<ClusterInfo>,
-        proxy_tpu_address: Option<SocketAddr>,
     ) -> BankingStageHandle {
         let committer = Committer::new(
             transaction_status_sender,
@@ -425,6 +422,13 @@ impl BankingStage {
 
         // Setup the manager thread state.
         let banking_shutdown_signal = CancellationToken::new();
+        let external_scheduler_active = Arc::new(AtomicBool::new(false));
+        let configured_tpu = Arc::new(Mutex::new(
+            cluster_info
+                .my_contact_info()
+                .tpu(solana_gossip::contact_info::Protocol::QUIC)
+                .expect("TPU QUIC address must be set"),
+        ));
         let manager = BankingStage {
             banking_shutdown_signal: banking_shutdown_signal.clone(),
             worker_exit_signal: Arc::new(AtomicBool::new(false)),
@@ -438,10 +442,9 @@ impl BankingStage {
             committer,
             log_messages_bytes_limit,
             threads: FuturesUnordered::default(),
+            external_scheduler_active: external_scheduler_active.clone(),
+            configured_tpu: configured_tpu.clone(),
             cluster_info,
-            proxy_tpu_address,
-            saved_tpu_address: None,
-            external_scheduler_active: Arc::new(AtomicBool::new(false)),
         };
 
         // Spawn the manager thread.
@@ -463,6 +466,8 @@ impl BankingStage {
         BankingStageHandle {
             banking_shutdown_signal,
             thread,
+            external_scheduler_active,
+            configured_tpu,
         }
     }
 
@@ -529,29 +534,17 @@ impl BankingStage {
     fn spawn_scheduler(&mut self, args: BankingControlMsg) -> Result<(), ()> {
         match &args {
             BankingControlMsg::Internal { .. } => {
-                // Harmonic: restore original TPU address on fallback to internal scheduler
-                if let Some(saved) = self.saved_tpu_address.take() {
-                    if let Err(err) = self.cluster_info.set_tpu_quic(saved) {
-                        error!("Failed to restore TPU address: {err}");
-                    } else {
-                        info!("Restored TPU address to {saved}");
-                    }
+                let configured = *self.configured_tpu.lock().unwrap();
+                if let Err(err) = self.cluster_info.set_tpu_quic(configured) {
+                    error!("Failed to restore TPU address: {err}");
+                } else {
+                    info!("Restored TPU address to {configured}");
                 }
                 self.external_scheduler_active
                     .store(false, Ordering::Release);
             }
             #[cfg(unix)]
             BankingControlMsg::External { .. } => {
-                // Harmonic: save current TPU and set proxy before external scheduler is fully active
-                if let Some(proxy) = self.proxy_tpu_address {
-                    self.saved_tpu_address =
-                        self.cluster_info.my_contact_info().tpu(Protocol::QUIC);
-                    if let Err(err) = self.cluster_info.set_tpu_quic(proxy) {
-                        error!("Failed to set proxy TPU address: {err}");
-                    } else {
-                        info!("Set proxy TPU address to {proxy}");
-                    }
-                }
                 self.external_scheduler_active
                     .store(true, Ordering::Release);
             }
@@ -655,7 +648,6 @@ impl BankingStage {
             ($scheduler:ident) => {
                 let exit = exit.clone();
                 let shutdown_signal = self.banking_shutdown_signal.clone();
-                let external_scheduler_active = self.external_scheduler_active.clone();
                 threads.push(
                     Builder::new()
                         .name("solBnkTxSched".to_string())
@@ -668,7 +660,6 @@ impl BankingStage {
                                 sharable_banks,
                                 $scheduler,
                                 worker_metrics,
-                                external_scheduler_active,
                             );
 
                             match scheduler_controller.run() {
@@ -735,7 +726,6 @@ impl BankingStage {
         let worker_exit_signal = self.worker_exit_signal.clone();
         let shutdown_signal = self.banking_shutdown_signal.clone();
         let bank_forks = self.bank_forks.clone();
-        let external_scheduler_active = self.external_scheduler_active.clone();
         Builder::new()
             .name("solBanknStgVote".to_string())
             .spawn(move || {
@@ -748,7 +738,6 @@ impl BankingStage {
                     vote_storage,
                     bank_forks,
                     consumer,
-                    external_scheduler_active,
                 )
                 .run()
             })
@@ -784,6 +773,7 @@ mod external {
                 flags: _,
                 tpu_to_pack,
                 progress_tracker,
+                control,
                 workers,
             }: AgaveSession,
         ) -> Result<Vec<JoinHandle<()>>, ()> {
@@ -866,6 +856,14 @@ mod external {
                 ticks_per_slot,
             ));
 
+            // Spawn external control handler (proxy TPU management).
+            threads.push(external_control::spawn(
+                self.worker_exit_signal.clone(),
+                control,
+                self.cluster_info.clone(),
+                self.configured_tpu.clone(),
+            ));
+
             Ok(threads)
         }
     }
@@ -874,12 +872,22 @@ mod external {
 pub struct BankingStageHandle {
     banking_shutdown_signal: CancellationToken,
     thread: JoinHandle<std::thread::Result<()>>,
+    external_scheduler_active: Arc<AtomicBool>,
+    configured_tpu: Arc<Mutex<SocketAddr>>,
 }
 
 impl BankingStageHandle {
     pub fn join(self) -> thread::Result<()> {
         self.banking_shutdown_signal.cancel();
         self.thread.join().unwrap()
+    }
+
+    pub fn external_scheduler_active(&self) -> Arc<AtomicBool> {
+        self.external_scheduler_active.clone()
+    }
+
+    pub fn configured_tpu(&self) -> Arc<Mutex<SocketAddr>> {
+        self.configured_tpu.clone()
     }
 }
 
@@ -1050,7 +1058,6 @@ mod tests {
             bank_forks,
             None,
             test_cluster_info(),
-            None,
         );
         drop(non_vote_sender);
         drop(tpu_vote_sender);
@@ -1116,7 +1123,6 @@ mod tests {
             bank_forks,
             None,
             test_cluster_info(),
-            None,
         );
         trace!("sending bank");
         drop(non_vote_sender);
@@ -1194,7 +1200,6 @@ mod tests {
             bank_forks, // keep a local-copy of bank-forks so worker threads do not lose weak access to bank-forks
             None,
             test_cluster_info(),
-            None,
         );
 
         // good tx, and no verify
@@ -1350,7 +1355,6 @@ mod tests {
                 bank_forks,
                 None,
                 test_cluster_info(),
-                None,
             );
 
             // wait for banking_stage to eat the packets
@@ -1515,7 +1519,6 @@ mod tests {
             bank_forks,
             None,
             test_cluster_info(),
-            None,
         );
 
         let keypairs = (0..100).map(|_| Keypair::new()).collect_vec();

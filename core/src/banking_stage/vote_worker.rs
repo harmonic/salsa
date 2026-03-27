@@ -64,9 +64,6 @@ pub struct VoteWorker {
     storage: VoteStorage,
     bank_forks: Arc<RwLock<BankForks>>,
     consumer: Consumer,
-    // Harmonic: when external scheduler is active, votes only execute in
-    // the last 1/8 of the slot to isolate vote and non-vote processing.
-    external_scheduler_active: Arc<AtomicBool>,
 }
 
 impl VoteWorker {
@@ -79,7 +76,6 @@ impl VoteWorker {
         storage: VoteStorage,
         bank_forks: Arc<RwLock<BankForks>>,
         consumer: Consumer,
-        external_scheduler_active: Arc<AtomicBool>,
     ) -> Self {
         Self {
             exit,
@@ -90,7 +86,6 @@ impl VoteWorker {
             storage,
             bank_forks,
             consumer,
-            external_scheduler_active,
         }
     }
 
@@ -164,13 +159,6 @@ impl VoteWorker {
 
         match decision {
             BufferedPacketsDecision::Consume(bank) => {
-                // Harmonic: with external scheduler, only execute votes in the last 1/8 of the slot
-                if self.external_scheduler_active.load(Ordering::Acquire) {
-                    let remaining_ticks = bank.max_tick_height() - bank.tick_height();
-                    if remaining_ticks > bank.ticks_per_slot() / 8 {
-                        return;
-                    }
-                }
                 let (_, consume_buffered_packets_us) = measure_us!(self.consume_buffered_packets(
                     &bank,
                     banking_stage_stats,

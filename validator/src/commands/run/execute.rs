@@ -767,14 +767,6 @@ pub fn execute(
         UseSnapshotArchivesAtStartup
     );
 
-    let proxy_tpu_address = matches
-        .value_of("proxy_tpu_address")
-        .map(|addr| {
-            solana_net_utils::parse_host_port(addr)
-                .map_err(|err| format!("failed to parse --proxy-tpu-address {addr}: {err}"))
-        })
-        .transpose()?;
-
     let shred_receiver_addresses = Arc::new(ArcSwap::from_pointee(
         parse_shred_receiver_addresses(
             matches
@@ -915,7 +907,6 @@ pub fn execute(
         ),
         shred_receiver_addresses: shred_receiver_addresses.clone(),
         shred_retransmit_receiver_addresses: shred_retransmit_receiver_addresses.clone(),
-        proxy_tpu_address,
     };
 
     let vote_account = pubkey_of(matches, "vote_account").unwrap_or_else(|| {

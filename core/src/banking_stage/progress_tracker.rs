@@ -128,6 +128,7 @@ impl ProgressTracker {
                     tick_height,
                     self.ticks_per_slot,
                 ),
+                recent_blockhash: working_bank.last_blockhash().to_bytes(),
             }
         } else {
             let current_slot = slot_from_tick_height(tick_height, self.ticks_per_slot);
@@ -149,6 +150,7 @@ impl ProgressTracker {
                 leader_range_end: next_leader_range_end,
                 remaining_cost_units: 0,
                 current_slot_progress: progress(current_slot, tick_height, self.ticks_per_slot),
+                recent_blockhash: [0u8; 32],
             }
         };
 

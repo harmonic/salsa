@@ -190,6 +190,31 @@ pub struct ProgressMessage {
     pub remaining_cost_units: u64,
     /// Progress through the current slot in percentage.
     pub current_slot_progress: u8,
+    /// The recent blockhash from the working bank.
+    /// Populated when `leader_state == LEADER_READY`. Zeroed when not leader
+    /// (the progress tracker has no bank reference outside leader slots).
+    pub recent_blockhash: [u8; 32],
+}
+
+/// Message: [Pack -> Agave]
+/// Control messages from the external scheduler to the validator.
+/// Used for dynamic configuration changes (e.g., proxy TPU address).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct ControlMessage {
+    /// See [`control_tags`] for accepted values.
+    pub tag: u8,
+    /// Proxy TPU address in IPv6-mapped format. Only valid for SET_PROXY_TPU.
+    pub proxy_tpu_address: [u8; 16],
+    /// Proxy TPU port. Only valid for SET_PROXY_TPU.
+    pub proxy_tpu_port: u16,
+}
+
+pub mod control_tags {
+    /// Set the validator's gossip TPU address to the specified proxy address.
+    pub const SET_PROXY_TPU: u8 = 1;
+    /// Restore the validator's original gossip TPU address.
+    pub const RESTORE_ORIGINAL_TPU: u8 = 2;
 }
 
 /// Maximum number of transactions allowed in a [`PackToWorkerMessage`].
