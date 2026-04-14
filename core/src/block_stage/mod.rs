@@ -35,15 +35,14 @@ use {
     solana_gossip::cluster_info::ClusterInfo,
     solana_keypair::Keypair,
     solana_ledger::{
-        blockstore_processor::TransactionStatusSender,
-        leader_schedule_cache::LeaderScheduleCache,
+        blockstore_processor::TransactionStatusSender, leader_schedule_cache::LeaderScheduleCache,
     },
     solana_poh::transaction_recorder::TransactionRecorder,
+    solana_pubkey::Pubkey,
     solana_runtime::{
         bank::Bank, bank_forks::BankForks, prioritization_fee_cache::PrioritizationFeeCache,
         vote_sender_types::ReplayVoteSender,
     },
-    solana_pubkey::Pubkey,
     solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
     solana_svm_transaction::svm_message::SVMMessage,
     std::{
@@ -132,7 +131,7 @@ impl BlockStage {
         let mut vote_limit_restored_slot: Option<u64> = None;
 
         while !exit.load(Ordering::Relaxed) {
-            match block_receiver.recv_timeout(Duration::from_millis(10)) {
+            match block_receiver.recv_timeout(Duration::from_millis(1)) {
                 Ok(block) => {
                     info!("Received block from Block Engine");
                     let (root_bank, working_bank) = {
@@ -237,8 +236,44 @@ impl BlockStage {
                             scheduler_synchronization::clear_block_account_locks();
                             working_bank.restore_vote_limit();
                             vote_limit_restored_slot = Some(current_slot);
+                            // Release the claim so vanilla/bundle stages can take over
+                            scheduler_synchronization::block_execution_finished(current_slot);
+                            info!(
+                                "released block claim for slot {} after commit failure",
+                                current_slot
+                            );
                         }
                     } else if scheduler_synchronization::is_block_consuming(current_slot) {
+                        // Delegation period ended (maybe_consume returned non-Consume)
+                        // but we still hold the claim — release it now
+                        if vote_limit_restored_slot != Some(current_slot) {
+                            working_bank.restore_vote_limit();
+                            vote_limit_restored_slot = Some(current_slot);
+                            info!("restored vote limit for slot {}", current_slot);
+                        }
+
+                        let next_leader = leader_schedule_cache
+                            .slot_leader_at(current_slot + 1, Some(&working_bank));
+                        if next_leader != Some(keypair.pubkey()) {
+                            scheduler_synchronization::block_execution_finished(current_slot);
+                            info!(
+                                "released block claim for slot {} (not leader next)",
+                                current_slot
+                            );
+                        }
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    // Check if cleanup is needed for the current slot.
+                    // This handles the case where block processing completed but no
+                    // further block messages arrive — we still need to release the
+                    // claim and restore vote limit when delegation ends.
+                    let working_bank = bank_forks.read().unwrap().working_bank();
+                    let current_slot = working_bank.slot();
+
+                    if scheduler_synchronization::is_block_consuming(current_slot)
+                        && !DecisionMaker::in_delegation_period(&working_bank)
+                    {
                         if vote_limit_restored_slot != Some(current_slot) {
                             working_bank.restore_vote_limit();
                             vote_limit_restored_slot = Some(current_slot);
@@ -257,11 +292,7 @@ impl BlockStage {
                                 current_slot
                             );
                         }
-                        continue;
-                    };
-                }
-                Err(RecvTimeoutError::Timeout) => {
-                    // Continue loop
+                    }
                 }
                 Err(RecvTimeoutError::Disconnected) => {
                     break;
