@@ -10,6 +10,7 @@ use {
     },
     crossbeam_channel::RecvTimeoutError,
     solana_measure::{measure::Measure, measure_us},
+    solana_runtime::bank::Bank,
     std::{
         num::Saturating,
         sync::{atomic::Ordering, Arc},
@@ -32,6 +33,7 @@ impl VotePacketReceiver {
     pub fn receive_and_buffer_packets(
         &mut self,
         vote_storage: &mut VoteStorage,
+        bank: &Bank,
         banking_stage_stats: &mut BankingStageStats,
         slot_metrics_tracker: &mut LeaderSlotMetricsTracker,
         vote_source: VoteSource,
@@ -46,6 +48,7 @@ impl VotePacketReceiver {
                         deserialized_packets,
                         packet_stats,
                         vote_storage,
+                        bank,
                         vote_source,
                         banking_stage_stats,
                         slot_metrics_tracker,
@@ -137,11 +140,14 @@ impl VotePacketReceiver {
     }
 
     fn get_receive_timeout(vote_storage: &VoteStorage) -> Duration {
-        if !vote_storage.is_empty() {
+        if vote_storage.has_processable_votes() {
             // If there are buffered packets, run the equivalent of try_recv to try reading more
             // packets. This prevents starving BankingStage::consume_buffered_packets due to
             // buffered_packet_batches containing transactions that exceed the cost model for
             // the current bank.
+            //
+            // Intentionally only checks the LRU (not the BNF deque): BNF-only state means we are
+            // waiting on a slot advance, not on the cost model, and a 0ms timeout would busy-loop.
             Duration::from_millis(0)
         } else {
             // Default wait time
@@ -154,6 +160,7 @@ impl VotePacketReceiver {
         deserialized_packets: Vec<SanitizedTransactionView<SharedBytes>>,
         packet_stats: PacketReceiverStats,
         vote_storage: &mut VoteStorage,
+        bank: &Bank,
         vote_source: VoteSource,
         banking_stage_stats: &mut BankingStageStats,
         slot_metrics_tracker: &mut LeaderSlotMetricsTracker,
@@ -166,6 +173,7 @@ impl VotePacketReceiver {
         let mut newly_buffered_packets_count = 0;
         Self::push_unprocessed(
             vote_storage,
+            bank,
             vote_source,
             deserialized_packets,
             &mut dropped_packets_count,
@@ -198,6 +206,7 @@ impl VotePacketReceiver {
 
     fn push_unprocessed(
         vote_storage: &mut VoteStorage,
+        bank: &Bank,
         vote_source: VoteSource,
         deserialized_packets: Vec<SanitizedTransactionView<SharedBytes>>,
         dropped_packets_count: &mut Saturating<usize>,
@@ -215,7 +224,13 @@ impl VotePacketReceiver {
                 .increment_newly_buffered_packets_count(deserialized_packets.len() as u64);
 
             let vote_batch_insertion_metrics =
-                vote_storage.insert_batch(vote_source, deserialized_packets.into_iter());
+                vote_storage.insert_batch(bank, vote_source, deserialized_packets.into_iter());
+            banking_stage_stats
+                .vote_bnf_recovered_to_main_count
+                .fetch_add(
+                    vote_batch_insertion_metrics.num_recovered_from_bnf,
+                    Ordering::Relaxed,
+                );
             slot_metrics_tracker
                 .accumulate_vote_batch_insertion_metrics(&vote_batch_insertion_metrics);
             *dropped_packets_count += vote_batch_insertion_metrics.total_dropped_packets();

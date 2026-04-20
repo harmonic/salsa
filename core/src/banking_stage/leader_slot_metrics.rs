@@ -440,6 +440,9 @@ pub(crate) struct VotePacketCountMetrics {
 
     // How many votes ingested from tpu were dropped
     dropped_tpu_votes: u64,
+
+    /// Votes deferred for BNF then inserted into the main buffer after the slot advanced.
+    votes_recovered_from_bnf: u64,
 }
 
 impl VotePacketCountMetrics {
@@ -452,7 +455,12 @@ impl VotePacketCountMetrics {
             "banking_stage-vote_packet_counts",
             ("slot", slot, i64),
             ("dropped_gossip_votes", self.dropped_gossip_votes, i64),
-            ("dropped_tpu_votes", self.dropped_tpu_votes, i64)
+            ("dropped_tpu_votes", self.dropped_tpu_votes, i64),
+            (
+                "votes_recovered_from_bnf",
+                self.votes_recovered_from_bnf,
+                i64
+            )
         );
     }
 }
@@ -625,6 +633,17 @@ impl LeaderSlotMetricsTracker {
         self.increment_dropped_tpu_vote_count(
             vote_batch_insertion_metrics.dropped_tpu_packets() as u64
         );
+        self.increment_votes_recovered_from_bnf(
+            vote_batch_insertion_metrics.num_recovered_from_bnf as u64,
+        );
+    }
+
+    pub(crate) fn increment_votes_recovered_from_bnf(&mut self, count: u64) {
+        if let Some(leader_slot_metrics) = &mut self.leader_slot_metrics {
+            leader_slot_metrics
+                .vote_packet_count_metrics
+                .votes_recovered_from_bnf += count;
+        }
     }
 
     pub(crate) fn accumulate_transaction_errors(
