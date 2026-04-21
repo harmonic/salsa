@@ -109,6 +109,8 @@ pub struct BankingStageStats {
     current_buffered_packets_count: AtomicUsize,
     rebuffered_packets_count: AtomicUsize,
     consumed_buffered_packets_count: AtomicUsize,
+    /// Votes moved from the blockhash-not-found defer queue into the main buffer after the slot advanced.
+    vote_bnf_recovered_to_main_count: AtomicUsize,
     batch_packet_indexes_len: Histogram,
 
     // Timing
@@ -161,6 +163,9 @@ impl BankingStageStats {
                 + self.current_buffered_packets_count.load(Ordering::Relaxed) as u64
                 + self.rebuffered_packets_count.load(Ordering::Relaxed) as u64
                 + self.consumed_buffered_packets_count.load(Ordering::Relaxed) as u64
+                + self
+                    .vote_bnf_recovered_to_main_count
+                    .load(Ordering::Relaxed) as u64
                 + self
                     .consume_buffered_packets_elapsed
                     .load(Ordering::Relaxed)
@@ -263,6 +268,12 @@ impl BankingStageStats {
                 (
                     "consumed_buffered_packets_count",
                     self.consumed_buffered_packets_count
+                        .swap(0, Ordering::Relaxed),
+                    i64
+                ),
+                (
+                    "vote_bnf_recovered_to_main_count",
+                    self.vote_bnf_recovered_to_main_count
                         .swap(0, Ordering::Relaxed),
                     i64
                 ),
@@ -811,6 +822,7 @@ mod tests {
         agave_banking_stage_ingress_types::BankingPacketBatch,
         crossbeam_channel::unbounded,
         itertools::Itertools,
+        serial_test::serial,
         solana_entry::entry::{self, EntrySlice},
         solana_hash::Hash,
         solana_keypair::Keypair,
@@ -838,7 +850,6 @@ mod tests {
         solana_vote_program::vote_state::TowerSync,
         std::{sync::atomic::Ordering, thread::sleep, time::Instant},
         strum::IntoEnumIterator,
-        serial_test::serial,
     };
 
     pub(crate) fn sanitize_transactions(

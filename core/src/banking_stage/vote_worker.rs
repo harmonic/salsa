@@ -1,18 +1,19 @@
 use {
     super::{
-        consumer::Consumer,
         decision_maker::{BufferedPacketsDecision, DecisionMaker, MaybeConsumeContext},
         latest_validator_vote_packet::VoteSource,
         leader_slot_metrics::{
             CommittedTransactionsCounts, LeaderSlotMetricsTracker, ProcessTransactionsSummary,
         },
         vote_packet_receiver::VotePacketReceiver,
-        vote_storage::VoteStorage,
+        vote_storage::{validate_vote_for_processing, VoteStorage},
         BankingStageStats, SLOT_BOUNDARY_CHECK_PERIOD,
     },
     crate::{
         banking_stage::{
-            consumer::{ExecuteAndCommitTransactionsOutput, ProcessTransactionBatchOutput},
+            consumer::{
+                Consumer, ExecuteAndCommitTransactionsOutput, ProcessTransactionBatchOutput,
+            },
             transaction_scheduler::transaction_state_container::RuntimeTransactionView,
         },
         bundle_stage::bundle_account_locker::BundleAccountLocker,
@@ -20,7 +21,6 @@ use {
     },
     arrayvec::ArrayVec,
     crossbeam_channel::RecvTimeoutError,
-    solana_accounts_db::account_locks::validate_account_locks,
     solana_clock::FORWARD_TRANSACTIONS_TO_LEADER_AT_SLOT_OFFSET,
     solana_measure::{measure::Measure, measure_us},
     solana_poh::poh_recorder::PohRecorderError,
@@ -105,8 +105,10 @@ impl VoteWorker {
             }
 
             // Check for new packets from the tpu receiver
+            let bank = self.bank_forks.read().unwrap().working_bank();
             match self.tpu_receiver.receive_and_buffer_packets(
                 &mut self.storage,
+                &bank,
                 &mut banking_stage_stats,
                 &mut slot_metrics_tracker,
                 VoteSource::Tpu,
@@ -117,6 +119,7 @@ impl VoteWorker {
             // Check for new packets from the gossip receiver
             match self.gossip_receiver.receive_and_buffer_packets(
                 &mut self.storage,
+                &bank,
                 &mut banking_stage_stats,
                 &mut slot_metrics_tracker,
                 VoteSource::Gossip,
@@ -134,6 +137,13 @@ impl VoteWorker {
         slot_metrics_tracker: &mut LeaderSlotMetricsTracker,
         reservation_cb: &impl Fn(&Bank) -> u64,
     ) {
+        let working_bank = self.bank_forks.read().unwrap().working_bank();
+        let recovered = self.storage.flush_bnf_on_new_slot(&working_bank);
+        banking_stage_stats
+            .vote_bnf_recovered_to_main_count
+            .fetch_add(recovered, Ordering::Relaxed);
+        slot_metrics_tracker.increment_votes_recovered_from_bnf(recovered as u64);
+
         let (decision, make_decision_us) = measure_us!({
             let d = self.decision_maker.make_consume_or_forward_decision();
             DecisionMaker::maybe_consume(d, MaybeConsumeContext::Votes)
@@ -186,7 +196,7 @@ impl VoteWorker {
         slot_metrics_tracker: &mut LeaderSlotMetricsTracker,
         reservation_cb: &impl Fn(&Bank) -> u64,
     ) {
-        if self.storage.is_empty() {
+        if !self.storage.has_processable_votes() {
             return;
         }
 
@@ -255,7 +265,7 @@ impl VoteWorker {
             self.storage.len()
         );
 
-        while !self.storage.is_empty()
+        while self.storage.has_processable_votes()
             && !reached_end_of_slot
             && num_votes_processed < MAX_VOTES_PER_SLOT
         {
@@ -562,31 +572,6 @@ impl VoteWorker {
                 })
             })
     }
-}
-
-/// Validate a pre-resolved vote transaction against the current bank.
-fn validate_vote_for_processing(
-    bank: &Bank,
-    vote: &RuntimeTransactionView,
-    error_counters: &mut TransactionErrorMetrics,
-) -> bool {
-    // Check the number of locks and whether there are duplicates
-    if validate_account_locks(
-        vote.account_keys(),
-        bank.get_transaction_account_lock_limit(),
-    )
-    .is_err()
-    {
-        return false;
-    }
-
-    // Loads fee payer account, validates balance covers fee + rent-exempt minimum.
-    // Also catches AccountNotFound (zero-balance fee payer DOS).
-    if Consumer::check_fee_payer_unlocked(bank, vote, error_counters).is_err() {
-        return false;
-    }
-
-    true
 }
 
 fn has_reached_end_of_slot(reached_max_poh_height: bool, bank: &Bank) -> bool {
