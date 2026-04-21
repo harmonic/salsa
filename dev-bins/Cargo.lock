@@ -189,6 +189,7 @@ dependencies = [
  "solana-version",
  "solana-vote",
  "solana-vote-program",
+ "tempfile",
  "thiserror 2.0.17",
  "tikv-jemallocator",
  "tokio",
