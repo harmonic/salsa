@@ -5,6 +5,7 @@ use {
     agave_transaction_view::transaction_data::TransactionData,
     core::ptr::NonNull,
     rts_alloc::Allocator,
+    solana_pubkey::Pubkey,
     std::marker::PhantomData,
 };
 
@@ -74,6 +75,19 @@ impl TransactionPtr {
             offset,
             length: self.count as u32,
         }
+    }
+
+    /// Interpret the pointed-to bytes as a [`Pubkey`] (zero-copy).
+    ///
+    /// Used by READ requests where each batch entry is a 32-byte pubkey
+    /// wrapped in a [`SharableTransactionRegion`].
+    ///
+    /// # Safety
+    /// - The underlying allocation must be at least 32 bytes.
+    pub unsafe fn as_pubkey(&self) -> &Pubkey {
+        // SAFETY: `Pubkey` is `#[repr(transparent)]` over `[u8; 32]`. Caller
+        // guarantees the allocation is at least 32 bytes.
+        unsafe { &*(self.ptr.as_ptr() as *const Pubkey) }
     }
 
     /// Frees the memory region pointed to in the `allocator`.
