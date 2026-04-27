@@ -187,9 +187,8 @@ fn slot_from_tick_height(tick_height: u64, ticks_per_slot: u64) -> u64 {
 mod tests {
     use {
         super::*, solana_clock::DEFAULT_TICKS_PER_SLOT,
-        solana_epoch_schedule::MINIMUM_SLOTS_PER_EPOCH,
-        solana_leader_schedule::SlotLeader, solana_poh::poh_recorder::LeaderState,
-        solana_runtime::bank::Bank,
+        solana_epoch_schedule::MINIMUM_SLOTS_PER_EPOCH, solana_poh::poh_recorder::LeaderState,
+        solana_pubkey::Pubkey, solana_runtime::bank::Bank,
     };
 
     #[test]
@@ -314,7 +313,7 @@ mod tests {
         // Child bank past the first epoch boundary - epoch should advance.
         let child_bank = Arc::new(Bank::new_from_parent(
             bank,
-            SlotLeader::new_unique(),
+            &Pubkey::new_unique(),
             MINIMUM_SLOTS_PER_EPOCH,
         ));
         assert_eq!(child_bank.epoch(), 1);
