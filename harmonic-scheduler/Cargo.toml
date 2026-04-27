@@ -1,0 +1,42 @@
+[package]
+name = "harmonic-scheduler"
+description = "Harmonic external scheduler for Agave validator"
+version = { workspace = true }
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+license = { workspace = true }
+edition = "2024"
+
+[dependencies]
+arc-swap = { workspace = true }
+agave-logger = { workspace = true }
+agave-scheduler-bindings = { workspace = true, features = ["agave-unstable-api"] }
+agave-transaction-view = { workspace = true }
+agave-scheduling-utils = { workspace = true, features = ["agave-unstable-api"] }
+bincode = { workspace = true }
+borsh = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+harmonic-protos = { workspace = true }
+log = { workspace = true }
+rustc-hash = "2"
+prost-types = { workspace = true }
+rdtsc = { workspace = true }
+rts-alloc = { workspace = true }
+rtrb = "0.3"
+shaq = { workspace = true }
+smallvec = { workspace = true }
+solana-clock = { workspace = true }
+solana-hash = { workspace = true }
+solana-instruction = { workspace = true }
+solana-keypair = { workspace = true }
+solana-pubkey = { workspace = true, features = ["borsh", "curve25519", "sha2"] }
+solana-sdk-ids = { workspace = true }
+solana-signer = { workspace = true }
+solana-transaction = { workspace = true, features = ["bincode", "blake3"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
+thiserror = { workspace = true }
+tonic = { workspace = true, features = ["transport", "tls", "tls-roots", "tls-webpki-roots"] }
+
+[lints]
+workspace = true
