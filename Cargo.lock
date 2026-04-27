@@ -5924,6 +5924,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdtsc"
+version = "4.0.0-beta.7"
+dependencies = [
+ "criterion",
+]
+
+[[package]]
 name = "redox_syscall"
 version = "0.2.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
