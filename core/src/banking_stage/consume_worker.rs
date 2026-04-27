@@ -185,18 +185,21 @@ pub(crate) mod external {
             },
         },
         agave_scheduler_bindings::{
-            MAX_TRANSACTIONS_PER_MESSAGE, PackToWorkerMessage, SharablePubkeys,
-            TransactionResponseRegion, WorkerToPackMessage,
-            pack_message_flags::{self, check_flags, execution_flags},
+            MAX_ALLOCATION_SIZE, MAX_TRANSACTIONS_PER_MESSAGE, PackToWorkerMessage,
+            SharableAccountData, SharablePubkeys, TransactionResponseRegion, WorkerToPackMessage,
+            pack_message_flags::{self, check_flags, execution_flags, read_flags},
             processed_codes,
             worker_message_types::{
                 CheckResponse, ExecutionResponse, fee_payer_balance_flags, not_included_reasons,
-                parsing_and_sanitization_flags, resolve_flags, status_check_flags,
+                parsing_and_sanitization_flags, read_results, resolve_flags, status_check_flags,
             },
         },
         agave_scheduling_utils::{
             error::transaction_error_to_not_included_reason,
-            responses_region::{allocate_check_response_region, execution_responses_from_iter},
+            responses_region::{
+                allocate_check_response_region, allocate_read_response_region,
+                execution_responses_from_iter,
+            },
             transaction_ptr::{TransactionPtr, TransactionPtrBatch},
         },
         agave_transaction_view::{
@@ -327,6 +330,8 @@ pub(crate) mod external {
 
             if message.flags & pack_message_flags::EXECUTE != 0 {
                 self.execute_batch(message, should_drain_executes)
+            } else if message.flags & pack_message_flags::READ != 0 {
+                self.read_account_batch(message).map(|()| false)
             } else {
                 self.check_batch(message).map(|()| false)
             }
@@ -531,6 +536,105 @@ pub(crate) mod external {
                 batch: message.batch,
                 processed_code: agave_scheduler_bindings::processed_codes::PROCESSED,
                 responses,
+            };
+
+            self.sender
+                .try_write(response)
+                .map_err(|_| ExternalConsumeWorkerError::SenderDisconnected)?;
+
+            Ok(())
+        }
+
+        fn read_account_batch(
+            &mut self,
+            message: &PackToWorkerMessage,
+        ) -> Result<(), ExternalConsumeWorkerError> {
+            let BankPair { working_bank, .. } = self.sharable_banks.load();
+
+            if working_bank.slot() > message.max_working_slot {
+                return self.return_unprocessed_message(
+                    message,
+                    processed_codes::MAX_WORKING_SLOT_EXCEEDED,
+                );
+            }
+
+            // SAFETY: Assumption that external scheduler does not pass messages with batch regions
+            //         not pointing to valid regions in the allocator.
+            let batch: TransactionPtrBatch<'_> = unsafe {
+                TransactionPtrBatch::from_sharable_transaction_batch_region(
+                    &message.batch,
+                    &self.allocator,
+                )
+            };
+
+            // Allocate space for all responses.
+            let (responses_ptr, responses_region) = allocate_read_response_region(
+                &self.allocator,
+                usize::from(message.batch.num_transactions),
+            )
+            .ok_or(ExternalConsumeWorkerError::AllocationFailure)?;
+
+            // SAFETY: responses_ptr is sufficiently sized and aligned.
+            let responses = unsafe {
+                core::slice::from_raw_parts_mut(
+                    responses_ptr.as_ptr(),
+                    usize::from(message.batch.num_transactions),
+                )
+            };
+
+            let load_data = message.flags & read_flags::LOAD_DATA != 0;
+            for ((transaction_ptr, _), response) in batch.iter().zip(responses) {
+                // SAFETY: READ batch entries are 32-byte pubkeys per the
+                // scheduler-bindings protocol.
+                let pubkey = unsafe { transaction_ptr.as_pubkey() };
+                let Some(account) = working_bank.get_account(pubkey) else {
+                    // All other fields are undefined per the response contract.
+                    response.read_result = read_results::ACCOUNT_NOT_FOUND;
+                    continue;
+                };
+
+                response.read_result = read_results::SUCCESS;
+                response.executable = u8::from(account.executable());
+                response.lamports = account.lamports();
+                response.owner = account.owner().to_bytes();
+
+                // `response.data` is only defined when LOAD_DATA is set.
+                if load_data {
+                    let data = account.data();
+                    response.data = if data.is_empty() {
+                        SharableAccountData {
+                            offset: 0,
+                            length: 0,
+                        }
+                    } else {
+                        // Clip to the per-allocation cap. Oversized account
+                        // data is delivered as a prefix slice.
+                        let copy_len = data.len().min(MAX_ALLOCATION_SIZE as usize);
+                        let data_ptr = self
+                            .allocator
+                            .allocate(copy_len as u32)
+                            .ok_or(ExternalConsumeWorkerError::AllocationFailure)?;
+                        // SAFETY: `data_ptr` was just allocated with `copy_len` bytes.
+                        unsafe {
+                            core::ptr::copy_nonoverlapping(
+                                data.as_ptr(),
+                                data_ptr.as_ptr(),
+                                copy_len,
+                            );
+                        }
+                        SharableAccountData {
+                            // SAFETY: `data_ptr` was allocated by `self.allocator`.
+                            offset: unsafe { self.allocator.offset(data_ptr) },
+                            length: copy_len as u32,
+                        }
+                    };
+                }
+            }
+
+            let response = WorkerToPackMessage {
+                batch: message.batch,
+                processed_code: processed_codes::PROCESSED,
+                responses: responses_region,
             };
 
             self.sender
@@ -1048,6 +1152,10 @@ pub(crate) mod external {
                     | execution_flags::ALL_OR_NOTHING;
 
                 flags & !ALLOWED_EXECUTE_FLAGS == 0
+            } else if flags & pack_message_flags::READ != 0 {
+                const ALLOWED_READ_FLAGS: u16 = pack_message_flags::READ | read_flags::LOAD_DATA;
+
+                flags & !ALLOWED_READ_FLAGS == 0
             } else {
                 const ALLOWED_CHECK_BITS: u16 = pack_message_flags::CHECK
                     | check_flags::STATUS_CHECKS
@@ -1167,7 +1275,23 @@ pub(crate) mod external {
             ));
             assert!(!ExternalWorker::validate_message_flags(
                 pack_message_flags::CHECK
-            ))
+            ));
+
+            // Read flags
+            assert!(ExternalWorker::validate_message_flags(
+                pack_message_flags::READ
+            ));
+            assert!(ExternalWorker::validate_message_flags(
+                pack_message_flags::READ | read_flags::LOAD_DATA
+            ));
+            // Invalid read flag
+            assert!(!ExternalWorker::validate_message_flags(
+                pack_message_flags::READ | (1 << 15)
+            ));
+            // READ must not combine with CHECK/EXECUTE sub-flags.
+            assert!(!ExternalWorker::validate_message_flags(
+                pack_message_flags::READ | check_flags::STATUS_CHECKS
+            ));
         }
 
         #[test]
