@@ -1,0 +1,19 @@
+[package]
+name = "rdtsc"
+description = "RDTSC-based Instant for low-overhead timing"
+version = { workspace = true }
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "timing"
+harness = false
+
+[lints]
+workspace = true
