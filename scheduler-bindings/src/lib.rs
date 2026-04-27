@@ -69,6 +69,18 @@ pub struct SharablePubkeys {
     pub num_pubkeys: u32,
 }
 
+/// Reference to account data that can be shared safely across processes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct SharableAccountData {
+    /// Offset within the shared memory allocator.
+    pub offset: usize,
+    /// Length of the account data slice in bytes.
+    /// Clipped to at most [`MAX_ALLOCATION_SIZE`].
+    /// IF 0, indicates no data and no allocation needing to be freed.
+    pub length: u32,
+}
+
 /// Reference to an array of [`SharableTransactionRegion`] that can be shared safely
 /// across processes.
 /// General flow:
@@ -198,14 +210,18 @@ pub struct ProgressMessage {
     pub latest_blockhash: [u8; 32],
 }
 
+/// Maximum bytes supported by a single rts-alloc allocation. Every
+/// payload passed across this binding (batch arrays, response arrays,
+/// per-tx bytes, per-account data) must fit in a single allocation of
+/// at most this size.
+pub const MAX_ALLOCATION_SIZE: u32 = 4096;
+
 /// Maximum number of transactions allowed in a [`PackToWorkerMessage`].
 /// If the number of transactions exceeds this value, agave will
 /// not process the message.
-//
-// The reason for this constraint is because rts-alloc currently only
-// supports up to 4096 byte allocations. We must ensure that the
-// `TransactionResponseRegion` is able to contain responses for all
-// transactions sent. This is a conservative bound.
+///
+/// Bounded so every response array (`num_txs * size_of::<Response>()`)
+/// fits in a single [`MAX_ALLOCATION_SIZE`] allocation.
 pub const MAX_TRANSACTIONS_PER_MESSAGE: usize = 64;
 
 /// Message: [Pack -> Worker]
@@ -234,8 +250,9 @@ pub struct PackToWorkerMessage {
 
 pub mod pack_message_flags {
     //! Flags for [`crate::PackToWorkerMessage::flags`].
-    //! Use [`CHECK`] or [`EXECUTE`] to specify how a batch should be processed.
-    //! See [`check_flags`] and [`execution_flags`] for details.
+    //! Use [`CHECK`], [`EXECUTE`], or [`READ`] to specify how a batch
+    //! should be processed. See [`check_flags`], [`execution_flags`],
+    //! and [`read_flags`] for details.
 
     /// Combine with [`check_flags`] for performing checks on transactions.
     /// Worker will respond with [`super::worker_message_types::CheckResponse`] if
@@ -245,6 +262,14 @@ pub mod pack_message_flags {
     /// Worker will responsd with [`super::worker_message_types::ExecutionResponse`] if
     /// the message is processed.
     pub const EXECUTE: u16 = 1;
+    /// Combine with additional [`read_flags`] for reading a batch of account data.
+    /// Worker will respond with [`super::worker_message_types::ReadResponse`] if
+    /// the message is processed.
+    ///
+    /// Bit 4 is used (not bit 1) so that READ does not collide with
+    /// [`check_flags::STATUS_CHECKS`] (bit 1) under `flags & READ != 0`
+    /// dispatch.
+    pub const READ: u16 = 1 << 4;
 
     pub mod execution_flags {
         /// Should failing transactions within the batch be dropped (no fee charged & not
@@ -271,6 +296,21 @@ pub mod pack_message_flags {
 
         /// Transactions should have ATL pubkeys resolved and returned.
         pub const LOAD_ADDRESS_LOOKUP_TABLES: u16 = 1 << 3;
+    }
+
+    pub mod read_flags {
+        //! Flags for [`crate::PackToWorkerMessage::flags`] when combined
+        //! with [`super::READ`]. Gate SHM-backed fields on the response;
+        //! non-allocating fields are always populated.
+        //!
+        //! Bit 5+ avoids collision with [`super::EXECUTE`] (bit 0),
+        //! [`super::check_flags`] (bits 1-3), and [`super::READ`] (bit 4).
+
+        /// Populate [`super::super::worker_message_types::ReadResponse::data`]
+        /// with the account's data bytes (clipped to
+        /// [`super::super::MAX_ALLOCATION_SIZE`]). Without this flag,
+        /// `data.length == 0` and no allocation is performed.
+        pub const LOAD_DATA: u16 = 1 << 5;
     }
 }
 
@@ -305,7 +345,9 @@ pub struct WorkerToPackMessage {
 }
 
 pub mod worker_message_types {
-    use crate::SharablePubkeys;
+    use crate::{
+        MAX_ALLOCATION_SIZE, MAX_TRANSACTIONS_PER_MESSAGE, SharableAccountData, SharablePubkeys,
+    };
 
     /// Tag indicating [`ExecutionResponse`] inner message.
     pub const EXECUTION_RESPONSE: u8 = 0;
@@ -519,4 +561,47 @@ pub mod worker_message_types {
         /// pack process.
         pub resolved_pubkeys: SharablePubkeys,
     }
+
+    /// Tag indicating [`ReadResponse`] inner message.
+    pub const READ_RESPONSE: u8 = 2;
+
+    pub mod read_results {
+        /// The account data was read successfully.
+        pub const SUCCESS: u8 = 0;
+        /// The account could not be read because it was not found.
+        pub const ACCOUNT_NOT_FOUND: u8 = 1;
+    }
+
+    /// Response to pack for an attempted account data read.
+    ///
+    /// All fields except `read_result` are undefined unless
+    /// `read_result == read_results::SUCCESS`.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[repr(C)]
+    pub struct ReadResponse {
+        /// See [`read_results`] for accepted values.
+        pub read_result: u8,
+        /// Non-zero if the account is marked executable.
+        pub executable: u8,
+        /// Account lamports.
+        pub lamports: u64,
+        /// Account data, clipped to [`super::MAX_ALLOCATION_SIZE`].
+        /// Defined only when `read_result == SUCCESS` and
+        /// [`super::pack_message_flags::read_flags::LOAD_DATA`] was set;
+        /// otherwise undefined and there is nothing to free.
+        ///
+        /// When defined, `length > 0` means `offset` points to a
+        /// shared-memory allocation that the external pack process is
+        /// responsible for freeing; `length == 0` means the account has
+        /// no data and no allocation was performed.
+        pub data: SharableAccountData,
+        /// Account owner program.
+        pub owner: [u8; 32],
+    }
+
+    const _: () = assert!(
+        MAX_TRANSACTIONS_PER_MESSAGE * core::mem::size_of::<ReadResponse>()
+            <= MAX_ALLOCATION_SIZE as usize,
+        "ReadResponse batch must fit in a single rts-alloc allocation",
+    );
 }

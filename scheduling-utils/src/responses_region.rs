@@ -3,6 +3,7 @@ use {
         TransactionResponseRegion,
         worker_message_types::{
             self, CHECK_RESPONSE, CheckResponse, EXECUTION_RESPONSE, ExecutionResponse,
+            READ_RESPONSE, ReadResponse,
         },
     },
     rts_alloc::Allocator,
@@ -39,6 +40,23 @@ pub fn allocate_check_response_region(
         allocate_response_region::<CheckResponse>(
             allocator,
             CHECK_RESPONSE,
+            num_transaction_responses,
+        )
+    }
+}
+
+/// Allocate region a [`TransactionResponseRegion`] with [`ReadResponse`].
+/// Each [`ReadResponse`] is not yet populated and must be populated by the
+/// caller.
+pub fn allocate_read_response_region(
+    allocator: &Allocator,
+    num_transaction_responses: usize,
+) -> Option<(NonNull<ReadResponse>, TransactionResponseRegion)> {
+    // SAFETY: READ_RESPONSE -> ReadResponse
+    unsafe {
+        allocate_response_region::<ReadResponse>(
+            allocator,
+            READ_RESPONSE,
             num_transaction_responses,
         )
     }
@@ -222,6 +240,76 @@ impl ExecutionResponsesPtr {
 
     /// Iterate the responses within the batch.
     pub fn iter(&self) -> impl Iterator<Item = &ExecutionResponse> {
+        unsafe { core::slice::from_raw_parts(self.ptr.as_ptr(), self.count) }.iter()
+    }
+
+    /// Free the batch's allocation.
+    ///
+    /// # Safety
+    ///
+    /// - `Self` must be exclusively owned.
+    pub unsafe fn free(self, allocator: &Allocator) {
+        unsafe { allocator.free(self.ptr.cast()) }
+    }
+}
+
+#[derive(Debug)]
+pub struct ReadResponsesPtr {
+    ptr: NonNull<ReadResponse>,
+    count: usize,
+}
+
+impl ReadResponsesPtr {
+    /// Constructions a [`ReadResponsesPtr`] from raw parts.
+    ///
+    /// # Safety
+    ///
+    /// - `ptr` must be valid for reads.
+    /// - `count` must be accurate (in number of responses) and not overrun the end of `ptr`.
+    ///
+    /// # Note
+    ///
+    /// If you are trying to construct a pointer for use by Agave, you almost certainly want to use
+    /// [`Self::from_transaction_response_region`].
+    pub unsafe fn from_raw_parts(ptr: NonNull<ReadResponse>, count: usize) -> Self {
+        Self { ptr, count }
+    }
+
+    /// Constructs the pointer from a [`TransactionResponseRegion`].
+    ///
+    /// # Safety
+    ///
+    /// - The provided [`TransactionResponseRegion`] must be of type
+    ///   [`worker_message_types::READ_RESPONSE`].
+    /// - The allocation pointed to by this region must be valid and not previously freed.
+    pub unsafe fn from_transaction_response_region(
+        transaction_response_region: &TransactionResponseRegion,
+        allocator: &Allocator,
+    ) -> Self {
+        debug_assert!(transaction_response_region.tag == worker_message_types::READ_RESPONSE);
+
+        Self {
+            // SAFETY: `transaction_response_region.transaction_responses_offset` was allocated by `allocator`.
+            ptr: unsafe {
+                allocator.ptr_from_offset(transaction_response_region.transaction_responses_offset)
+            }
+            .cast(),
+            count: transaction_response_region.num_transaction_responses as usize,
+        }
+    }
+
+    /// The number of responses in this batch.
+    pub const fn len(&self) -> usize {
+        self.count
+    }
+
+    /// Whether the batch is empty.
+    pub const fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Iterate the responses within the batch.
+    pub fn iter(&self) -> impl Iterator<Item = &ReadResponse> {
         unsafe { core::slice::from_raw_parts(self.ptr.as_ptr(), self.count) }.iter()
     }
 
