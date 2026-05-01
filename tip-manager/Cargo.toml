@@ -1,0 +1,27 @@
+[package]
+name = "tip-manager"
+description = "Jito tip-payment / tip-distribution program manager"
+version = { workspace = true }
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+license = { workspace = true }
+edition = "2021"
+
+[dependencies]
+bincode = { workspace = true }
+borsh = { workspace = true }
+log = { workspace = true }
+smallvec = { workspace = true }
+solana-clock = { workspace = true }
+solana-hash = { workspace = true, features = ["copy"] }
+solana-instruction = { workspace = true }
+solana-keypair = { workspace = true }
+solana-pubkey = { workspace = true, features = ["borsh", "curve25519", "sha2"] }
+solana-sdk-ids = { workspace = true }
+solana-signer = { workspace = true }
+solana-transaction = { workspace = true, features = ["bincode", "blake3"] }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true
