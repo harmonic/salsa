@@ -12288,6 +12288,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cda74da7e1a664f795bb1f8a87ec406fb89a02522cf6e50620d016add6dbbf5c"
 
 [[package]]
+name = "tip-manager"
+version = "4.1.0-beta.3"
+dependencies = [
+ "bincode",
+ "borsh",
+ "log",
+ "smallvec",
+ "solana-clock",
+ "solana-hash 4.3.0",
+ "solana-instruction",
+ "solana-keypair",
+ "solana-pubkey 4.2.0",
+ "solana-sdk-ids",
+ "solana-signer",
+ "solana-transaction",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "tokio"
 version = "1.52.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
