@@ -42,6 +42,7 @@ members = [
     "gossip",
     "gossip-cli",
     "install",
+    "tip-manager",
     "io-uring",
     "keygen",
     "lattice-hash",
@@ -553,6 +554,7 @@ tarpc = "0.29.0"
 tempfile = "3.27.0"
 test-case = "3.3.1"
 thiserror = "2.0.19"
+tip-manager = { path = "tip-manager" }
 tokio = "1.53.0"
 tokio-serde = "0.8"
 tokio-stream = "0.1.18"
