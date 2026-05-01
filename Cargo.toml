@@ -43,6 +43,7 @@ members = [
     "gossip-cli",
     "harmonic-protos",
     "install",
+    "tip-manager",
     "io-uring",
     "keygen",
     "lattice-hash",
@@ -604,6 +605,7 @@ tempfile = "3.24.0"
 test-case = "3.3.1"
 thiserror = "2.0.18"
 thread-priority = "3.0.0"
+tip-manager = { path = "tip-manager" }
 tiny-bip39 = "2.0.0"
 tokio = "1.49.0"
 tokio-serde = "0.8"
