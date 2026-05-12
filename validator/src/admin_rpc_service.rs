@@ -252,6 +252,12 @@ pub trait AdminRpc {
         require_vote_history: bool,
     ) -> Result<()>;
 
+    #[rpc(meta, name = "getIdentity")]
+    fn get_identity(&self, meta: Self::Metadata) -> Result<Vec<u8>>;
+
+    #[rpc(meta, name = "getVoteAccount")]
+    fn get_vote_account(&self, meta: Self::Metadata) -> Result<Pubkey>;
+
     #[rpc(meta, name = "setStakedNodesOverrides")]
     fn set_staked_nodes_overrides(&self, meta: Self::Metadata, path: String) -> Result<()>;
 
@@ -634,6 +640,16 @@ impl AdminRpc for AdminRpcImpl {
             require_tower,
             require_vote_history,
         )
+    }
+
+    fn get_identity(&self, meta: Self::Metadata) -> Result<Vec<u8>> {
+        debug!("get_identity request received");
+        meta.with_post_init(|post_init| Ok(post_init.cluster_info.keypair().to_bytes().to_vec()))
+    }
+
+    fn get_vote_account(&self, meta: Self::Metadata) -> Result<Pubkey> {
+        debug!("get_vote_account request received");
+        meta.with_post_init(|post_init| Ok(post_init.vote_account))
     }
 
     fn set_staked_nodes_overrides(&self, meta: Self::Metadata, path: String) -> Result<()> {
