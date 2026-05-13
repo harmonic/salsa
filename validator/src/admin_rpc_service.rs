@@ -284,6 +284,12 @@ pub trait AdminRpc {
         public_tpu_forwards_addr: SocketAddr,
     ) -> Result<()>;
 
+    #[rpc(meta, name = "getPublicTpuAddress")]
+    fn get_public_tpu_address(&self, meta: Self::Metadata) -> Result<Option<SocketAddr>>;
+
+    #[rpc(meta, name = "getPublicTpuForwardsAddress")]
+    fn get_public_tpu_forwards_address(&self, meta: Self::Metadata) -> Result<Option<SocketAddr>>;
+
     #[rpc(meta, name = "setPublicTvuAddress")]
     fn set_public_tvu_address(
         &self,
@@ -815,6 +821,21 @@ impl AdminRpc for AdminRpcImpl {
                 my_contact_info.tpu_forwards(Protocol::QUIC),
             );
             Ok(())
+        })
+    }
+
+    fn get_public_tpu_address(&self, meta: Self::Metadata) -> Result<Option<SocketAddr>> {
+        meta.with_post_init(|post_init| {
+            Ok(post_init.cluster_info.my_contact_info().tpu(Protocol::QUIC))
+        })
+    }
+
+    fn get_public_tpu_forwards_address(&self, meta: Self::Metadata) -> Result<Option<SocketAddr>> {
+        meta.with_post_init(|post_init| {
+            Ok(post_init
+                .cluster_info
+                .my_contact_info()
+                .tpu_forwards(Protocol::QUIC))
         })
     }
 
