@@ -42,6 +42,7 @@ members = [
     "gossip",
     "gossip-cli",
     "harmonic-protos",
+    "harmonic-scheduler",
     "install",
     "tip-manager",
     "io-uring",
