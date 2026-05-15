@@ -252,6 +252,26 @@ pub trait AdminRpc {
         require_vote_history: bool,
     ) -> Result<()>;
 
+    #[rpc(meta, name = "setIdentityAndVoteAccount")]
+    fn set_identity_and_vote_account(
+        &self,
+        meta: Self::Metadata,
+        keypair_file: String,
+        vote_account_pubkey: String,
+        require_tower: bool,
+        require_vote_history: bool,
+    ) -> Result<()>;
+
+    #[rpc(meta, name = "setIdentityAndVoteAccountFromBytes")]
+    fn set_identity_and_vote_account_from_bytes(
+        &self,
+        meta: Self::Metadata,
+        identity_keypair: Vec<u8>,
+        vote_account_pubkey: String,
+        require_tower: bool,
+        require_vote_history: bool,
+    ) -> Result<()>;
+
     #[rpc(meta, name = "setStakedNodesOverrides")]
     fn set_staked_nodes_overrides(&self, meta: Self::Metadata, path: String) -> Result<()>;
 
@@ -608,6 +628,7 @@ impl AdminRpc for AdminRpcImpl {
         AdminRpcImpl::set_identity_keypair(
             meta,
             identity_keypair,
+            None,
             require_tower,
             require_vote_history,
         )
@@ -631,6 +652,69 @@ impl AdminRpc for AdminRpcImpl {
         AdminRpcImpl::set_identity_keypair(
             meta,
             identity_keypair,
+            None,
+            require_tower,
+            require_vote_history,
+        )
+    }
+
+    fn set_identity_and_vote_account(
+        &self,
+        meta: Self::Metadata,
+        keypair_file: String,
+        vote_account_pubkey: String,
+        require_tower: bool,
+        require_vote_history: bool,
+    ) -> Result<()> {
+        debug!("set_identity_and_vote_account request received");
+
+        let identity_keypair = read_keypair_file(&keypair_file).map_err(|err| {
+            jsonrpc_core::error::Error::invalid_params(format!(
+                "Failed to read identity keypair from {keypair_file}: {err}"
+            ))
+        })?;
+
+        let vote_account = vote_account_pubkey.parse::<Pubkey>().map_err(|err| {
+            jsonrpc_core::error::Error::invalid_params(format!(
+                "Failed to parse vote account pubkey '{vote_account_pubkey}': {err}"
+            ))
+        })?;
+
+        AdminRpcImpl::set_identity_keypair(
+            meta,
+            identity_keypair,
+            Some(vote_account),
+            require_tower,
+            require_vote_history,
+        )
+    }
+
+    fn set_identity_and_vote_account_from_bytes(
+        &self,
+        meta: Self::Metadata,
+        identity_keypair: Vec<u8>,
+        vote_account_pubkey: String,
+        require_tower: bool,
+        require_vote_history: bool,
+    ) -> Result<()> {
+        debug!("set_identity_and_vote_account_from_bytes request received");
+
+        let identity_keypair = Keypair::try_from(identity_keypair.as_ref()).map_err(|err| {
+            jsonrpc_core::error::Error::invalid_params(format!(
+                "Failed to read identity keypair from provided byte array: {err}"
+            ))
+        })?;
+
+        let vote_account = vote_account_pubkey.parse::<Pubkey>().map_err(|err| {
+            jsonrpc_core::error::Error::invalid_params(format!(
+                "Failed to parse vote account pubkey '{vote_account_pubkey}': {err}"
+            ))
+        })?;
+
+        AdminRpcImpl::set_identity_keypair(
+            meta,
+            identity_keypair,
+            Some(vote_account),
             require_tower,
             require_vote_history,
         )
@@ -699,20 +783,19 @@ impl AdminRpc for AdminRpcImpl {
             let epoch_vote_accounts = bank
                 .epoch_vote_accounts(current_epoch)
                 .ok_or_else(jsonrpc_core::Error::internal_error)?;
+            let vote_account = *post_init.vote_account.read().unwrap();
             let current_epoch_vote_account_stake = epoch_vote_accounts
-                .get(&post_init.vote_account)
+                .get(&vote_account)
                 .map(|(stake, _vote_account)| *stake)
                 .unwrap_or_default();
-            let in_current_epoch_vote_accounts =
-                epoch_vote_accounts.contains_key(&post_init.vote_account);
+            let in_current_epoch_vote_accounts = epoch_vote_accounts.contains_key(&vote_account);
 
-            let next_epoch_vat_failure_reason = bank
-                .get_vat_health_for_next_epoch(&post_init.vote_account)
-                .err();
+            let next_epoch_vat_failure_reason =
+                bank.get_vat_health_for_next_epoch(&vote_account).err();
 
             let voting_enabled = !meta.authorized_voter_keypairs.read().unwrap().is_empty();
             Ok(AdminRpcValidatorAdmissionTicketStatus {
-                vote_account: post_init.vote_account,
+                vote_account,
                 voting_enabled,
                 current_epoch,
                 in_current_epoch_vat: in_current_epoch_vote_accounts,
@@ -992,12 +1075,23 @@ impl AdminRpcImpl {
     fn set_identity_keypair(
         meta: AdminRpcRequestMetadata,
         identity_keypair: Keypair,
+        new_vote_account: Option<Pubkey>,
         require_tower: bool,
         require_vote_history: bool,
     ) -> Result<()> {
         meta.with_post_init(|post_init| {
             let old_identity = post_init.cluster_info.id();
             let new_identity = identity_keypair.pubkey();
+            if let Some(new_vote_account) = new_vote_account {
+                // Replay only reloads the vote account and tower on an identity change
+                let old_vote_account = *post_init.vote_account.read().unwrap();
+                if old_identity == new_identity && old_vote_account != new_vote_account {
+                    return Err(jsonrpc_core::error::Error::invalid_params(format!(
+                        "Changing vote account from {old_vote_account} to {new_vote_account} \
+                         without changing identity is not supported"
+                    )));
+                }
+            }
             if old_identity != new_identity {
                 let root_bank = post_init.bank_forks.read().unwrap().root_bank();
                 let epoch = root_bank.epoch();
@@ -1027,11 +1121,13 @@ impl AdminRpcImpl {
             }
 
             if require_vote_history {
+                let vote_account =
+                    new_vote_account.unwrap_or_else(|| *post_init.vote_account.read().unwrap());
                 let should_require_vote_history = {
                     let bank_forks = post_init.bank_forks.read().unwrap();
                     should_require_vote_history_file(
                         &bank_forks.working_bank(),
-                        &post_init.vote_account,
+                        &vote_account,
                         &identity_keypair.pubkey(),
                     )
                 };
@@ -1048,7 +1144,7 @@ impl AdminRpcImpl {
                              know what you're doing",
                             identity_keypair.pubkey(),
                             err,
-                            post_init.vote_account
+                            vote_account
                         ))
                     })?;
                 }
@@ -1085,6 +1181,28 @@ impl AdminRpcImpl {
                 ("new_id", new_identity.to_string(), String),
                 ("version", solana_version::version!(), String),
             );
+            if let Some(new_vote_account) = new_vote_account {
+                // An empty list means voting was disabled on purpose (--no-voting or
+                // removeAllAuthorizedVoters), so don't re-enable it
+                let mut keypairs = meta.authorized_voter_keypairs.write().unwrap();
+                if !keypairs.is_empty() && !keypairs.iter().any(|k| k.pubkey() == new_identity) {
+                    keypairs.push(Arc::new(identity_keypair.insecure_clone()));
+                }
+                drop(keypairs);
+                let old_vote_account = std::mem::replace(
+                    &mut *post_init.vote_account.write().unwrap(),
+                    new_vote_account,
+                );
+                datapoint_info!(
+                    "validator-set_identity_and_vote_account",
+                    ("old_id", old_identity.to_string(), String),
+                    ("new_id", new_identity.to_string(), String),
+                    ("old_vote_account", old_vote_account.to_string(), String),
+                    ("new_vote_account", new_vote_account.to_string(), String),
+                    ("version", solana_version::version!(), String),
+                );
+                warn!("Vote account set to {new_vote_account}");
+            }
             post_init
                 .cluster_info
                 .set_keypair(Arc::new(identity_keypair));
@@ -1332,7 +1450,7 @@ mod tests {
                 post_init: Arc::new(RwLock::new(Some(AdminRpcRequestMetadataPostInit {
                     cluster_info,
                     bank_forks,
-                    vote_account,
+                    vote_account: Arc::new(RwLock::new(vote_account)),
                     repair_whitelist,
                     notifies: Arc::new(RwLock::new(KeyUpdaters::default())),
                     repair_socket: Arc::new(bind_to_localhost_unique().expect("should bind")),
@@ -1448,6 +1566,7 @@ mod tests {
             AdminRpcImpl::set_identity_keypair(
                 rpc.meta.clone(),
                 validators[1].node_keypair.insecure_clone(),
+                None,
                 false,
                 false,
             ),
@@ -1469,6 +1588,174 @@ mod tests {
         );
     }
 
+    fn voter_pubkeys(meta: &AdminRpcRequestMetadata) -> Vec<Pubkey> {
+        meta.authorized_voter_keypairs
+            .read()
+            .unwrap()
+            .iter()
+            .map(|k| k.pubkey())
+            .collect()
+    }
+
+    fn current_vote_account(meta: &AdminRpcRequestMetadata) -> Pubkey {
+        *meta
+            .post_init
+            .read()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .vote_account
+            .read()
+            .unwrap()
+    }
+
+    // This test checks that the rpc call to `set_identity_and_vote_account` works as expected
+    // with Bank but without validator.
+    #[test]
+    fn test_set_identity_and_vote_account() {
+        let (votor_event_sender, votor_event_receiver) = bounded(1024);
+        let rpc = RpcHandler::start_with_config(TestConfig {
+            votor_event_sender: Some(votor_event_sender),
+            ..TestConfig::default()
+        });
+
+        let RpcHandler { io, meta, .. } = rpc;
+        let old_voters = voter_pubkeys(&meta);
+
+        let expected_validator_id = Keypair::new();
+        let validator_id_bytes = format!("{:?}", expected_validator_id.to_bytes());
+        let expected_vote_account = Pubkey::new_unique();
+
+        let set_id_request = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"setIdentityAndVoteAccountFromBytes","params":[{validator_id_bytes}, "{expected_vote_account}", false, false]}}"#,
+        );
+        let response = io.handle_request_sync(&set_id_request, meta.clone());
+        let actual_parsed_response: Value =
+            serde_json::from_str(&response.expect("actual response"))
+                .expect("actual response deserialization");
+
+        let expected_parsed_response: Value = serde_json::from_str(
+            r#"{
+                "id": 1,
+                "jsonrpc": "2.0",
+                "result": null
+            }"#,
+        )
+        .expect("Failed to parse expected response");
+        assert_eq!(actual_parsed_response, expected_parsed_response);
+
+        let contact_info_request =
+            r#"{"jsonrpc":"2.0","id":1,"method":"contactInfo","params":[]}"#.to_string();
+        let response = io.handle_request_sync(&contact_info_request, meta.clone());
+        let parsed_response: Value = serde_json::from_str(&response.expect("actual response"))
+            .expect("actual response deserialization");
+        let actual_validator_id = parsed_response["result"]["id"]
+            .as_str()
+            .expect("Expected a string");
+        assert_eq!(
+            actual_validator_id,
+            expected_validator_id.pubkey().to_string()
+        );
+        assert_eq!(current_vote_account(&meta), expected_vote_account);
+        assert_eq!(
+            voter_pubkeys(&meta),
+            [old_voters, vec![expected_validator_id.pubkey()]].concat()
+        );
+        let event = votor_event_receiver
+            .recv()
+            .expect("Failed to receive SetIdentity event");
+        assert_matches!(event, VotorEvent::SetIdentity);
+    }
+
+    #[test]
+    fn test_set_identity_and_vote_account_keeps_voting_disabled() {
+        let (votor_event_sender, _votor_event_receiver) = bounded(1024);
+        let rpc = RpcHandler::start_with_config(TestConfig {
+            votor_event_sender: Some(votor_event_sender),
+            ..TestConfig::default()
+        });
+        rpc.meta.authorized_voter_keypairs.write().unwrap().clear();
+
+        let vote_account = Pubkey::new_unique();
+        AdminRpcImpl::set_identity_keypair(
+            rpc.meta.clone(),
+            Keypair::new(),
+            Some(vote_account),
+            false,
+            true,
+        )
+        .unwrap();
+        assert_eq!(current_vote_account(&rpc.meta), vote_account);
+        assert!(voter_pubkeys(&rpc.meta).is_empty());
+    }
+
+    #[test]
+    fn test_set_identity_and_vote_account_rejects_vote_account_only_change() {
+        let rpc = RpcHandler::_start();
+        let post_init = rpc.meta.post_init.read().unwrap().clone().unwrap();
+        let identity = post_init.cluster_info.keypair().insecure_clone();
+        let old_vote_account = current_vote_account(&rpc.meta);
+
+        assert_matches!(
+            AdminRpcImpl::set_identity_keypair(
+                rpc.meta.clone(),
+                identity.insecure_clone(),
+                Some(Pubkey::new_unique()),
+                false,
+                false,
+            ),
+            Err(jsonrpc_core::Error {
+                code: ErrorCode::InvalidParams,
+                ..
+            })
+        );
+        assert_eq!(current_vote_account(&rpc.meta), old_vote_account);
+        assert_eq!(post_init.cluster_info.id(), identity.pubkey());
+    }
+
+    #[test]
+    fn test_set_identity_and_vote_account_rejects_staked_to_staked_transition() {
+        let rpc = RpcHandler::_start();
+        let validators = [
+            ValidatorVoteKeypairs::new_rand(),
+            ValidatorVoteKeypairs::new_rand(),
+        ];
+        let GenesisConfigInfo { genesis_config, .. } =
+            create_genesis_config_with_vote_accounts(1_000_000_000, &validators, vec![1, 1]);
+        let bank = Bank::new_for_tests(&genesis_config);
+        {
+            let mut post_init = rpc.meta.post_init.write().unwrap();
+            let post_init = post_init.as_mut().unwrap();
+            post_init
+                .cluster_info
+                .set_keypair(Arc::new(validators[0].node_keypair.insecure_clone()));
+            post_init.bank_forks = BankForks::new_rw_arc(bank);
+        }
+        let old_vote_account = current_vote_account(&rpc.meta);
+        let old_voters = voter_pubkeys(&rpc.meta);
+
+        assert_matches!(
+            AdminRpcImpl::set_identity_keypair(
+                rpc.meta.clone(),
+                validators[1].node_keypair.insecure_clone(),
+                Some(validators[1].vote_keypair.pubkey()),
+                false,
+                false,
+            ),
+            Err(jsonrpc_core::Error {
+                code: ErrorCode::InvalidParams,
+                ..
+            })
+        );
+        let post_init = rpc.meta.post_init.read().unwrap().clone().unwrap();
+        assert_eq!(
+            post_init.cluster_info.id(),
+            validators[0].node_keypair.pubkey()
+        );
+        assert_eq!(current_vote_account(&rpc.meta), old_vote_account);
+        assert_eq!(voter_pubkeys(&rpc.meta), old_voters);
+    }
+
     #[test]
     fn test_vat_status() {
         let rpc = RpcHandler::_start();
@@ -1477,9 +1764,10 @@ mod tests {
         let bank = post_init.bank_forks.read().unwrap().root_bank();
         let current_epoch = bank.epoch();
         let epoch_vote_accounts = bank.epoch_vote_accounts(current_epoch).unwrap();
-        let expected_in_vat = epoch_vote_accounts.contains_key(&post_init.vote_account);
+        let vote_account = *post_init.vote_account.read().unwrap();
+        let expected_in_vat = epoch_vote_accounts.contains_key(&vote_account);
         let expected_stake = epoch_vote_accounts
-            .get(&post_init.vote_account)
+            .get(&vote_account)
             .map(|(stake, _vote_account)| *stake)
             .unwrap_or_default();
 
@@ -1491,7 +1779,7 @@ mod tests {
         let status: AdminRpcValidatorAdmissionTicketStatus =
             serde_json::from_value(result["result"].clone()).unwrap();
 
-        assert_eq!(status.vote_account, post_init.vote_account);
+        assert_eq!(status.vote_account, vote_account);
         assert!(status.voting_enabled);
         assert_eq!(status.current_epoch, current_epoch);
         assert_eq!(status.in_current_epoch_vat, expected_in_vat);

@@ -419,7 +419,7 @@ impl PartitionInfo {
 }
 
 pub struct ReplayStageConfig {
-    pub vote_account: Pubkey,
+    pub vote_account: Arc<RwLock<Pubkey>>,
     pub authorized_voter_keypairs: Arc<RwLock<Vec<Arc<Keypair>>>>,
     pub exit: Arc<AtomicBool>,
     pub leader_schedule_cache: Arc<LeaderScheduleCache>,
@@ -743,7 +743,7 @@ impl ReplayStage {
         receivers: ReplayReceivers,
     ) -> Result<Self, String> {
         let ReplayStageConfig {
-            vote_account,
+            vote_account: shared_vote_account,
             authorized_voter_keypairs,
             exit,
             leader_schedule_cache,
@@ -808,6 +808,7 @@ impl ReplayStage {
 
         // Start the replay stage loop
         let migration_status = bank_forks.read().unwrap().migration_status();
+        let mut vote_account = *shared_vote_account.read().unwrap();
         let mut identity_keypair = cluster_info.keypair().clone();
         let mut my_pubkey = identity_keypair.pubkey();
 
@@ -1073,6 +1074,12 @@ impl ReplayStage {
                         migration_status.set_pubkey(my_pubkey);
 
                         warn!("Identity changed from {my_old_pubkey} to {my_pubkey}");
+
+                        let old_vote_account = vote_account;
+                        vote_account = *shared_vote_account.read().unwrap();
+                        if old_vote_account != vote_account {
+                            warn!("Vote account changed from {old_vote_account} to {vote_account}");
+                        }
                     }
 
                     process_soft_dead_slots(
@@ -1436,6 +1443,15 @@ impl ReplayStage {
                                 let my_old_pubkey = my_pubkey;
                                 my_pubkey = identity_keypair.pubkey();
                                 migration_status.set_pubkey(my_pubkey);
+
+                                let old_vote_account = vote_account;
+                                vote_account = *shared_vote_account.read().unwrap();
+                                if old_vote_account != vote_account {
+                                    warn!(
+                                        "Vote account changed from {old_vote_account} to \
+                                         {vote_account}"
+                                    );
+                                }
 
                                 // Load the new identity's tower
                                 tower = match Self::load_tower(
