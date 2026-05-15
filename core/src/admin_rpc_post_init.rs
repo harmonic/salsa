@@ -80,7 +80,7 @@ pub struct AdminRpcRequestMetadataPostInit {
     pub event_system: EventSystem,
     pub cluster_info: Arc<ClusterInfo>,
     pub bank_forks: Arc<RwLock<BankForks>>,
-    pub vote_account: Pubkey,
+    pub vote_account: Arc<RwLock<Pubkey>>,
     pub repair_whitelist: Arc<RwLock<HashSet<Pubkey>>>,
     pub notifies: Arc<RwLock<KeyUpdaters>>,
     pub repair_socket: Arc<UdpSocket>,
