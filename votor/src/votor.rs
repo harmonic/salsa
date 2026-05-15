@@ -94,7 +94,7 @@ use {
 pub struct VotorConfig {
     pub exit: Arc<AtomicBool>,
     // Validator config
-    pub vote_account: Pubkey,
+    pub vote_account: Arc<RwLock<Pubkey>>,
     pub wait_to_vote_slot: Option<Slot>,
     pub vote_history: VoteHistory,
     pub vote_history_storage: Arc<dyn VoteHistoryStorage>,
@@ -155,7 +155,7 @@ impl Votor {
     pub fn new(config: VotorConfig) -> Self {
         let VotorConfig {
             exit,
-            vote_account,
+            vote_account: shared_vote_account,
             wait_to_vote_slot,
             vote_history,
             vote_history_storage,
@@ -203,9 +203,11 @@ impl Votor {
             repair_event_sender,
         };
 
+        let vote_account = *shared_vote_account.read().unwrap();
         let voting_context = VotingContext {
             vote_history,
             vote_account_pubkey: vote_account,
+            shared_vote_account: shared_vote_account.clone(),
             identity_keypair,
             authorized_voter_keypairs,
             derived_bls_keypairs: HashMap::new(),
@@ -248,6 +250,7 @@ impl Votor {
             generated_cert_types,
             cluster_info: cluster_info.clone(),
             my_vote_pubkey: vote_account,
+            shared_vote_account,
             blockstore,
             sharable_banks: sharable_banks.clone(),
             leader_schedule_cache: leader_schedule_cache.clone(),
