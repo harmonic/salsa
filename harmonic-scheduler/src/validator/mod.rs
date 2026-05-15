@@ -11,6 +11,7 @@ use crate::consts::{NONVOTE_QUEUE_CAPACITY, VOTE_QUEUE_CAPACITY};
 use crate::ipc;
 use crate::state::{scheduler_active, tpu_active, validator_exit};
 use arc_swap::ArcSwap;
+use bytes::Bytes;
 use log::{info, warn};
 use solana_keypair::Keypair;
 use std::path::PathBuf;
@@ -43,8 +44,8 @@ pub fn run(
     identity_rx: watch::Receiver<Arc<Keypair>>,
     tip_manager_rx: watch::Receiver<Arc<TipManager>>,
     fee_info: Arc<ArcSwap<BlockBuilderFeeInfo>>,
-    mut packet_rx: rtrb::Consumer<Vec<u8>>,
-    mut block_rx: rtrb::Consumer<(u64, Vec<Vec<u8>>)>,
+    mut packet_rx: rtrb::Consumer<Bytes>,
+    mut block_rx: rtrb::Consumer<(u64, Vec<Bytes>)>,
     leader_tx: watch::Sender<Option<LeaderNotification>>,
 ) {
     loop {

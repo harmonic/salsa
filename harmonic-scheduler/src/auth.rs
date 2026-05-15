@@ -2,10 +2,7 @@
 
 use anyhow::{Result, anyhow};
 use arc_swap::ArcSwap;
-use harmonic_protos::auth::auth_service_client::AuthServiceClient;
-use harmonic_protos::auth::{
-    GenerateAuthChallengeRequest, GenerateAuthTokensRequest, RefreshAccessTokenRequest, Role, Token,
-};
+use bytes::Bytes;
 use log::{debug, trace, warn};
 use solana_keypair::Keypair;
 use solana_signer::Signer;
@@ -17,6 +14,10 @@ use tonic::metadata::AsciiMetadataValue;
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::{Channel, Endpoint};
 use tonic::{Request, Status};
+use validator_protos::auth::auth_service_client::AuthServiceClient;
+use validator_protos::auth::{
+    GenerateAuthChallengeRequest, GenerateAuthTokensRequest, RefreshAccessTokenRequest, Role, Token,
+};
 
 /// Deadline for establishing the TCP + TLS + HTTP/2 connection to the endpoint
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -96,7 +97,7 @@ async fn generate_auth_tokens(
     let challenge = client
         .generate_auth_challenge(GenerateAuthChallengeRequest {
             role: Role::Validator as i32,
-            pubkey: identity.pubkey().as_ref().to_vec(),
+            pubkey: Bytes::copy_from_slice(identity.pubkey().as_ref()),
         })
         .await?
         .into_inner()
@@ -110,8 +111,8 @@ async fn generate_auth_tokens(
     let resp = client
         .generate_auth_tokens(GenerateAuthTokensRequest {
             challenge: message,
-            client_pubkey: identity.pubkey().as_ref().to_vec(),
-            signed_challenge: signature.as_ref().to_vec(),
+            client_pubkey: Bytes::copy_from_slice(identity.pubkey().as_ref()),
+            signed_challenge: Bytes::copy_from_slice(signature.as_ref()),
         })
         .await?
         .into_inner();
@@ -243,7 +244,8 @@ fn make_endpoint(url: &str) -> Result<Endpoint> {
         .initial_stream_window_size(HTTP2_STREAM_WINDOW)
         .http2_adaptive_window(true);
     if endpoint.uri().scheme_str() == Some("https") {
-        endpoint = endpoint.tls_config(tonic::transport::ClientTlsConfig::new())?;
+        endpoint =
+            endpoint.tls_config(tonic::transport::ClientTlsConfig::new().with_enabled_roots())?;
         debug!("using TLS endpoint for {url}");
     }
     Ok(endpoint)

@@ -11,12 +11,13 @@ edition = "2021"
 [dependencies]
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
+bytes = { workspace = true }
 agave-logger = { workspace = true }
 agave-scheduler-bindings = { workspace = true, features = ["agave-unstable-api"] }
 agave-transaction-view = { workspace = true }
 agave-scheduling-utils = { workspace = true, features = ["agave-unstable-api"] }
 clap = { version = "4", features = ["derive"] }
-harmonic-protos = { workspace = true }
+validator-protos = { git = "https://github.com/harmonic/validator-protos.git", tag = "v0.1.0", version = "0.1.0", features = ["client"] }
 indexmap = { workspace = true }
 jsonrpc-core = { workspace = true }
 jsonrpc-core-client = { workspace = true, features = ["ipc"] }
@@ -24,7 +25,7 @@ log = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 rustc-hash = "2"
-prost-types = { workspace = true }
+prost-types = "0.14"
 rdtsc = { workspace = true }
 rts-alloc = { workspace = true }
 rtrb = "0.3"
@@ -39,7 +40,7 @@ solana-transaction = { workspace = true }
 tip-manager = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "time", "sync", "signal"] }
 thiserror = { workspace = true }
-tonic = { workspace = true, features = ["transport", "tls", "tls-roots", "tls-webpki-roots"] }
+tonic = { version = "0.14", features = ["transport", "tls-ring", "tls-native-roots", "tls-webpki-roots"] }
 
 [dev-dependencies]
 bincode = { workspace = true }

@@ -8,11 +8,7 @@ use crate::config::RemoteTpuConfig;
 use crate::state::remote_tpu_active;
 use anyhow::{Result, bail};
 use arc_swap::ArcSwap;
-use harmonic_protos::relayer::relayer_client::RelayerClient;
-use harmonic_protos::relayer::{
-    GetTpuConfigsRequest, SubscribePacketsRequest, SubscribePacketsResponse,
-    subscribe_packets_response,
-};
+use bytes::Bytes;
 use log::{error, info, trace, warn};
 use solana_keypair::Keypair;
 use std::net::SocketAddr;
@@ -24,6 +20,11 @@ use tokio::time::{MissedTickBehavior, sleep, timeout};
 use tonic::Streaming;
 use tonic::codegen::InterceptedService;
 use tonic::transport::Channel;
+use validator_protos::relayer::relayer_client::RelayerClient;
+use validator_protos::relayer::{
+    GetTpuConfigsRequest, SubscribePacketsRequest, SubscribePacketsResponse,
+    subscribe_packets_response,
+};
 
 /// Timeout between remote TPU messages before assuming disconnect
 /// The remote TPU sends a heartbeat every 300ms
@@ -36,7 +37,7 @@ type Client = RelayerClient<InterceptedService<Channel, AuthInterceptor>>;
 pub async fn run(
     config: RemoteTpuConfig,
     mut identity_rx: watch::Receiver<Arc<Keypair>>,
-    mut packet_tx: rtrb::Producer<Vec<u8>>,
+    mut packet_tx: rtrb::Producer<Bytes>,
     remote_tpu: Arc<ArcSwap<Option<TpuConfig>>>,
 ) {
     if identity_rx.changed().await.is_err() {
@@ -126,7 +127,7 @@ async fn connect(
 /// Forward packets from the relayer into `packet_tx`
 async fn forward_packets(
     stream: &mut Streaming<SubscribePacketsResponse>,
-    packet_tx: &mut rtrb::Producer<Vec<u8>>,
+    packet_tx: &mut rtrb::Producer<Bytes>,
 ) -> Result<()> {
     let mut dropped: usize = 0;
     let mut tick = tokio::time::interval(Duration::from_secs(1));
