@@ -851,6 +851,8 @@ impl Validator {
         info!("identity pubkey: {id}");
         info!("vote account pubkey: {vote_account}");
 
+        let vote_account = Arc::new(RwLock::new(*vote_account));
+
         if !config.no_os_network_stats_reporting {
             verify_net_stats_access().map_err(|e| {
                 ValidatorError::Other(format!("Failed to access network stats: {e:?}"))
@@ -1209,9 +1211,10 @@ impl Validator {
         let entry_notification_sender = entry_notifier_service
             .as_ref()
             .map(|service| service.sender());
+        let vote_account_pubkey = *vote_account.read().unwrap();
         let mut process_blockstore = ProcessBlockStore::new(
             &id,
-            vote_account,
+            &vote_account_pubkey,
             &start_progress,
             &blockstore,
             original_blockstore_root,
@@ -1738,7 +1741,7 @@ impl Validator {
         });
 
         let tvu = Tvu::new(
-            vote_account,
+            vote_account.clone(),
             authorized_voter_keypairs,
             bank_forks.clone(),
             &cluster_info,
@@ -1922,7 +1925,7 @@ impl Validator {
             event_system: event_system.clone(),
             bank_forks: bank_forks.clone(),
             cluster_info: cluster_info.clone(),
-            vote_account: *vote_account,
+            vote_account,
             repair_whitelist: config.repair_whitelist.clone(),
             notifies: key_notifiers,
             repair_socket: Arc::new(node.sockets.repair),
