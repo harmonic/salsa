@@ -17,6 +17,7 @@ use agave_scheduler_bindings::{
 use agave_scheduling_utils::handshake::client::ClientWorkerSession;
 use anyhow::{Result, bail};
 use arc_swap::ArcSwap;
+use bytes::Bytes;
 use log::{debug, info, warn};
 use rts_alloc::Allocator;
 use smallvec::SmallVec;
@@ -40,7 +41,7 @@ pub struct Scheduler<'a> {
     allocator: &'a Allocator,
     vote_rx: rtrb::Consumer<SharableTransactionRegion>,
     nonvote_rx: rtrb::Consumer<SharableTransactionRegion>,
-    block_rx: &'a mut rtrb::Consumer<(u64, Vec<Vec<u8>>)>,
+    block_rx: &'a mut rtrb::Consumer<(u64, Vec<Bytes>)>,
     leader_tx: &'a watch::Sender<Option<LeaderNotification>>,
     schedule: Schedule<'a>,
     vote_store: Storage<'a>,
@@ -61,7 +62,7 @@ impl<'a> Scheduler<'a> {
         allocator: &'a Allocator,
         vote_rx: rtrb::Consumer<SharableTransactionRegion>,
         nonvote_rx: rtrb::Consumer<SharableTransactionRegion>,
-        block_rx: &'a mut rtrb::Consumer<(u64, Vec<Vec<u8>>)>,
+        block_rx: &'a mut rtrb::Consumer<(u64, Vec<Bytes>)>,
         leader_tx: &'a watch::Sender<Option<LeaderNotification>>,
         identity_rx: watch::Receiver<Arc<Keypair>>,
         tip_manager_rx: watch::Receiver<Arc<TipManager>>,
