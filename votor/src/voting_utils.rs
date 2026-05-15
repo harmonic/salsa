@@ -115,6 +115,7 @@ pub(crate) struct VotingContext {
     pub(crate) leader_schedule: Arc<LeaderScheduleCache>,
     pub(crate) vote_history: VoteHistory,
     pub(crate) vote_account_pubkey: Pubkey,
+    pub(crate) shared_vote_account: Arc<std::sync::RwLock<Pubkey>>,
     pub(crate) identity_keypair: Arc<Keypair>,
     pub(crate) authorized_voter_keypairs: Arc<RwLock<Vec<Arc<Keypair>>>>,
     pub(crate) vote_history_storage: Arc<dyn VoteHistoryStorage>,
@@ -446,10 +447,12 @@ mod tests {
         let commitment_sender = bounded(1024).0;
         let consensus_metrics_sender = bounded(1024).0;
         let (own_reward_aggregates_sender, own_reward_aggregates_receiver) = bounded(1024);
+        let vote_account_pubkey = my_keys.vote_keypair.pubkey();
         let voting_context = VotingContext {
             cluster_info,
             vote_history: VoteHistory::new(my_keys.node_keypair.pubkey(), 0),
-            vote_account_pubkey: my_keys.vote_keypair.pubkey(),
+            vote_account_pubkey,
+            shared_vote_account: Arc::new(RwLock::new(vote_account_pubkey)),
             identity_keypair: Arc::new(my_keys.node_keypair.insecure_clone()),
             authorized_voter_keypairs: Arc::new(RwLock::new(vec![Arc::new(
                 my_keys.vote_keypair.insecure_clone(),
