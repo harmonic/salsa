@@ -7,12 +7,7 @@ use crate::config::BlockEngineConfig;
 use crate::state::block_engine_active;
 use anyhow::{Context, Result};
 use arc_swap::ArcSwap;
-use harmonic_protos::block_engine::block_engine_validator_client::BlockEngineValidatorClient;
-use harmonic_protos::block_engine::{
-    BlockBuilderFeeInfoRequest, SetStrategyRequest, SubmitLeaderWindowInfoRequest,
-    SubscribeBundlesRequest, SubscribeBundlesResponse, SubscribePacketsRequest,
-    SubscribePacketsResponse,
-};
+use bytes::Bytes;
 use log::{error, info, trace, warn};
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
@@ -25,6 +20,12 @@ use tokio::time::{MissedTickBehavior, sleep};
 use tonic::Streaming;
 use tonic::codegen::InterceptedService;
 use tonic::transport::Channel;
+use validator_protos::block_engine::block_engine_validator_client::BlockEngineValidatorClient;
+use validator_protos::block_engine::{
+    BlockBuilderFeeInfoRequest, SetStrategyRequest, SubmitLeaderWindowInfoRequest,
+    SubscribeBundlesRequest, SubscribeBundlesResponse, SubscribePacketsRequest,
+    SubscribePacketsResponse,
+};
 
 /// How often to refresh the block-builder fee info from the block engine
 pub const FEE_INFO_REFRESH_INTERVAL: Duration = Duration::from_mins(10);
@@ -45,7 +46,7 @@ pub struct LeaderNotification {
 pub async fn run(
     config: BlockEngineConfig,
     mut identity_rx: watch::Receiver<Arc<Keypair>>,
-    mut block_tx: rtrb::Producer<(u64, Vec<Vec<u8>>)>,
+    mut block_tx: rtrb::Producer<(u64, Vec<Bytes>)>,
     leader_rx: watch::Receiver<Option<LeaderNotification>>,
     block_builder_fee_info: Arc<ArcSwap<BlockBuilderFeeInfo>>,
 ) {
@@ -149,7 +150,7 @@ async fn connect(
 /// Forward block subscription messages into `block_tx`
 async fn forward_blocks(
     stream: &mut Streaming<SubscribeBundlesResponse>,
-    block_tx: &mut rtrb::Producer<(u64, Vec<Vec<u8>>)>,
+    block_tx: &mut rtrb::Producer<(u64, Vec<Bytes>)>,
 ) -> Result<(), tonic::Status> {
     let mut dropped: usize = 0;
     let mut tick = tokio::time::interval(Duration::from_secs(1));
@@ -165,7 +166,7 @@ async fn forward_blocks(
                         .filter_map(|b| b.bundle.map(|bundle| (b.uuid, bundle)))
                     {
                         let slot = uuid.parse::<u64>().expect("block uuid should be a valid slot");
-                        let txs: Vec<Vec<u8>> = bundle.packets.into_iter().map(|p| p.data).collect();
+                        let txs: Vec<Bytes> = bundle.packets.into_iter().map(|p| p.data).collect();
                         let n = txs.len();
                         trace!("received {n} transactions: slot={slot}");
                         if block_tx.push((slot, txs)).is_err() {

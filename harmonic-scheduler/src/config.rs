@@ -3,9 +3,9 @@
 use agave_scheduling_utils::handshake::MAX_WORKERS;
 use clap::Parser;
 use clap::builder::RangedU64ValueParser;
-use harmonic_protos::block_engine::SchedulingStrategy;
 use solana_pubkey::Pubkey;
 use std::path::PathBuf;
+use validator_protos::block_engine::SchedulingStrategy;
 
 #[derive(Debug, Parser)]
 #[command(

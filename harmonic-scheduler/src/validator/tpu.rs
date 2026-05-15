@@ -6,6 +6,7 @@ use crate::ipc::tpu_to_pack;
 use crate::ipc::tpu_to_pack::Packet;
 use crate::state::tpu_exit;
 use agave_scheduler_bindings::{SharableTransactionRegion, TpuToPackMessage};
+use bytes::Bytes;
 use log::info;
 use rdtsc::Instant;
 use rtrb::chunks::ChunkError;
@@ -14,7 +15,7 @@ use rts_alloc::Allocator;
 pub fn run(
     mut tpu_to_pack: shaq::Consumer<TpuToPackMessage>,
     allocator: Allocator,
-    packet_rx: &mut rtrb::Consumer<Vec<u8>>,
+    packet_rx: &mut rtrb::Consumer<Bytes>,
     mut vote_tx: rtrb::Producer<SharableTransactionRegion>,
     mut nonvote_tx: rtrb::Producer<SharableTransactionRegion>,
 ) {
