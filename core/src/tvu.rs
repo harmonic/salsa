@@ -196,7 +196,7 @@ impl Tvu {
     /// * `blockstore` - the ledger itself
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        vote_account: &Pubkey,
+        vote_account: Arc<RwLock<Pubkey>>,
         authorized_voter_keypairs: Arc<RwLock<Vec<Arc<Keypair>>>>,
         bank_forks: &Arc<RwLock<BankForks>>,
         cluster_info: &Arc<ClusterInfo>,
@@ -486,7 +486,7 @@ impl Tvu {
 
         let votor_config = VotorConfig {
             exit: exit.clone(),
-            vote_account: *vote_account,
+            vote_account: vote_account.clone(),
             wait_to_vote_slot,
             vote_history,
             vote_history_storage: vote_history_storage.clone(),
@@ -549,7 +549,7 @@ impl Tvu {
         };
 
         let replay_stage_config = ReplayStageConfig {
-            vote_account: *vote_account,
+            vote_account,
             authorized_voter_keypairs,
             exit: exit.clone(),
             leader_schedule_cache: leader_schedule_cache.clone(),
@@ -816,7 +816,7 @@ pub mod tests {
         let (_build_reward_certs_sender, build_reward_certs_receiver) = bounded(1);
 
         let tvu = Tvu::new(
-            &vote_keypair.pubkey(),
+            Arc::new(RwLock::new(vote_keypair.pubkey())),
             Arc::new(RwLock::new(vec![Arc::new(vote_keypair)])),
             &bank_forks,
             &cref1,
