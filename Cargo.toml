@@ -41,7 +41,6 @@ members = [
     "geyser-plugin-manager",
     "gossip",
     "gossip-cli",
-    "harmonic-protos",
     "harmonic-scheduler",
     "install",
     "tip-manager",
@@ -289,7 +288,6 @@ getrandom = "0.3.4"
 goauth = "0.13.1"
 governor = "0.6.3"
 group = "0.13.0"
-harmonic-protos = { path = "harmonic-protos" }
 hex = "0.4.3"
 hex-literal = "1.1.0"
 hidapi = { version = "2.6.4", default-features = false }

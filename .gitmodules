@@ -1,3 +1,0 @@
-[submodule "harmonic-protos/protos"]
-	path = harmonic-protos/protos
-	url = https://github.com/harmonic/validator-protos.git
