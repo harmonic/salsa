@@ -3441,7 +3441,7 @@ checksum = "eabb4a44450da02c90444cf74558da904edde8fb4e9035a9a6a4e15445af0bd7"
 
 [[package]]
 name = "harmonic-scheduler"
-version = "4.0.0-rc.1"
+version = "4.0.0"
 dependencies = [
  "agave-logger",
  "agave-scheduler-bindings",
@@ -6147,7 +6147,7 @@ dependencies = [
 
 [[package]]
 name = "rdtsc"
-version = "4.0.0-rc.1"
+version = "4.0.0"
 dependencies = [
  "criterion",
 ]
@@ -12853,7 +12853,7 @@ checksum = "cda74da7e1a664f795bb1f8a87ec406fb89a02522cf6e50620d016add6dbbf5c"
 
 [[package]]
 name = "tip-manager"
-version = "4.0.0-rc.1"
+version = "4.0.0"
 dependencies = [
  "bincode",
  "borsh",
