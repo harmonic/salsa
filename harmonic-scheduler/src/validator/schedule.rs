@@ -41,10 +41,6 @@ pub struct Schedule<'a> {
     tails: Vec<usize>,
     /// Count of in flight batches on workers
     inflight: usize,
-    /// Count of incomplete/unexecuted Tasks
-    outstanding: usize,
-    /// Threshold above which `backpressure()` returns true
-    backpressure_limit: usize,
 }
 
 /// Per-account state for building the dependency DAG
@@ -105,8 +101,6 @@ impl<'a> Schedule<'a> {
             ready: VecDeque::with_capacity(1024),
             tails: vec![NONE; num_workers],
             inflight: 0,
-            outstanding: 0,
-            backpressure_limit: num_workers * MAX_TRANSACTIONS_PER_MESSAGE,
         }
     }
 
@@ -135,7 +129,6 @@ impl<'a> Schedule<'a> {
                     if has_alts {
                         self.unresolved.push_back(idx);
                     }
-                    self.outstanding += 1;
                 }
             }
         }
@@ -227,7 +220,6 @@ impl<'a> Schedule<'a> {
         for t in &mut self.tails {
             *t = NONE;
         }
-        self.outstanding = 0;
         let allocator = self.allocator;
         self.tasks.drain(..).filter_map(move |(_, task)| {
             if task.state == TaskState::Done {
@@ -257,11 +249,6 @@ impl<'a> Schedule<'a> {
     /// True iff any batch is in flight on a worker
     pub fn active(&self) -> bool {
         self.inflight != 0
-    }
-
-    /// True iff outstanding tasks exceed the backpressure threshold
-    pub fn backpressure(&self) -> bool {
-        self.outstanding >= self.backpressure_limit
     }
 
     /// Walk cursor forward, resolving each task in insertion order
@@ -374,10 +361,6 @@ impl<'a> Schedule<'a> {
                 self.ready.push_back(s);
             }
         }
-        self.outstanding = self
-            .outstanding
-            .checked_sub(1)
-            .expect("outstanding should be nonzero");
     }
 
     /// Apply a CHECK response: take pubkeys on success, abort on failure
@@ -390,10 +373,6 @@ impl<'a> Schedule<'a> {
         } else {
             task.state = TaskState::Done;
             task.tx_ref.free(self.allocator);
-            self.outstanding = self
-                .outstanding
-                .checked_sub(1)
-                .expect("outstanding should be nonzero");
         }
     }
 
@@ -582,8 +561,8 @@ mod tests {
         );
 
         let mut processed = Vec::new();
-        while schedule.outstanding != 0 {
-            schedule.send_batch(1, &mut pack_to_worker);
+        schedule.send_batch(1, &mut pack_to_worker);
+        while schedule.inflight != 0 {
             schedule.handle_response(&mut worker_to_pack);
             workers.shuffle(&mut rng);
             for (rx, tx) in workers.iter_mut() {
@@ -622,6 +601,7 @@ mod tests {
                 rx.finalize();
                 tx.commit();
             }
+            schedule.send_batch(1, &mut pack_to_worker);
         }
 
         let processed: HashMap<[u8; 64], usize> = processed

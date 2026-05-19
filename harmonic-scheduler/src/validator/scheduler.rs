@@ -30,8 +30,8 @@ use tokio::sync::watch;
 
 /// Slot % after which we abandon the block engine and fall back to nonvotes
 const BLOCK_STAGE_TIMEOUT_PERCENT: u8 = 75;
-/// Slot % after which we only admit votes (tail reserved for vote ingestion)
-const NONVOTE_STAGE_TIMEOUT_PERCENT: u8 = 87;
+/// Slot % at which block_stage yields to vote_stage (tail reserved for vote ingestion)
+const VOTE_STAGE_START_PERCENT: u8 = 94;
 
 /// Drives the leader-slot state machine and worker IPC
 pub struct Scheduler<'a> {
@@ -193,10 +193,10 @@ impl<'a> Scheduler<'a> {
         self.build_tip_bundle()?;
         if self.wait_for_block()? {
             self.block_stage()?;
+            self.vote_stage()?;
         } else {
             self.fallback_stage()?;
         }
-        self.vote_stage()?;
 
         // Drain in-flight responses so the worker is no longer reading SHM
         // we're about to free in reset()
@@ -359,7 +359,7 @@ impl<'a> Scheduler<'a> {
             );
         }
 
-        while self.progress.poll()?.current_slot_progress < NONVOTE_STAGE_TIMEOUT_PERCENT {
+        while self.progress.poll()?.current_slot_progress < VOTE_STAGE_START_PERCENT {
             self.allocator.clean_remote_free_lists();
             while let Ok((_, txs)) = self.block_rx.pop() {
                 self.schedule
@@ -374,18 +374,20 @@ impl<'a> Scheduler<'a> {
 
     fn fallback_stage(&mut self) -> Result<()> {
         info!(
-            "no block received, falling back to nonvotes: slot={}",
+            "no block received, building fallback block: slot={}",
             self.slot
         );
-        while self.progress.poll()?.current_slot_progress < NONVOTE_STAGE_TIMEOUT_PERCENT {
+        while self.progress.poll()?.current_slot == self.slot {
             self.allocator.clean_remote_free_lists();
-            if !self.schedule.backpressure() {
-                if !self.nonvote_store.is_empty() {
-                    self.schedule.insert(self.nonvote_store.drain());
-                } else {
-                    self.schedule
-                        .insert(drain(&mut self.nonvote_rx, BATCH_SIZE));
-                }
+            if !self.vote_store.is_empty() {
+                self.schedule.insert(self.vote_store.drain());
+            } else if !self.vote_rx.is_empty() {
+                self.schedule.insert(drain(&mut self.vote_rx, BATCH_SIZE));
+            } else if !self.nonvote_store.is_empty() {
+                self.schedule.insert(self.nonvote_store.drain());
+            } else {
+                self.schedule
+                    .insert(drain(&mut self.nonvote_rx, BATCH_SIZE));
             }
             self.schedule
                 .send_batch(self.slot, &mut self.pack_to_worker);
@@ -395,7 +397,7 @@ impl<'a> Scheduler<'a> {
     }
 
     fn vote_stage(&mut self) -> Result<()> {
-        info!("entering vote stage for slot {}", self.slot);
+        info!("entering vote stage: slot={}", self.slot);
         while self.progress.poll()?.current_slot == self.slot {
             self.allocator.clean_remote_free_lists();
             if !self.vote_store.is_empty() {
