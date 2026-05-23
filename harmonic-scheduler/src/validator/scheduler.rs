@@ -9,10 +9,10 @@ use crate::ipc::shmem::{Free, Slice, allocate, allocate_batch};
 use crate::ipc::{ProgressTracker, pack_to_worker, worker_to_pack};
 use crate::state::scheduler_exit;
 use agave_scheduler_bindings::pack_message_flags::read_flags;
-use agave_scheduler_bindings::worker_message_types::{ReadResponse, read_results};
+use agave_scheduler_bindings::worker_message_types::{READ_RESPONSE, ReadResponse, read_results};
 use agave_scheduler_bindings::{
-    LEADER_READY, NOT_LEADER, PackToWorkerMessage, SharableTransactionRegion, WorkerToPackMessage,
-    pack_message_flags, processed_codes,
+    LEADER_READY, LEADER_STARTING, NOT_LEADER, PackToWorkerMessage, SharableTransactionRegion,
+    WorkerToPackMessage, pack_message_flags, processed_codes,
 };
 use agave_scheduling_utils::handshake::client::ClientWorkerSession;
 use anyhow::{Result, bail};
@@ -119,7 +119,9 @@ impl<'a> Scheduler<'a> {
     fn not_leader(&mut self) -> Result<()> {
         self.vote_store.reset_cursor();
         self.nonvote_store.reset_cursor();
-        while self.progress.poll()?.current_slot == self.slot {
+        while self.progress.poll()?.leader_state == NOT_LEADER
+            && self.progress.last().current_slot == self.slot
+        {
             self.allocator.clean_remote_free_lists();
 
             if self.dropped_timer.elapsed_ms() > 1000 {
@@ -178,8 +180,10 @@ impl<'a> Scheduler<'a> {
             slot: self.slot,
             start_time: SystemTime::now(),
         }))?;
-        // Wait for the bank for our slot
-        while self.progress.poll()?.leader_state != LEADER_READY {
+        // Wait for the bank for our slot, but bail if the window shifts under us
+        while self.progress.poll()?.leader_state == LEADER_STARTING
+            && self.progress.last().current_slot == self.slot
+        {
             self.allocator.clean_remote_free_lists();
             self.vote_store.insert(drain(&mut self.vote_rx, BATCH_SIZE));
             self.nonvote_store
@@ -190,6 +194,24 @@ impl<'a> Scheduler<'a> {
 
     /// Run a full leader slot
     fn leader_ready(&mut self) -> Result<()> {
+        if self.progress.last().leader_state != LEADER_READY {
+            debug!(
+                "skipping leader_ready: leader_state={} slot={} current_slot={}",
+                self.progress.last().leader_state,
+                self.slot,
+                self.progress.last().current_slot,
+            );
+            return Ok(());
+        }
+        // In case the slot from LEADER_STARTING disagrees with LEADER_READY
+        if self.slot != self.progress.last().current_slot {
+            self.slot = self.progress.last().current_slot;
+            info!("starting leader slot: slot={}", self.slot);
+            self.leader_tx.send(Some(LeaderNotification {
+                slot: self.slot,
+                start_time: SystemTime::now(),
+            }))?;
+        }
         self.build_tip_bundle()?;
         if self.wait_for_block()? {
             self.block_stage()?;
@@ -262,7 +284,14 @@ impl<'a> Scheduler<'a> {
         assert_eq!(
             message.processed_code,
             processed_codes::PROCESSED,
-            "tip account READ must be processed"
+            "tip account READ must be processed: processed_code={} slot={}",
+            message.processed_code,
+            self.slot,
+        );
+        assert_eq!(
+            message.responses.tag, READ_RESPONSE,
+            "expected READ response on worker[0]: got tag {}",
+            message.responses.tag,
         );
 
         debug!("building tip bundle");
