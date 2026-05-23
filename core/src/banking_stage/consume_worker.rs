@@ -549,9 +549,16 @@ pub(crate) mod external {
             &mut self,
             message: &PackToWorkerMessage,
         ) -> Result<(), ExternalConsumeWorkerError> {
-            let BankPair { working_bank, .. } = self.sharable_banks.load();
+            // Use the leader's working bank if available, otherwise the best fork
+            let bank = self
+                .shared_leader_state
+                .load()
+                .working_bank()
+                .cloned()
+                .filter(|bank| bank.is_complete())
+                .unwrap_or_else(|| self.sharable_banks.working());
 
-            if working_bank.slot() > message.max_working_slot {
+            if bank.slot() > message.max_working_slot {
                 return self.return_unprocessed_message(
                     message,
                     processed_codes::MAX_WORKING_SLOT_EXCEEDED,
@@ -587,7 +594,7 @@ pub(crate) mod external {
                 // SAFETY: READ batch entries are 32-byte pubkeys per the
                 // scheduler-bindings protocol.
                 let pubkey = unsafe { transaction_ptr.as_pubkey() };
-                let Some(account) = working_bank.get_account(pubkey) else {
+                let Some(account) = bank.get_account(pubkey) else {
                     // All other fields are undefined per the response contract.
                     response.read_result = read_results::ACCOUNT_NOT_FOUND;
                     continue;
