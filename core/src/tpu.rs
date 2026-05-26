@@ -63,7 +63,7 @@ use {
     },
     std::{
         collections::{HashMap, HashSet},
-        net::{Ipv4Addr, UdpSocket},
+        net::{Ipv4Addr, SocketAddr, UdpSocket},
         num::NonZeroUsize,
         path::PathBuf,
         sync::{Arc, RwLock, atomic::AtomicBool},
@@ -165,6 +165,7 @@ impl Tpu {
         cancel: CancellationToken,
         votor_event_sender: VotorEventSender,
         shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+        multicast_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
     ) -> Self {
         let TpuSockets {
             vote: tpu_vote_sockets,
@@ -373,6 +374,7 @@ impl Tpu {
             turbine_xdp_sender,
             votor_event_sender,
             shred_receiver_addresses,
+            multicast_receiver_address,
         );
 
         let mut key_notifiers = key_notifiers.write().unwrap();

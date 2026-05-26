@@ -7,6 +7,8 @@ pub mod broadcast_stage;
 
 pub mod cluster_nodes;
 
+pub mod multicast_root_forwarder;
+
 pub mod retransmit_stage;
 
 pub mod sigverify_shreds;
@@ -23,7 +25,10 @@ extern crate solana_metrics;
 #[macro_use]
 extern crate assert_matches;
 
+pub use multicast_root_forwarder::MulticastRootConfig;
 use {smallvec::SmallVec, std::net::SocketAddr};
 
 /// Addresses to forward shreds to in addition to normal turbine propagation.
 pub type ShredReceiverAddresses = SmallVec<[SocketAddr; 5]>;
+
+pub const MAX_SHRED_RECEIVER_ADDRESSES: usize = 32;
