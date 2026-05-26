@@ -86,6 +86,8 @@ pub fn safe_clone_config(config: &ValidatorConfig) -> ValidatorConfig {
         snapshot_packager_niceness_adj: config.snapshot_packager_niceness_adj,
         shred_receiver_addresses: config.shred_receiver_addresses.clone(),
         shred_retransmit_receiver_addresses: config.shred_retransmit_receiver_addresses.clone(),
+        multicast_receiver_address: config.multicast_receiver_address.clone(),
+        disable_multicast_shred_check: config.disable_multicast_shred_check,
     }
 }
 

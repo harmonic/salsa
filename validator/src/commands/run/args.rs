@@ -483,6 +483,16 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
             ),
     )
     .arg(
+        Arg::with_name("disable_multicast_shred_check")
+            .long("disable-multicast-shred-check")
+            .takes_value(false)
+            .help(
+                "Disables the background service that automatically detects multicast \
+                 infrastructure and adds the cluster multicast shred address when the route \
+                 exists and the address is not already added.",
+            ),
+    )
+    .arg(
         Arg::with_name("minimal_snapshot_download_speed")
             .long("minimal-snapshot-download-speed")
             .value_name("MINIMAL_SNAPSHOT_DOWNLOAD_SPEED")
