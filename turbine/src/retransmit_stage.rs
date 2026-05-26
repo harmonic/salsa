@@ -2,11 +2,12 @@
 
 use {
     crate::{
-        ShredReceiverAddresses, XdpSender,
+        MulticastRootConfig, ShredReceiverAddresses, XdpSender,
         addr_cache::AddrCache,
         cluster_nodes::{
             ClusterNodes, ClusterNodesCache, DATA_PLANE_FANOUT, Error, MAX_NUM_TURBINE_HOPS,
         },
+        multicast_root_forwarder,
     },
     agave_votor::event::VotorEvent,
     agave_votor_messages::migration::MigrationStatus,
@@ -23,7 +24,7 @@ use {
         shred::{self, ShredFlags, ShredId, ShredType},
     },
     solana_measure::measure::Measure,
-    solana_net_utils::SocketAddrSpace,
+    solana_net_utils::{SocketAddrSpace, bind_to_unspecified},
     solana_perf::deduper::Deduper,
     solana_pubkey::Pubkey,
     solana_rpc::{
@@ -108,6 +109,8 @@ struct RetransmitStats {
     num_addrs_failed: AtomicUsize,
     num_shreds_dropped_xdp_full: AtomicUsize,
     num_loopback_errs: AtomicUsize,
+    num_multicast_sent: AtomicUsize,
+    num_multicast_failed: AtomicUsize,
     num_shreds: usize,
     num_shreds_skipped: AtomicUsize,
     num_small_batches: usize,
@@ -148,6 +151,8 @@ struct RetransmitContext {
     max_slots: Arc<MaxSlots>,
     notifiers: RetransmitNotifiers,
     shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+    external_sender_socket: Arc<UdpSocket>,
+    multicast_root: Option<MulticastRootConfig>,
 }
 
 impl RetransmitState {
@@ -193,6 +198,16 @@ impl RetransmitStats {
                 i64
             ),
             ("num_loopback_errs", *self.num_loopback_errs.get_mut(), i64),
+            (
+                "num_multicast_sent",
+                *self.num_multicast_sent.get_mut(),
+                i64
+            ),
+            (
+                "num_multicast_failed",
+                *self.num_multicast_failed.get_mut(),
+                i64
+            ),
             ("num_shreds", self.num_shreds, i64),
             (
                 "num_shreds_skipped",
@@ -333,6 +348,8 @@ fn retransmit(context: &RetransmitContext, state: &mut RetransmitState) -> Resul
     let shred_deduper = &context.shred_deduper;
     let max_slots = context.max_slots.as_ref();
     let shred_receiver_addresses = context.shred_receiver_addresses.as_ref();
+    let external_sender_socket = context.external_sender_socket.as_ref();
+    let multicast_root = context.multicast_root.as_ref();
     let RetransmitState {
         stats,
         addr_cache,
@@ -443,8 +460,10 @@ fn retransmit(context: &RetransmitContext, state: &mut RetransmitState) -> Resul
             addr_cache,
             socket_addr_space,
             socket,
+            external_sender_socket,
             stats,
             &shred_receiver_addresses_local,
+            multicast_root,
         )
     };
 
@@ -496,6 +515,7 @@ fn retransmit(context: &RetransmitContext, state: &mut RetransmitState) -> Resul
 }
 
 // Retransmit a single shred to all downstream nodes
+#[allow(clippy::too_many_arguments)]
 fn retransmit_shred(
     shred: shred::Payload,
     root_bank: &Bank,
@@ -504,8 +524,10 @@ fn retransmit_shred(
     addr_cache: &AddrCache,
     socket_addr_space: &SocketAddrSpace,
     socket: RetransmitSocket<'_>,
+    external_sender_socket: &UdpSocket,
     stats: &RetransmitStats,
     shred_receiver_addresses: &ShredReceiverAddresses,
+    multicast_root: Option<&MulticastRootConfig>,
 ) -> Option<RetransmitShredOutput> {
     let key = shred::layout::get_shred_id(shred.as_ref())?;
     if key.slot() < root_bank.slot()
@@ -533,6 +555,24 @@ fn retransmit_shred(
         extended.extend(shred_receiver_addresses.iter().copied());
         Cow::Owned(extended.into())
     };
+
+    // Multicast root forward. Decoupled from `addrs` so the cached turbine
+    // addr list (replayed on cache hits via the regular retransmit socket)
+    // never includes the multicast group.
+    if let Some(mcast_addr) =
+        multicast_root_forwarder::maybe_external_addr(multicast_root, root_distance)
+    {
+        match external_sender_socket.send_to(shred.as_ref(), mcast_addr) {
+            Ok(_) => {
+                stats.num_multicast_sent.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(err) => {
+                stats.num_multicast_failed.fetch_add(1, Ordering::Relaxed);
+                debug!("multicast root forward failed: {err}");
+            }
+        }
+    }
+
     let num_addrs = addrs.len();
     let num_nodes = match socket {
         RetransmitSocket::Xdp(sender) => {
@@ -698,6 +738,7 @@ impl RetransmitStage {
         xdp_sender: Option<XdpSender>,
         votor_event_sender: Sender<VotorEvent>,
         shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+        multicast_root: Option<MulticastRootConfig>,
     ) -> Self {
         let migration_status = bank_forks.read().unwrap().migration_status();
         let cluster_nodes_cache = ClusterNodesCache::<RetransmitStage>::new(
@@ -715,6 +756,17 @@ impl RetransmitStage {
                 .build()
                 .unwrap()
         };
+
+        // Dedicated socket for the multicast-root forward. Bound to 0.0.0.0:0
+        // (not --bind-address) so the OS routing table selects the correct
+        // outbound interface for the multicast group, regardless of which
+        // interface Turbine retransmit uses for unicast peers.
+        let external_sender_socket = Arc::new(
+            bind_to_unspecified().expect("bind retransmit external_sender_socket 0.0.0.0:0"),
+        );
+        external_sender_socket
+            .set_multicast_ttl_v4(64)
+            .expect("set multicast ttl");
 
         let retransmit_context = RetransmitContext {
             thread_pool,
@@ -734,6 +786,8 @@ impl RetransmitStage {
                 votor_event_sender,
             },
             shred_receiver_addresses,
+            external_sender_socket,
+            multicast_root,
         };
 
         let retransmit_thread_handle = Builder::new()
@@ -800,6 +854,8 @@ impl RetransmitStats {
             num_addrs_failed: AtomicUsize::default(),
             num_shreds_dropped_xdp_full: AtomicUsize::default(),
             num_loopback_errs: AtomicUsize::default(),
+            num_multicast_sent: AtomicUsize::default(),
+            num_multicast_failed: AtomicUsize::default(),
             num_shreds: 0usize,
             num_shreds_skipped: AtomicUsize::default(),
             total_batches: 0usize,

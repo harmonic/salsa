@@ -86,7 +86,8 @@ use {
         streamer::StakedNodes,
     },
     solana_turbine::{
-        ShredReceiverAddresses, XdpSender as TurbineXdpSender, retransmit_stage::RetransmitStage,
+        MulticastRootConfig, ShredReceiverAddresses, XdpSender as TurbineXdpSender,
+        retransmit_stage::RetransmitStage,
     },
     std::{
         collections::HashSet,
@@ -158,6 +159,9 @@ pub struct TvuConfig {
     pub bls_sigverify_threads: NonZeroUsize,
     pub turbine_xdp_sender: Option<TurbineXdpSender>,
     pub repair_xdp_sender: Option<PinnedXdpSender>,
+    /// Drives the retransmit stage's multicast-root forwarding decision.
+    /// `None` disables the feature.
+    pub multicast_root: Option<MulticastRootConfig>,
 }
 
 impl Default for TvuConfig {
@@ -174,6 +178,7 @@ impl Default for TvuConfig {
             bls_sigverify_threads: NonZeroUsize::new(1).expect("1 is non-zero"),
             turbine_xdp_sender: None,
             repair_xdp_sender: None,
+            multicast_root: None,
         }
     }
 }
@@ -413,6 +418,7 @@ impl Tvu {
             tvu_config.turbine_xdp_sender,
             votor_event_sender.clone(),
             shred_retransmit_receiver_addresses,
+            tvu_config.multicast_root,
         );
 
         let (ancestor_duplicate_slots_sender, ancestor_duplicate_slots_receiver) = unbounded();
