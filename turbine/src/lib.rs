@@ -25,3 +25,5 @@ use {smallvec::SmallVec, std::net::SocketAddr};
 
 /// Addresses to forward shreds to in addition to normal turbine propagation.
 pub type ShredReceiverAddresses = SmallVec<[SocketAddr; 5]>;
+
+pub const MAX_SHRED_RECEIVER_ADDRESSES: usize = 32;
