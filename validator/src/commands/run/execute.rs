@@ -933,6 +933,8 @@ pub fn execute(
         ),
         shred_receiver_addresses: shred_receiver_addresses.clone(),
         shred_retransmit_receiver_addresses: shred_retransmit_receiver_addresses.clone(),
+        multicast_receiver_address: Arc::new(ArcSwap::from_pointee(None)),
+        disable_multicast_shred_check: matches.is_present("disable_multicast_shred_check"),
     };
     validator_config
         .block_production_method

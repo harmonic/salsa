@@ -181,10 +181,13 @@ impl BroadcastRun for FailEntryVerificationBroadcastRun {
         sock: BroadcastSocket,
         bank_forks: &RwLock<BankForks>,
         shred_receiver_addresses: &ShredReceiverAddresses,
+        multicast_receiver_address: &Option<SocketAddr>,
+        shred_receiver_socket: &UdpSocket,
     ) -> Result<()> {
         let (shreds, _) = receiver.recv()?;
         broadcast_shreds(
             sock,
+            shred_receiver_socket,
             &shreds,
             &self.cluster_nodes_cache,
             &AtomicInterval::default(),
@@ -193,6 +196,7 @@ impl BroadcastRun for FailEntryVerificationBroadcastRun {
             bank_forks,
             cluster_info.socket_addr_space(),
             shred_receiver_addresses,
+            multicast_receiver_address,
         )
     }
     fn record(&mut self, receiver: &RecordReceiver, blockstore: &Blockstore) -> Result<()> {
