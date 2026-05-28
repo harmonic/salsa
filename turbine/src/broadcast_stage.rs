@@ -549,10 +549,13 @@ pub fn broadcast_shreds(
     let external_addr_capacity = num_shred_receiver_addresses
         .saturating_add(multicast_receiver_address.iter().len());
     let mut external_addrs = ShredReceiverAddresses::with_capacity(external_addr_capacity);
-    for &addr in shred_receiver_addresses
+    for &addr in multicast_receiver_address
         .iter()
-        .take(num_shred_receiver_addresses)
-        .chain(multicast_receiver_address.iter())
+        .chain(
+            shred_receiver_addresses
+                .iter()
+                .take(num_shred_receiver_addresses),
+        )
     {
         // ShredReceiverAddresses and multicast_receiver_address are external receivers that may
         // be reachable via a different interface than --bind-address. They are collected
