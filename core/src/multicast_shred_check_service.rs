@@ -1,6 +1,5 @@
 use {
     arc_swap::ArcSwap,
-    solana_cluster_type::ClusterType,
     solana_metrics::datapoint_info,
     std::{
         net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -43,13 +42,9 @@ impl MulticastShredCheckService {
     pub fn new(
         exit: Arc<AtomicBool>,
         multicast_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
-        cluster_type: ClusterType,
+        multicast_addr: SocketAddr,
     ) -> Self {
-        let multicast_addr = match cluster_type {
-            ClusterType::Testnet => MULTICAST_SHRED_ADDR_TESTNET,
-            _ => MULTICAST_SHRED_ADDR_MAINNET,
-        };
-        info!("Starting MulticastShredCheckService for {cluster_type:?} ({multicast_addr})");
+        info!("Starting MulticastShredCheckService for {multicast_addr}");
         let thread_hdl = Builder::new()
             .name("solMcastShrdChk".to_string())
             .spawn(move || {

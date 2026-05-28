@@ -67,7 +67,7 @@ use {
         quic::{QuicStreamerConfig, SpawnServerResult, spawn_simple_qos_server},
         streamer::StakedNodes,
     },
-    solana_turbine::{ShredReceiverAddresses, retransmit_stage::RetransmitStage},
+    solana_turbine::{MulticastRootConfig, ShredReceiverAddresses, retransmit_stage::RetransmitStage},
     std::{
         collections::HashSet,
         net::{SocketAddr, UdpSocket},
@@ -133,6 +133,9 @@ pub struct TvuConfig {
     pub replay_transactions_threads: NonZeroUsize,
     pub shred_sigverify_threads: NonZeroUsize,
     pub xdp_sender: Option<XdpSender>,
+    /// Drives the retransmit stage's multicast-root forwarding decision.
+    /// `None` disables the feature.
+    pub multicast_root: Option<MulticastRootConfig>,
 }
 
 impl Default for TvuConfig {
@@ -147,6 +150,7 @@ impl Default for TvuConfig {
             replay_transactions_threads: NonZeroUsize::new(1).expect("1 is non-zero"),
             shred_sigverify_threads: NonZeroUsize::new(1).expect("1 is non-zero"),
             xdp_sender: None,
+            multicast_root: None,
         }
     }
 }
@@ -360,6 +364,7 @@ impl Tvu {
             tvu_config.xdp_sender,
             votor_event_sender.clone(),
             shred_retransmit_receiver_addresses,
+            tvu_config.multicast_root,
         );
 
         let (ancestor_duplicate_slots_sender, ancestor_duplicate_slots_receiver) = unbounded();
