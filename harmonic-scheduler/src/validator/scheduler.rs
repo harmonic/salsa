@@ -103,9 +103,14 @@ impl<'a> Scheduler<'a> {
             self.progress.last().next_leader_slot,
         );
 
-        while !scheduler_exit() {
+        loop {
             self.slot = self.progress.last().current_slot;
             if self.progress.last().leader_state == NOT_LEADER {
+                // Wait for a non-leader slot to shutdown scheduler
+                // This ensures there is no gap in vote processing when transferring scheduling
+                if scheduler_exit() {
+                    break;
+                }
                 self.not_leader()?;
             } else {
                 self.leader_starting()?;
