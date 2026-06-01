@@ -10,10 +10,12 @@ use agave_scheduler_bindings::{
     MAX_TRANSACTIONS_PER_MESSAGE, PackToWorkerMessage, SharablePubkeys, SharableTransactionRegion,
     WorkerToPackMessage, pack_message_flags, processed_codes,
 };
+use agave_scheduling_utils::handshake::MAX_WORKERS;
 use agave_transaction_view::transaction_version::TransactionVersion;
 use agave_transaction_view::transaction_view::UnsanitizedTransactionView;
 use indexmap::IndexMap;
 use indexmap::map::Entry;
+use log::info;
 use rts_alloc::Allocator;
 use rustc_hash::FxBuildHasher;
 use smallvec::SmallVec;
@@ -37,10 +39,16 @@ pub struct Schedule<'a> {
     unresolved: VecDeque<usize>,
     /// Globally ready tasks
     ready: VecDeque<usize>,
+    /// Number of workers
+    num_workers: usize,
     /// Per-worker chain tail: the last task assigned to this worker's FIFO
     tails: Vec<usize>,
     /// Count of in flight batches on workers
     inflight: usize,
+    /// Per-worker tally of transactions sent for CHECK this slot
+    check_counts: [usize; MAX_WORKERS],
+    /// Per-worker tally of transactions sent for EXECUTE this slot
+    execute_counts: [usize; MAX_WORKERS],
 }
 
 /// Per-account state for building the dependency DAG
@@ -99,8 +107,11 @@ impl<'a> Schedule<'a> {
             cursor: 0,
             unresolved: VecDeque::with_capacity(256),
             ready: VecDeque::with_capacity(1024),
+            num_workers,
             tails: vec![NONE; num_workers],
             inflight: 0,
+            check_counts: [0; MAX_WORKERS],
+            execute_counts: [0; MAX_WORKERS],
         }
     }
 
@@ -142,7 +153,7 @@ impl<'a> Schedule<'a> {
             if !batch.is_empty() {
                 self.send_execute(slot, w, producer, &batch, ready_consumed);
             } else if !self.unresolved.is_empty() {
-                self.send_check(slot, producer);
+                self.send_check(slot, w, producer);
             }
         }
     }
@@ -160,6 +171,10 @@ impl<'a> Schedule<'a> {
                     .expect("inflight should be nonzero");
 
                 if message.processed_code == processed_codes::MAX_WORKING_SLOT_EXCEEDED {
+                    info!(
+                        "MAX_WORKING_SLOT_EXCEEDED for {} transactions",
+                        message.batch.num_transactions,
+                    );
                     message.free(self.allocator);
                     continue;
                 }
@@ -213,6 +228,15 @@ impl<'a> Schedule<'a> {
     /// Clear the schedule, returning unexecuted votes as a lazy iterator
     pub fn reset(&mut self) -> impl Iterator<Item = SharableTransactionRegion> + use<'_, 'a> {
         assert_eq!(self.inflight, 0, "inflight transactions not drained");
+        info!(
+            "slot parallelism: check={:?} execute={:?}",
+            &self.check_counts[..self.num_workers],
+            &self.execute_counts[..self.num_workers],
+        );
+        let checked: usize = self.check_counts[..self.num_workers].iter().sum();
+        let executed: usize = self.execute_counts[..self.num_workers].iter().sum();
+        self.check_counts = [0; MAX_WORKERS];
+        self.execute_counts = [0; MAX_WORKERS];
         self.accounts.clear();
         self.cursor = 0;
         self.unresolved.clear();
@@ -220,6 +244,14 @@ impl<'a> Schedule<'a> {
         for t in &mut self.tails {
             *t = NONE;
         }
+        // Unexecuted non-votes are dropped below; votes are requeued, not dropped
+        let dropped = self
+            .tasks
+            .values()
+            .filter(|&task| task.state != TaskState::Done && !Self::is_vote(task))
+            .count();
+        info!("resetting schedule: checked={checked} executed={executed} dropped={dropped}");
+
         let allocator = self.allocator;
         self.tasks.drain(..).filter_map(move |(_, task)| {
             if task.state == TaskState::Done {
@@ -228,22 +260,27 @@ impl<'a> Schedule<'a> {
             if let Some(pk) = task.alt_pubkeys {
                 pk.free(allocator);
             }
-            let static_keys = task.view.static_account_keys();
-            let programs = task
-                .view
-                .instructions_iter()
-                .map(|ix| &static_keys[ix.program_id_index as usize]);
-            if is_simple_vote_transaction_impl(
-                task.view.signatures(),
-                matches!(task.view.version(), TransactionVersion::Legacy),
-                programs,
-            ) {
+            if Self::is_vote(&task) {
                 Some(task.tx_ref)
             } else {
                 task.tx_ref.free(allocator);
                 None
             }
         })
+    }
+
+    /// Whether a task is a simple vote transaction
+    fn is_vote(task: &Task<'_>) -> bool {
+        let static_keys = task.view.static_account_keys();
+        let programs = task
+            .view
+            .instructions_iter()
+            .map(|ix| &static_keys[ix.program_id_index as usize]);
+        is_simple_vote_transaction_impl(
+            task.view.signatures(),
+            matches!(task.view.version(), TransactionVersion::Legacy),
+            programs,
+        )
     }
 
     /// True iff any batch is in flight on a worker
@@ -371,6 +408,11 @@ impl<'a> Schedule<'a> {
         if response.resolve_flags & MASK == resolve_flags::PERFORMED {
             task.alt_pubkeys = Some(response.resolved_pubkeys);
         } else {
+            info!(
+                "dropping transaction: failed CHECK parsing_and_sanitization_flags={:#04x} \
+                 resolve_flags={:#04x}",
+                response.parsing_and_sanitization_flags, response.resolve_flags,
+            );
             task.state = TaskState::Done;
             task.tx_ref.free(self.allocator);
         }
@@ -451,11 +493,17 @@ impl<'a> Schedule<'a> {
         self.tails[worker] = *batch.last().expect("non-empty batch");
         self.ready.drain(..ready_consumed);
         self.inflight += 1;
+        self.execute_counts[worker] += batch.len();
     }
 
     /// Dispatch a CHECK batch for ALT resolution. No-op if the worker's
     /// channel is full
-    fn send_check(&mut self, slot: u64, producer: &mut shaq::Producer<PackToWorkerMessage>) {
+    fn send_check(
+        &mut self,
+        slot: u64,
+        worker: usize,
+        producer: &mut shaq::Producer<PackToWorkerMessage>,
+    ) {
         let n = self.unresolved.len().min(MAX_TRANSACTIONS_PER_MESSAGE);
         if n == 0 {
             return;
@@ -477,6 +525,7 @@ impl<'a> Schedule<'a> {
         }
         self.unresolved.drain(..n);
         self.inflight += 1;
+        self.check_counts[worker] += n;
     }
 }
 
