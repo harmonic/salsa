@@ -550,12 +550,8 @@ pub(crate) mod external {
             message: &PackToWorkerMessage,
         ) -> Result<(), ExternalConsumeWorkerError> {
             // Use the leader's working bank if available, otherwise the best fork
-            let bank = self
-                .shared_leader_state
-                .load()
-                .working_bank()
-                .cloned()
-                .filter(|bank| bank.is_complete())
+            let bank = active_leader_state(&self.shared_leader_state)
+                .and_then(|leader_state| leader_state.working_bank().cloned())
                 .unwrap_or_else(|| self.sharable_banks.working());
 
             if bank.slot() > message.max_working_slot {
