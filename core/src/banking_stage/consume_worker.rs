@@ -464,6 +464,10 @@ pub(crate) mod external {
                 root_bank,
                 working_bank,
             } = self.sharable_banks.load();
+            // Prefer the leader bank over the highest working fork when leader
+            let working_bank = active_leader_state(&self.shared_leader_state)
+                .and_then(|leader_state| leader_state.working_bank().cloned())
+                .unwrap_or(working_bank);
 
             if working_bank.slot() > message.max_working_slot {
                 return self.return_unprocessed_message(
