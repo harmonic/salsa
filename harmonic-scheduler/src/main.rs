@@ -37,8 +37,10 @@ fn main() -> Result<()> {
     }));
 
     let config = config::Config::parse();
-    agave_logger::redirect_stderr_to_file(config.log.clone());
     agave_logger::setup_with_default("info");
+    if let Some(logfile) = &config.log {
+        agave_logger::redirect_stderr(logfile);
+    }
     info!("{config:#?}");
     rdtsc::calibrate();
 
@@ -118,6 +120,16 @@ fn main() -> Result<()> {
         leader_rx,
         fee_info,
     ));
+    if let Some(logfile) = config.log {
+        rt.spawn(async move {
+            let mut sigusr1 =
+                signal(SignalKind::user_defined1()).expect("SIGUSR1 handler should install");
+            while sigusr1.recv().await.is_some() {
+                info!("received SIGUSR1, reopening log file: {}", logfile.display());
+                agave_logger::redirect_stderr(&logfile);
+            }
+        });
+    }
     rt.block_on(async {
         let mut sigint = signal(SignalKind::interrupt()).expect("SIGINT handler should install");
         let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM handler should install");
