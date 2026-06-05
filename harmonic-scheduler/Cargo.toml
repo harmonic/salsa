@@ -24,6 +24,7 @@ jsonrpc-core-client = { workspace = true, features = ["ipc"] }
 log = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+solana-sdk-ids = { workspace = true }
 rustc-hash = "2"
 prost-types = "0.14"
 rdtsc = { workspace = true }

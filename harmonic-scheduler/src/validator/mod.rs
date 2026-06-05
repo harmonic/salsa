@@ -1,6 +1,7 @@
 //! Validator client: IPC session lifecycle and worker thread orchestration
 
-pub mod schedule;
+pub mod block_stage;
+pub mod fallback_stage;
 pub mod scheduler;
 pub mod storage;
 pub mod tpu;
