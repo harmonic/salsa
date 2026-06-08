@@ -1,0 +1,4 @@
+imports_granularity = "Module"
+group_imports = "One"
+format_strings = true
+style_edition = "2024"
