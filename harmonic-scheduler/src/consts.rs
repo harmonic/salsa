@@ -14,12 +14,12 @@ pub const BLOCK_QUEUE_CAPACITY: usize = 128;
 /// Remote TPU -> validator nonvote queue: `Vec<u8>`
 pub const REMOTE_TPU_QUEUE_CAPACITY: usize = 1024;
 /// TPU ingest -> scheduler queue capacity: `SharableTransactionRegion`
-pub const VOTE_QUEUE_CAPACITY: usize = 4 * 1024;
+pub const VOTE_QUEUE_CAPACITY: usize = 400 * 1024;
 /// TPU ingest -> scheduler queue capacity: `SharableTransactionRegion`
 pub const NONVOTE_QUEUE_CAPACITY: usize = 8 * 1024;
 
 /// Vote storage maximum capacity: `SharableTransactionRegion`
-pub const VOTE_STORAGE_CAPACITY: usize = 8 * 1024;
+pub const VOTE_STORAGE_CAPACITY: usize = 400 * 1024;
 /// Nonvote storage maximum capacity: `SharableTransactionRegion`
 pub const NONVOTE_STORAGE_CAPACITY: usize = 64 * 1024;
 
