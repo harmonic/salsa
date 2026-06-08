@@ -450,7 +450,7 @@ impl<'a> Scheduler<'a> {
             }
         }
 
-        self.fallback_stage.reset(&mut self.worker_to_pack);
+        self.fallback_stage.reset(&mut self.worker_to_pack)?;
 
         while self.progress.poll()?.current_slot == self.slot {
             self.allocator.clean_remote_free_lists();
@@ -477,7 +477,7 @@ impl<'a> Scheduler<'a> {
         }
 
         self.vote_store
-            .insert(self.block_stage.reset(&mut self.worker_to_pack));
+            .insert(self.block_stage.reset(&mut self.worker_to_pack)?);
 
         Ok(())
     }

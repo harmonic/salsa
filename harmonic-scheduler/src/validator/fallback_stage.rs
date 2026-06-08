@@ -1,3 +1,4 @@
+use crate::consts::PACK_TO_WORKER_CAPACITY;
 use crate::ipc::shmem::{Free, Slice, allocate_batch};
 use crate::ipc::{pack_to_worker, worker_to_pack};
 use agave_scheduler_bindings::worker_message_types::{
@@ -7,6 +8,7 @@ use agave_scheduler_bindings::{
     PackToWorkerMessage, SharableTransactionRegion, WorkerToPackMessage, pack_message_flags,
     processed_codes,
 };
+use anyhow::{Result, bail};
 use log::{info, trace};
 use rdtsc::Instant;
 use rts_alloc::Allocator;
@@ -74,6 +76,7 @@ pub struct FallbackStage<'a> {
 
 impl<'a> FallbackStage<'a> {
     const CAPACITY: usize = 1024;
+    const RESET_TIMEOUT_MS: u64 = 25;
 
     pub fn new(num_workers: usize, allocator: &'a Allocator) -> Self {
         Self {
@@ -121,9 +124,16 @@ impl<'a> FallbackStage<'a> {
         self.slot_end
     }
 
-    pub fn reset(&mut self, consumers: &mut [shaq::Consumer<WorkerToPackMessage>]) {
-        while self.processing != 0 {
+    pub fn reset(&mut self, consumers: &mut [shaq::Consumer<WorkerToPackMessage>]) -> Result<()> {
+        let timer = Instant::now();
+        while self.processing != 0 && timer.elapsed_ms() < Self::RESET_TIMEOUT_MS {
             self.resolve(consumers);
+        }
+        if self.processing != 0 {
+            bail!(
+                "timeout waiting for worker response: processing={}",
+                self.processing
+            );
         }
         self.metrics.dropped += self.txs.len();
         if log::log_enabled!(log::Level::Trace) && self.metrics.total != 0 {
@@ -137,6 +147,7 @@ impl<'a> FallbackStage<'a> {
         for tx in self.txs.drain(..) {
             tx.free(self.allocator);
         }
+        Ok(())
     }
 
     fn execute(
@@ -149,7 +160,9 @@ impl<'a> FallbackStage<'a> {
             self.metrics.total += 1;
             self.txs.push_back(tx);
         }
-        'batch: while !self.slot_end {
+        'batch: while !self.slot_end
+            && self.processing <= PACK_TO_WORKER_CAPACITY * self.num_workers
+        {
             let Some(tx) = self.txs.pop_front() else {
                 break;
             };
@@ -392,7 +405,7 @@ mod tests {
         assert!(m.dropped > 0, "dropped path exercised ({m})");
         assert!(!fallback.backpressured(), "backlog drained");
 
-        fallback.reset(&mut worker_to_pack);
+        fallback.reset(&mut worker_to_pack).unwrap();
         assert!(fallback.txs.is_empty());
     }
 }

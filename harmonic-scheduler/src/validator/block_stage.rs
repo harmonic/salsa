@@ -1,3 +1,4 @@
+use crate::consts::PACK_TO_WORKER_CAPACITY;
 use crate::ipc::shmem::{Free, Slice, allocate_batch, signature};
 use crate::ipc::{pack_to_worker, worker_to_pack};
 use agave_scheduler_bindings::pack_message_flags::check_flags;
@@ -10,6 +11,7 @@ use agave_scheduler_bindings::{
 };
 use agave_scheduling_utils::handshake::MAX_WORKERS;
 use agave_transaction_view::transaction_view::UnsanitizedTransactionView;
+use anyhow::{Result, bail};
 use indexmap::IndexMap;
 use indexmap::map::Entry;
 use log::{error, info, trace, warn};
@@ -200,6 +202,7 @@ pub struct BlockStage<'a> {
 
 impl<'a> BlockStage<'a> {
     const VOTE_CUS: u32 = 3765;
+    const RESET_TIMEOUT_MS: u64 = 25;
 
     pub fn new(num_workers: usize, allocator: &'a Allocator) -> Self {
         Self {
@@ -269,9 +272,16 @@ impl<'a> BlockStage<'a> {
     pub fn reset(
         &mut self,
         consumers: &mut [shaq::Consumer<WorkerToPackMessage>],
-    ) -> impl Iterator<Item = SharableTransactionRegion> + use<'_, 'a> {
-        while self.processing != 0 {
+    ) -> Result<impl Iterator<Item = SharableTransactionRegion> + use<'_, 'a>> {
+        let timer = Instant::now();
+        while self.processing != 0 && timer.elapsed_ms() < Self::RESET_TIMEOUT_MS {
             self.resolve(consumers);
+        }
+        if self.processing != 0 {
+            bail!(
+                "timeout waiting for worker response: processing={}",
+                self.processing
+            );
         }
         info!("block_metrics: {}", self.block_metrics);
         info!("vote_metrics: {}", self.vote_metrics);
@@ -301,7 +311,7 @@ impl<'a> BlockStage<'a> {
         self.vote_timing.clear();
 
         let allocator = self.allocator;
-        self.tasks.drain(..).filter_map(move |(_, task)| {
+        Ok(self.tasks.drain(..).filter_map(move |(_, task)| {
             if task.state == TaskState::Done {
                 None
             } else if task.is_vote {
@@ -310,7 +320,7 @@ impl<'a> BlockStage<'a> {
                 task.tx.free(allocator);
                 None
             }
-        })
+        }))
     }
 
     /// Insert transactions. Duplicates (by signature) are freed and dropped.
@@ -388,7 +398,9 @@ impl<'a> BlockStage<'a> {
 
         // CHECKs are fast to execute and have no dependencies - submit full batches
         let mut batch: SmallVec<[usize; MAX_TRANSACTIONS_PER_MESSAGE]> = SmallVec::new();
-        'batch: while self.check_idx < self.tasks.len() {
+        'batch: while self.check_idx < self.tasks.len()
+            && self.processing <= PACK_TO_WORKER_CAPACITY * self.num_workers
+        {
             let mut check_idx = self.check_idx;
             while check_idx < self.tasks.len() && batch.len() < MAX_TRANSACTIONS_PER_MESSAGE {
                 if self.tasks[check_idx].state == TaskState::Unresolved {
@@ -429,7 +441,9 @@ impl<'a> BlockStage<'a> {
         {
             self.unresolved_idx += 1;
         }
-        while self.try_idx < self.unresolved_idx {
+        while self.try_idx < self.unresolved_idx
+            && self.processing <= PACK_TO_WORKER_CAPACITY * self.num_workers
+        {
             let task = &mut self.tasks[self.try_idx];
             if task.state != TaskState::Resolved {
                 // already dispatched (Executing) or done; skip
