@@ -24,6 +24,7 @@ AGAVE_BINS_END_USER=(
 AGAVE_BINS_VAL_OP=(
   agave-validator
   agave-watchtower
+  harmonic-scheduler
   solana-gossip
   solana-genesis
   solana-faucet
