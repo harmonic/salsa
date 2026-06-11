@@ -202,7 +202,9 @@ impl<'a> Scheduler<'a> {
 
     /// Run a full leader slot
     fn leader_ready(&mut self) -> Result<()> {
-        if self.progress.last().leader_state != LEADER_READY {
+        if self.progress.last().leader_state != LEADER_READY
+            || self.progress.last().current_slot != self.slot
+        {
             debug!(
                 "skipping leader_ready: leader_state={} slot={} current_slot={}",
                 self.progress.last().leader_state,
@@ -211,20 +213,13 @@ impl<'a> Scheduler<'a> {
             );
             return Ok(());
         }
-        // In case the slot from LEADER_STARTING disagrees with LEADER_READY
-        if self.slot != self.progress.last().current_slot {
-            self.slot = self.progress.last().current_slot;
-            info!("starting leader slot: slot={}", self.slot);
-            self.leader_tx.send(Some(LeaderNotification {
-                slot: self.slot,
-                start_time: SystemTime::now(),
-            }))?;
-        }
-        self.build_tip_bundle()?;
-        if self.wait_for_block()? {
+
+        if self.progress.last().current_slot_progress < BLOCK_STAGE_TIMEOUT_PERCENT
+            && self.wait_for_block()?
+        {
             self.block_stage()?;
             self.vote_stage()?;
-        } else {
+        } else if self.progress.last().current_slot == self.slot {
             self.fallback_stage()?;
         }
 
@@ -351,7 +346,11 @@ impl<'a> Scheduler<'a> {
 
     fn wait_for_block(&mut self) -> Result<bool> {
         debug!("waiting for block: slot={}", self.slot);
-        while self.progress.poll()?.current_slot_progress < BLOCK_STAGE_TIMEOUT_PERCENT {
+        self.build_tip_bundle()?;
+
+        while self.progress.poll()?.current_slot_progress < BLOCK_STAGE_TIMEOUT_PERCENT
+            && self.progress.last().current_slot == self.slot
+        {
             if let Ok((slot, _)) = self.block_rx.peek() {
                 if *slot == self.slot {
                     return Ok(true);
@@ -390,7 +389,9 @@ impl<'a> Scheduler<'a> {
             );
         }
 
-        while self.progress.poll()?.current_slot_progress < VOTE_STAGE_START_PERCENT {
+        while self.progress.poll()?.current_slot_progress < VOTE_STAGE_START_PERCENT
+            && self.progress.last().current_slot == self.slot
+        {
             self.allocator.clean_remote_free_lists();
             self.block_stage.tick(
                 self.slot,
