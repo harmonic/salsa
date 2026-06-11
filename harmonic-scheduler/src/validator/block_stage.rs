@@ -6,7 +6,7 @@ use agave_scheduler_bindings::worker_message_types::{
     self, CheckResponse, ExecutionResponse, not_included_reasons, resolve_flags,
 };
 use agave_scheduler_bindings::{
-    MAX_TRANSACTIONS_PER_MESSAGE, PackToWorkerMessage, SharableTransactionRegion,
+    PackToWorkerMessage, SharableTransactionBatchRegion, SharableTransactionRegion,
     WorkerToPackMessage, pack_message_flags, processed_codes,
 };
 use agave_scheduling_utils::handshake::MAX_WORKERS;
@@ -14,7 +14,7 @@ use agave_transaction_view::transaction_view::UnsanitizedTransactionView;
 use anyhow::{Result, bail};
 use indexmap::IndexMap;
 use indexmap::map::Entry;
-use log::{error, info, trace, warn};
+use log::{error, info, warn};
 use rdtsc::Instant;
 use rts_alloc::Allocator;
 use rustc_hash::{FxBuildHasher, FxHashMap};
@@ -22,18 +22,14 @@ use smallvec::SmallVec;
 use solana_pubkey::Pubkey;
 use solana_sdk_ids::compute_budget;
 
-/// A node containing a transaction to execute.
+/// A batch of transactions executed as an atomic unit.
 struct Task {
-    /// SHM region holding the serialized transaction
-    tx: SharableTransactionRegion,
+    /// SHM region holding the serialized batch
+    batch: SharableTransactionBatchRegion,
     /// Transaction accounts stored as (account, is_write)
     accounts: SmallVec<[(Pubkey, bool); 32]>,
-    /// How many of the ALT-keys in the transaction are writable
-    alt_writable: u16,
-    /// Requested compute-unit limit, parsed at insert
+    /// Sum of the batch's requested compute-unit limits, parsed at insert
     cu: u32,
-    /// Whether or not this is a vote transaction
-    is_vote: bool,
     /// Lifecycle stage of the task
     state: TaskState,
 }
@@ -138,25 +134,6 @@ impl std::fmt::Display for Metrics {
     }
 }
 
-impl std::fmt::Debug for Metrics {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let Self {
-            total,
-            alt,
-            unresolved,
-            checking,
-            resolved,
-            executing,
-            success,
-            fail,
-        } = self;
-        write!(
-            f,
-            "{total:04x}{alt:04x}{unresolved:04x}{checking:04x}{resolved:04x}{executing:04x}{success:04x}{fail:04x}",
-        )
-    }
-}
-
 pub struct BlockStage<'a> {
     allocator: &'a Allocator,
     /// Global task storage in priority order.
@@ -192,12 +169,6 @@ pub struct BlockStage<'a> {
     block_metrics: Metrics,
     /// Metrics for the vote stage transactions
     vote_metrics: Metrics,
-    /// Timer for slot measurements
-    timer: Instant,
-    /// Timing metrics for the full block stage
-    /// Only collected when log level == Trace
-    block_timing: Vec<(u64, Metrics)>,
-    vote_timing: Vec<(u64, Metrics)>,
 }
 
 impl<'a> BlockStage<'a> {
@@ -220,45 +191,21 @@ impl<'a> BlockStage<'a> {
             processing: 0,
             block_metrics: Metrics::default(),
             vote_metrics: Metrics::default(),
-            timer: Instant::now(),
-            block_timing: if log::log_enabled!(log::Level::Trace) {
-                Vec::with_capacity(4096)
-            } else {
-                Vec::new()
-            },
-            vote_timing: if log::log_enabled!(log::Level::Trace) {
-                Vec::with_capacity(4096)
-            } else {
-                Vec::new()
-            },
         }
     }
 
     /// Advance the execution pipeline
-    pub fn tick(
+    pub fn tick<I>(
         &mut self,
         slot: u64,
-        txs: impl IntoIterator<Item = SharableTransactionRegion>,
+        batches: impl IntoIterator<Item = I>,
         producers: &mut [shaq::Producer<PackToWorkerMessage>],
         consumers: &mut [shaq::Consumer<WorkerToPackMessage>],
-    ) {
-        if log::log_enabled!(log::Level::Trace) {
-            if self.tasks.is_empty() {
-                self.timer = Instant::now();
-            } else {
-                let us = self.timer.elapsed_us();
-                if self.block_timing.last().map(|&(_, m)| m) != Some(self.block_metrics) {
-                    self.block_timing.push((us, self.block_metrics));
-                }
-                if self.vote_idx != usize::MAX
-                    && self.vote_timing.last().map(|&(_, m)| m) != Some(self.vote_metrics)
-                {
-                    self.vote_timing.push((us, self.vote_metrics));
-                }
-            }
-        }
-
-        self.insert(txs);
+    ) where
+        I: IntoIterator<Item = SharableTransactionRegion>,
+        I::IntoIter: ExactSizeIterator,
+    {
+        self.insert(batches);
         self.check(slot, producers);
         self.execute(slot, producers);
         self.resolve(consumers);
@@ -290,13 +237,7 @@ impl<'a> BlockStage<'a> {
         if dropped != 0 {
             error!("failed to execute full block: dropped={dropped}");
         }
-        if log::log_enabled!(log::Level::Trace) {
-            let us = self.timer.elapsed_us();
-            self.block_timing.push((us, self.block_metrics));
-            self.vote_timing.push((us, self.vote_metrics));
-        }
-        trace!("block_timing: {:?}", self.block_timing);
-        trace!("vote_timing: {:?}", self.vote_timing);
+        let vote_idx = self.vote_idx;
         self.check_idx = 0;
         self.unresolved_idx = 0;
         self.try_idx = 0;
@@ -307,75 +248,83 @@ impl<'a> BlockStage<'a> {
         self.compute_units = [0; MAX_WORKERS];
         self.block_metrics = Metrics::default();
         self.vote_metrics = Metrics::default();
-        self.block_timing.clear();
-        self.vote_timing.clear();
 
         let allocator = self.allocator;
-        Ok(self.tasks.drain(..).filter_map(move |(_, task)| {
+        Ok(self.tasks.drain(..).enumerate().filter_map(move |(i, (_, task))| {
             if task.state == TaskState::Done {
                 None
-            } else if task.is_vote {
-                Some(task.tx)
+            } else if i >= vote_idx {
+                let tx = task.batch.slice(allocator)[0];
+                task.batch.free(allocator);
+                Some(tx)
             } else {
-                task.tx.free(allocator);
+                task.batch.free_full(allocator);
                 None
             }
         }))
     }
 
-    /// Insert transactions. Duplicates (by signature) are freed and dropped.
-    fn insert(&mut self, txs: impl IntoIterator<Item = SharableTransactionRegion>) {
-        for tx in txs {
-            match self.tasks.entry(*signature(&tx, self.allocator)) {
+    /// Insert batches. Duplicates (by signature) are freed and dropped.
+    fn insert<I>(&mut self, batches: impl IntoIterator<Item = I>)
+    where
+        I: IntoIterator<Item = SharableTransactionRegion>,
+        I::IntoIter: ExactSizeIterator,
+    {
+        let is_vote = self.vote_idx != usize::MAX;
+        'batch: for batch in batches {
+            let batch = allocate_batch(batch, self.allocator);
+            let txs = batch.slice(self.allocator);
+            let len = txs.len();
+            let entry = match self.tasks.entry(*signature(&txs[0], self.allocator)) {
                 Entry::Occupied(_) => {
-                    tx.free(self.allocator);
+                    batch.free_full(self.allocator);
+                    continue;
                 }
-                Entry::Vacant(entry) => {
-                    let view = match UnsanitizedTransactionView::try_new_unsanitized(
-                        tx.slice(self.allocator),
-                    ) {
-                        Ok(view) => view,
-                        Err(e) => {
-                            warn!("failed to parse transaction view: {e:?}");
-                            tx.free(self.allocator);
-                            continue;
-                        }
-                    };
-                    let accounts = static_accounts(&view);
-                    if self.vote_idx != usize::MAX {
-                        self.vote_metrics.total += 1;
-                        self.vote_metrics.resolved += 1;
-                        entry.insert(Task {
-                            tx,
-                            accounts,
-                            alt_writable: 0,
-                            cu: Self::VOTE_CUS,
-                            is_vote: true,
-                            state: TaskState::Resolved,
-                        });
-                    } else {
-                        let alt_writable = view.total_writable_lookup_accounts();
-                        let cu = compute_unit_limit(&view);
-                        self.block_metrics.total += 1;
-                        let state = if view.num_address_table_lookups() != 0 {
-                            self.block_metrics.alt += 1;
-                            self.block_metrics.unresolved += 1;
-                            TaskState::Unresolved
-                        } else {
-                            self.block_metrics.resolved += 1;
-                            TaskState::Resolved
-                        };
-                        entry.insert(Task {
-                            tx,
-                            accounts,
-                            alt_writable,
-                            cu,
-                            is_vote: false,
-                            state,
-                        });
+                Entry::Vacant(entry) => entry,
+            };
+
+            let mut accounts: SmallVec<[(Pubkey, bool); 32]> = SmallVec::new();
+            let mut cu: u32 = 0;
+            let mut alt = 0;
+            for tx in txs {
+                let view = match UnsanitizedTransactionView::try_new_unsanitized(
+                    tx.slice(self.allocator),
+                ) {
+                    Ok(view) => view,
+                    Err(e) => {
+                        error!("dropping malformed batch: txs={len} error={e:?}");
+                        batch.free_full(self.allocator);
+                        continue 'batch;
+                    }
+                };
+                for (key, is_write) in static_accounts(&view) {
+                    merge_account(&mut accounts, key, is_write);
+                }
+                if is_vote {
+                    cu = cu.saturating_add(Self::VOTE_CUS);
+                } else {
+                    cu = cu.saturating_add(compute_unit_limit(&view));
+                    if view.num_address_table_lookups() != 0 {
+                        alt += 1;
                     }
                 }
             }
+
+            let metrics = if is_vote {
+                &mut self.vote_metrics
+            } else {
+                &mut self.block_metrics
+            };
+            metrics.total += len;
+            metrics.alt += alt;
+            let state = if alt == 0 {
+                metrics.resolved += len;
+                TaskState::Resolved
+            } else {
+                metrics.unresolved += len;
+                TaskState::Unresolved
+            };
+            entry.insert(Task { batch, accounts, cu, state });
         }
     }
 
@@ -396,40 +345,33 @@ impl<'a> BlockStage<'a> {
         order[..self.num_workers].sort_unstable_by_key(|&w| self.compute_units[w]);
         let mut workers = order[..self.num_workers].iter().cycle();
 
-        // CHECKs are fast to execute and have no dependencies - submit full batches
-        let mut batch: SmallVec<[usize; MAX_TRANSACTIONS_PER_MESSAGE]> = SmallVec::new();
+        // CHECK the whole batch in one message; transactions without ALTs resolve trivially
         'batch: while self.check_idx < self.tasks.len()
             && self.processing <= PACK_TO_WORKER_CAPACITY * self.num_workers
         {
-            let mut check_idx = self.check_idx;
-            while check_idx < self.tasks.len() && batch.len() < MAX_TRANSACTIONS_PER_MESSAGE {
-                if self.tasks[check_idx].state == TaskState::Unresolved {
-                    batch.push(check_idx);
-                }
-                check_idx += 1;
+            if self.tasks[self.check_idx].state != TaskState::Unresolved {
+                self.check_idx += 1;
+                continue;
             }
-            if batch.is_empty() {
-                break;
-            }
+            let task = &self.tasks[self.check_idx];
+            let len = task.batch.num_transactions as usize;
             let mut message = PackToWorkerMessage {
                 flags: pack_message_flags::CHECK | check_flags::LOAD_ADDRESS_LOOKUP_TABLES,
                 max_working_slot: slot,
-                batch: allocate_batch(batch.iter().map(|&i| self.tasks[i].tx), self.allocator),
+                batch: task.batch,
             };
             for &worker in workers.by_ref().take(self.num_workers) {
                 if let Err(returned) = pack_to_worker::send(&mut producers[worker], message) {
                     message = returned;
                 } else {
                     self.processing += 1;
-                    self.block_metrics.unresolved -= batch.len();
-                    self.block_metrics.checking += batch.len();
-                    self.check_idx = check_idx;
-                    batch.clear();
+                    self.block_metrics.unresolved -= len;
+                    self.block_metrics.checking += len;
+                    self.check_idx += 1;
                     continue 'batch;
                 }
             }
             // All workers are full
-            message.batch.free(self.allocator);
             break;
         }
     }
@@ -454,25 +396,26 @@ impl<'a> BlockStage<'a> {
                     .min_by_key(|&w| self.compute_units[w])
                     .expect("num_workers is nonzero");
                 let message = PackToWorkerMessage {
-                    flags: pack_message_flags::EXECUTE,
+                    flags: pack_message_flags::EXECUTE
+                        | pack_message_flags::execution_flags::ALL_OR_NOTHING,
                     max_working_slot: slot,
-                    batch: allocate_batch(std::iter::once(task.tx), self.allocator),
+                    batch: task.batch,
                 };
-                if let Err(message) = pack_to_worker::send(&mut producers[worker], message) {
+                if pack_to_worker::send(&mut producers[worker], message).is_err() {
                     // Lowest CU worker is full - resume here next tick
-                    message.batch.free(self.allocator);
                     break;
                 }
+                let len = task.batch.num_transactions as usize;
                 task.state = TaskState::Executing;
                 self.running.lock(task);
                 self.compute_units[worker] += task.cu as u64;
                 self.processing += 1;
-                if task.is_vote {
-                    self.vote_metrics.resolved -= 1;
-                    self.vote_metrics.executing += 1;
+                if self.try_idx >= self.vote_idx {
+                    self.vote_metrics.resolved -= len;
+                    self.vote_metrics.executing += len;
                 } else {
-                    self.block_metrics.resolved -= 1;
-                    self.block_metrics.executing += 1;
+                    self.block_metrics.resolved -= len;
+                    self.block_metrics.executing += len;
                 }
             }
             self.try_idx += 1;
@@ -487,7 +430,6 @@ impl<'a> BlockStage<'a> {
                 self.processing -= 1;
                 if message.processed_code == processed_codes::MAX_WORKING_SLOT_EXCEEDED {
                     // Slot ended - leave tx cleanup for reset()
-                    message.free(self.allocator);
                     continue;
                 }
                 assert_eq!(
@@ -505,7 +447,6 @@ impl<'a> BlockStage<'a> {
                     worker_message_types::CHECK_RESPONSE => self.resolve_check(&message),
                     other => unreachable!("unexpected response tag: {other}"),
                 }
-                message.free(self.allocator);
             }
         }
         if execute_received {
@@ -523,31 +464,33 @@ impl<'a> BlockStage<'a> {
     }
 
     fn resolve_execute(&mut self, worker: usize, message: &WorkerToPackMessage) {
-        let txs = message.batch.slice(self.allocator);
         let results: &[ExecutionResponse] = message.responses.slice(self.allocator);
-        for (tx, result) in txs.iter().zip(results) {
-            // Bank torn down at the leader boundary; leave tx cleanup for reset()
-            if result.not_included_reason == not_included_reasons::BANK_NOT_AVAILABLE {
-                continue;
-            }
-            let task = self
-                .tasks
-                .get_mut(signature(tx, self.allocator))
-                .expect("transaction should exist");
-            task.state = TaskState::Done;
-            self.running.unlock(task);
-            let metrics = if task.is_vote {
-                &mut self.vote_metrics
-            } else {
-                &mut self.block_metrics
-            };
+        // Bank torn down at the leader boundary; leave tx cleanup for reset()
+        if results.first().map(|r| r.not_included_reason)
+            == Some(not_included_reasons::BANK_NOT_AVAILABLE)
+        {
+            message.responses.free_full(self.allocator);
+            return;
+        }
+        let txs = message.batch.slice(self.allocator);
+        let (idx, _, task) = self
+            .tasks
+            .get_full_mut(signature(&txs[0], self.allocator))
+            .expect("transaction should exist");
+        task.state = TaskState::Done;
+        self.running.unlock(task);
+        self.compute_units[worker] -= task.cu as u64;
+        let metrics = if idx >= self.vote_idx {
+            &mut self.vote_metrics
+        } else {
+            &mut self.block_metrics
+        };
+        for result in results {
             metrics.executing -= 1;
-            self.compute_units[worker] -= task.cu as u64;
             match result.not_included_reason {
                 not_included_reasons::NONE => metrics.success += 1,
-                // with our design we should never hit these
-                not_included_reasons::ALL_OR_NOTHING_BATCH_FAILURE
-                | not_included_reasons::ACCOUNT_IN_USE => {
+                // with our design we should never hit this
+                not_included_reasons::ACCOUNT_IN_USE => {
                     error!(
                         "unexpected transaction failure: not_included_reason={}",
                         result.not_included_reason
@@ -557,8 +500,8 @@ impl<'a> BlockStage<'a> {
                 // expected transaction failures
                 _ => metrics.fail += 1,
             }
-            tx.free(self.allocator);
         }
+        message.free_full(self.allocator);
     }
 
     fn resolve_check(&mut self, message: &WorkerToPackMessage) {
@@ -566,35 +509,56 @@ impl<'a> BlockStage<'a> {
 
         let txs = message.batch.slice(self.allocator);
         let results: &[CheckResponse] = message.responses.slice(self.allocator);
+        let len = txs.len();
+        let task = self
+            .tasks
+            .get_mut(signature(&txs[0], self.allocator))
+            .expect("transaction should exist");
+        self.block_metrics.checking -= len;
+
+        // Any failed transaction dooms the whole batch
+        if let Some(response) = results
+            .iter()
+            .find(|r| r.resolve_flags & MASK != resolve_flags::PERFORMED)
+        {
+            warn!(
+                "unexpected CHECK failure: parsing_and_sanitization_flags={:#04x} resolve_flags={:#04x}",
+                response.parsing_and_sanitization_flags, response.resolve_flags,
+            );
+            task.state = TaskState::Done;
+            message.free_full(self.allocator);
+            self.block_metrics.fail += len;
+            return;
+        }
+
+        // Merge each transaction's resolved ALT pubkeys into the batch union
         for (tx, result) in txs.iter().zip(results) {
-            let task = self
-                .tasks
-                .get_mut(signature(tx, self.allocator))
-                .expect("transaction should exist");
-            if result.resolve_flags & MASK == resolve_flags::PERFORMED {
-                task.state = TaskState::Resolved;
-                task.accounts.extend(
-                    result
-                        .resolved_pubkeys
-                        .slice(self.allocator)
-                        .iter()
-                        .enumerate()
-                        .map(|(i, key)| (*key, i < task.alt_writable as usize)),
-                );
-                result.resolved_pubkeys.free(self.allocator);
-                self.block_metrics.resolved += 1;
-            } else {
-                warn!(
-                    "unexpected CHECK failure: parsing_and_sanitization_flags={:#04x} resolve_flags={:#04x}",
-                    result.parsing_and_sanitization_flags, result.resolve_flags,
-                );
-                task.state = TaskState::Done;
-                task.tx.free(self.allocator);
-                self.block_metrics.fail += 1;
+            if result.resolved_pubkeys.num_pubkeys == 0 {
+                continue;
             }
-            self.block_metrics.checking -= 1;
+            let view = UnsanitizedTransactionView::try_new_unsanitized(tx.slice(self.allocator))
+                .expect("transaction parsed at insert");
+            let writable = view.total_writable_lookup_accounts() as usize;
+            for (i, key) in result.resolved_pubkeys.slice(self.allocator).iter().enumerate() {
+                merge_account(&mut task.accounts, *key, i < writable);
+            }
+        }
+        task.state = TaskState::Resolved;
+        // Keep the batch region for EXECUTE; free only the responses
+        message.responses.free_full(self.allocator);
+        self.block_metrics.resolved += len;
+    }
+}
+
+/// Merge an account into a batch's union, OR-ing writability on duplicates
+fn merge_account(accounts: &mut SmallVec<[(Pubkey, bool); 32]>, key: Pubkey, is_write: bool) {
+    for (account, write) in accounts.iter_mut() {
+        if *account == key {
+            *write |= is_write;
+            return;
         }
     }
+    accounts.push((key, is_write));
 }
 
 /// Parse the requested compute-unit limit
@@ -714,7 +678,7 @@ mod tests {
 
         block_stage.insert(
             txs.iter()
-                .map(|tx| allocate(serialize(tx).unwrap(), &allocator)),
+                .map(|tx| std::iter::once(allocate(serialize(tx).unwrap(), &allocator))),
         );
 
         let mut processed = Vec::new();
