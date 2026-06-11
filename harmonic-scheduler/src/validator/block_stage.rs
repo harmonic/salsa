@@ -629,8 +629,7 @@ mod tests {
         (producer, consumer)
     }
 
-    fn random_transaction(rng: &mut impl Rng, accounts: &[Pubkey]) -> Transaction {
-        let num_accounts = rng.random_range(1..=37);
+    fn random_transaction(rng: &mut impl Rng, accounts: &[Pubkey], num_accounts: usize) -> Transaction {
         let num_writable = rng.random_range(1..=num_accounts);
         let metas = rand::seq::index::sample(rng, accounts.len(), num_accounts)
             .into_iter()
@@ -673,7 +672,10 @@ mod tests {
         let mut workers = worker_rx.into_iter().zip(worker_tx).collect::<Vec<_>>();
 
         let txs: Vec<Transaction> = (0..NUM_TXS)
-            .map(|_| random_transaction(&mut rng, &accounts))
+            .map(|_| {
+                let num_accounts = rng.random_range(1..=37);
+                random_transaction(&mut rng, &accounts, num_accounts)
+            })
             .collect();
 
         block_stage.insert(
@@ -750,6 +752,150 @@ mod tests {
                     assert!(
                         pos >= prior,
                         "reader tx {i} on {key} dispatched at {pos} before prior writer at {prior}",
+                    );
+                    let any = last_any.entry(key).or_default();
+                    *any = (*any).max(pos);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fifo_random_bundles() {
+        const NUM_WORKERS: usize = 8;
+        const NUM_ACCOUNTS: usize = 4096;
+        const NUM_BUNDLES: usize = 1024;
+        const BUNDLE_SIZE: usize = 5;
+        // Static account keys cap at 38 per transaction (PACKET_DATA_SIZE / 32),
+        // so the 64 distinct accounts are spread across the bundle's transactions
+        const BUNDLE_ACCOUNTS: usize = 64;
+
+        rdtsc::calibrate();
+        let mut rng = ChaChaRng::seed_from_u64(0x0123456789ABCDEF);
+        let allocator =
+            unsafe { Allocator::create(&tempfile().unwrap(), TEST_ALLOC_SIZE, 1, SLAB_SIZE) }
+                .unwrap();
+        let mut block_stage = BlockStage::new(NUM_WORKERS, &allocator);
+        let accounts: Vec<Pubkey> = (0..NUM_ACCOUNTS).map(|_| Pubkey::new_unique()).collect();
+        let (mut pack_to_worker, worker_rx): (Vec<shaq::Producer<_>>, Vec<shaq::Consumer<_>>) = (0
+            ..NUM_WORKERS)
+            .map(|_| shaq_channel::<PackToWorkerMessage>(PACK_TO_WORKER_CAPACITY))
+            .unzip();
+        let (worker_tx, mut worker_to_pack): (Vec<shaq::Producer<_>>, Vec<shaq::Consumer<_>>) = (0
+            ..NUM_WORKERS)
+            .map(|_| shaq_channel::<WorkerToPackMessage>(WORKER_TO_PACK_CAPACITY))
+            .unzip();
+        let mut workers = worker_rx.into_iter().zip(worker_tx).collect::<Vec<_>>();
+
+        let bundles: Vec<Vec<Transaction>> = (0..NUM_BUNDLES)
+            .map(|_| {
+                let chosen: Vec<Pubkey> =
+                    rand::seq::index::sample(&mut rng, NUM_ACCOUNTS, BUNDLE_ACCOUNTS)
+                        .into_iter()
+                        .map(|i| accounts[i])
+                        .collect();
+                chosen
+                    .chunks(BUNDLE_ACCOUNTS.div_ceil(BUNDLE_SIZE))
+                    .map(|chunk| random_transaction(&mut rng, chunk, chunk.len()))
+                    .collect()
+            })
+            .collect();
+
+        block_stage.insert(bundles.iter().map(|txs| {
+            txs.iter()
+                .map(|tx| allocate(serialize(tx).unwrap(), &allocator))
+        }));
+
+        let mut processed = Vec::new();
+        block_stage.execute(1, &mut pack_to_worker);
+        while block_stage.processing != 0 {
+            workers.shuffle(&mut rng);
+            for (rx, tx) in workers.iter_mut() {
+                rx.sync();
+                tx.sync();
+                if let Some(message) = rx.try_read() {
+                    assert_eq!(message.batch.num_transactions as usize, BUNDLE_SIZE);
+                    for tx in message.batch.slice(&allocator) {
+                        processed.push(*signature(tx, &allocator));
+                    }
+                    let n = message.batch.num_transactions;
+                    let bytes = u32::try_from(n as usize * size_of::<ExecutionResponse>()).unwrap();
+                    let ptr = allocator.allocate(bytes).unwrap();
+                    let slots = ptr.as_ptr().cast::<ExecutionResponse>();
+                    for i in 0..n {
+                        unsafe {
+                            slots.add(i as usize).write(ExecutionResponse {
+                                execution_slot: 0,
+                                not_included_reason: not_included_reasons::NONE,
+                                cost_units: 0,
+                                fee_payer_balance: 0,
+                            });
+                        }
+                    }
+                    let offset = unsafe { allocator.offset(ptr) };
+                    tx.try_write(WorkerToPackMessage {
+                        batch: message.batch,
+                        processed_code: processed_codes::PROCESSED,
+                        responses: TransactionResponseRegion {
+                            tag: EXECUTION_RESPONSE,
+                            num_transaction_responses: n,
+                            transaction_responses_offset: offset,
+                        },
+                    })
+                    .unwrap();
+                }
+                rx.finalize();
+                tx.commit();
+            }
+            block_stage.resolve(&mut worker_to_pack);
+            block_stage.execute(1, &mut pack_to_worker);
+        }
+
+        let processed: HashMap<[u8; 64], usize> = processed
+            .into_iter()
+            .enumerate()
+            .map(|(pos, sig)| (sig, pos))
+            .collect();
+        assert_eq!(
+            processed.len(),
+            NUM_BUNDLES * BUNDLE_SIZE,
+            "every inserted tx must dispatch"
+        );
+
+        let mut last_writer: HashMap<Pubkey, usize> = HashMap::new();
+        let mut last_any: HashMap<Pubkey, usize> = HashMap::new();
+        for (i, txs) in bundles.iter().enumerate() {
+            // The whole bundle dispatches contiguously in one message
+            let pos = processed[txs[0].signatures[0].as_array()];
+            for (j, tx) in txs.iter().enumerate() {
+                assert_eq!(
+                    processed[tx.signatures[0].as_array()],
+                    pos + j,
+                    "bundle {i} tx {j} dispatched out of order",
+                );
+            }
+
+            // Conflicts resolve on the bundle's account union with OR-ed writability
+            let mut union: HashMap<Pubkey, bool> = HashMap::new();
+            for tx in txs {
+                for (j, &key) in tx.message.account_keys.iter().enumerate() {
+                    *union.entry(key).or_default() |= tx.message.is_maybe_writable(j, None);
+                }
+            }
+            for (&key, &is_write) in &union {
+                if is_write {
+                    let prior = *last_any.get(&key).unwrap_or(&0);
+                    assert!(
+                        pos >= prior,
+                        "writer bundle {i} on {key} dispatched at {pos} before prior at {prior}",
+                    );
+                    last_writer.insert(key, pos);
+                    last_any.insert(key, pos);
+                } else {
+                    let prior = *last_writer.get(&key).unwrap_or(&0);
+                    assert!(
+                        pos >= prior,
+                        "reader bundle {i} on {key} dispatched at {pos} before prior writer at {prior}",
                     );
                     let any = last_any.entry(key).or_default();
                     *any = (*any).max(pos);
