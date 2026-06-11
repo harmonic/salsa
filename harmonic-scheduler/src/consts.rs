@@ -10,13 +10,13 @@ use solana_packet::PACKET_DATA_SIZE;
 pub const BATCH_SIZE: usize = MAX_TRANSACTIONS_PER_MESSAGE;
 
 /// Block engine -> scheduler block queue: `(usize, Vec<Vec<u8>>)`
-pub const BLOCK_QUEUE_CAPACITY: usize = 128;
+pub const BLOCK_QUEUE_CAPACITY: usize = 128 * 1024;
 /// Remote TPU -> validator nonvote queue: `Vec<u8>`
-pub const REMOTE_TPU_QUEUE_CAPACITY: usize = 1024;
+pub const REMOTE_TPU_QUEUE_CAPACITY: usize = 64 * 1024;
 /// TPU ingest -> scheduler queue capacity: `SharableTransactionRegion`
 pub const VOTE_QUEUE_CAPACITY: usize = 400 * 1024;
 /// TPU ingest -> scheduler queue capacity: `SharableTransactionRegion`
-pub const NONVOTE_QUEUE_CAPACITY: usize = 8 * 1024;
+pub const NONVOTE_QUEUE_CAPACITY: usize = 64 * 1024;
 
 /// Vote storage maximum capacity: `SharableTransactionRegion`
 pub const VOTE_STORAGE_CAPACITY: usize = 400 * 1024;
