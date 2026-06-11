@@ -33,6 +33,8 @@ use tokio::sync::watch;
 const BLOCK_STAGE_TIMEOUT_PERCENT: u8 = 75;
 /// Slot % at which block_stage yields to vote_stage (tail reserved for vote ingestion)
 const VOTE_STAGE_START_PERCENT: u8 = 94;
+/// Stop checking stored transactions within this many slots of our leader window
+const PRE_LEADER_HOLD_SLOTS: u64 = 2;
 
 /// Drives the leader-slot state machine and worker IPC
 pub struct Scheduler<'a> {
@@ -127,6 +129,13 @@ impl<'a> Scheduler<'a> {
     fn not_leader(&mut self) -> Result<()> {
         self.vote_store.reset_cursor();
         self.nonvote_store.reset_cursor();
+        let hold = self
+            .progress
+            .last()
+            .next_leader_slot
+            .saturating_sub(self.slot)
+            <= PRE_LEADER_HOLD_SLOTS;
+
         while self.progress.poll()?.leader_state == NOT_LEADER
             && self.progress.last().current_slot == self.slot
         {
@@ -155,11 +164,11 @@ impl<'a> Scheduler<'a> {
                 .insert(drain(&mut self.nonvote_rx, BATCH_SIZE));
 
             // Time-multiplex CHECK pipeline so resolve() never sees mixed responses
-            let active_store = if self.vote_store.inflight() != 0 {
+            let active_store = if !hold && self.vote_store.inflight() != 0 {
                 &mut self.vote_store
             } else if self.nonvote_store.inflight() != 0 {
                 &mut self.nonvote_store
-            } else if self.vote_store.needs_check() {
+            } else if !hold && self.vote_store.needs_check() {
                 &mut self.vote_store
             } else {
                 &mut self.nonvote_store
