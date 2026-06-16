@@ -42,6 +42,17 @@ pub struct LeaderNotification {
     pub start_time: SystemTime,
 }
 
+impl std::fmt::Display for LeaderNotification {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "slot={} start_time={}",
+            self.slot,
+            humantime::format_rfc3339(self.start_time)
+        )
+    }
+}
+
 /// Block engine client loop
 pub async fn run(
     config: BlockEngineConfig,
@@ -193,15 +204,16 @@ async fn submit_leader_notifications(
 ) -> Result<(), tonic::Status> {
     while leader_rx.changed().await.is_ok() {
         let notification = *leader_rx.borrow_and_update();
-        if let Some(LeaderNotification { slot, start_time }) = notification {
-            info!("submitting leader notification: slot={slot}");
+        if let Some(notification) = notification {
+            info!("submitting leader notification: {notification}");
+            let timer = rdtsc::Instant::now();
             client
                 .submit_leader_window_info(SubmitLeaderWindowInfoRequest {
-                    start_timestamp: Some(prost_types::Timestamp::from(start_time)),
-                    slot,
+                    start_timestamp: Some(prost_types::Timestamp::from(notification.start_time)),
+                    slot: notification.slot,
                 })
                 .await?;
-            info!("submitted leader notification: slot={slot}");
+            info!("submitted leader notification: rtt={}us", timer.elapsed_us());
         }
     }
     Ok(())
