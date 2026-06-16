@@ -1,7 +1,8 @@
 //! Transaction scheduler: drives the leader-slot state machine
 
+use super::block_stage::BlockStage;
 use super::drain;
-use super::schedule::Schedule;
+use super::fallback_stage::FallbackStage;
 use super::storage::Storage;
 use crate::block_engine::LeaderNotification;
 use crate::consts::{BATCH_SIZE, NONVOTE_STORAGE_CAPACITY, VOTE_STORAGE_CAPACITY};
@@ -43,7 +44,8 @@ pub struct Scheduler<'a> {
     nonvote_rx: rtrb::Consumer<SharableTransactionRegion>,
     block_rx: &'a mut rtrb::Consumer<(u64, Vec<Bytes>)>,
     leader_tx: &'a watch::Sender<Option<LeaderNotification>>,
-    schedule: Schedule<'a>,
+    block_stage: BlockStage<'a>,
+    fallback_stage: FallbackStage<'a>,
     vote_store: Storage<'a>,
     nonvote_store: Storage<'a>,
     slot: u64,
@@ -82,7 +84,8 @@ impl<'a> Scheduler<'a> {
             nonvote_rx,
             block_rx,
             leader_tx,
-            schedule: Schedule::new(num_workers, allocator),
+            block_stage: BlockStage::new(num_workers, allocator),
+            fallback_stage: FallbackStage::new(num_workers, allocator),
             vote_store: Storage::new(VOTE_STORAGE_CAPACITY, allocator),
             nonvote_store: Storage::new(NONVOTE_STORAGE_CAPACITY, allocator),
             slot: 0,
@@ -224,15 +227,6 @@ impl<'a> Scheduler<'a> {
         } else {
             self.fallback_stage()?;
         }
-
-        // Drain in-flight responses so the worker is no longer reading SHM
-        // we're about to free in reset()
-        while self.schedule.active() {
-            self.allocator.clean_remote_free_lists();
-            self.progress.poll()?;
-            self.schedule.handle_response(&mut self.worker_to_pack);
-        }
-        self.vote_store.insert(self.schedule.reset());
 
         // Log our next leader slot if we are no longer going to be leader
         if self.progress.last().leader_state == NOT_LEADER {
@@ -386,22 +380,26 @@ impl<'a> Scheduler<'a> {
                 self.pending_tip_bundle.len(),
                 self.slot
             );
-            self.schedule.insert(
+            self.block_stage.tick(
+                self.slot,
                 self.pending_tip_bundle
                     .drain(..)
                     .map(|tx| allocate(&tx, allocator)),
+                &mut self.pack_to_worker,
+                &mut self.worker_to_pack,
             );
         }
 
         while self.progress.poll()?.current_slot_progress < VOTE_STAGE_START_PERCENT {
             self.allocator.clean_remote_free_lists();
-            while let Ok((_, txs)) = self.block_rx.pop() {
-                self.schedule
-                    .insert(txs.into_iter().map(|tx| allocate(&tx, allocator)));
-            }
-            self.schedule
-                .send_batch(self.slot, &mut self.pack_to_worker);
-            self.schedule.handle_response(&mut self.worker_to_pack);
+            self.block_stage.tick(
+                self.slot,
+                drain(self.block_rx, usize::MAX)
+                    .flat_map(|(_, txs)| txs)
+                    .map(|tx| allocate(&tx, allocator)),
+                &mut self.pack_to_worker,
+                &mut self.worker_to_pack,
+            );
         }
         Ok(())
     }
@@ -411,38 +409,76 @@ impl<'a> Scheduler<'a> {
             "no block received, building fallback block: slot={}",
             self.slot
         );
-        while self.progress.poll()?.current_slot == self.slot {
+        while self.progress.poll()?.current_slot == self.slot && !self.fallback_stage.done() {
             self.allocator.clean_remote_free_lists();
             if !self.vote_store.is_empty() {
-                self.schedule.insert(self.vote_store.drain());
+                self.fallback_stage.tick(
+                    self.slot,
+                    self.vote_store
+                        .drain(self.pack_to_worker.len() * BATCH_SIZE),
+                    &mut self.pack_to_worker,
+                    &mut self.worker_to_pack,
+                );
             } else if !self.vote_rx.is_empty() {
-                self.schedule.insert(drain(&mut self.vote_rx, BATCH_SIZE));
-            } else if !self.nonvote_store.is_empty() {
-                self.schedule.insert(self.nonvote_store.drain());
+                self.fallback_stage.tick(
+                    self.slot,
+                    drain(&mut self.vote_rx, usize::MAX),
+                    &mut self.pack_to_worker,
+                    &mut self.worker_to_pack,
+                );
+            } else if !self.nonvote_store.is_empty() && !self.fallback_stage.backpressured() {
+                self.fallback_stage.tick(
+                    self.slot,
+                    self.nonvote_store.drain(BATCH_SIZE),
+                    &mut self.pack_to_worker,
+                    &mut self.worker_to_pack,
+                );
+            } else if !self.nonvote_rx.is_empty() && !self.fallback_stage.backpressured() {
+                self.fallback_stage.tick(
+                    self.slot,
+                    drain(&mut self.nonvote_rx, BATCH_SIZE),
+                    &mut self.pack_to_worker,
+                    &mut self.worker_to_pack,
+                );
             } else {
-                self.schedule
-                    .insert(drain(&mut self.nonvote_rx, BATCH_SIZE));
+                self.fallback_stage.tick(
+                    self.slot,
+                    std::iter::empty(),
+                    &mut self.pack_to_worker,
+                    &mut self.worker_to_pack,
+                );
             }
-            self.schedule
-                .send_batch(self.slot, &mut self.pack_to_worker);
-            self.schedule.handle_response(&mut self.worker_to_pack);
+        }
+
+        self.fallback_stage.reset(&mut self.worker_to_pack);
+
+        while self.progress.poll()?.current_slot == self.slot {
+            self.allocator.clean_remote_free_lists();
+            self.vote_store.insert(drain(&mut self.vote_rx, BATCH_SIZE));
+            self.nonvote_store
+                .insert(drain(&mut self.nonvote_rx, BATCH_SIZE));
         }
         Ok(())
     }
 
     fn vote_stage(&mut self) -> Result<()> {
         info!("entering vote stage: slot={}", self.slot);
+        self.block_stage.vote_stage();
         while self.progress.poll()?.current_slot == self.slot {
             self.allocator.clean_remote_free_lists();
-            if !self.vote_store.is_empty() {
-                self.schedule.insert(self.vote_store.drain());
-            } else {
-                self.schedule.insert(drain(&mut self.vote_rx, BATCH_SIZE));
-            }
-            self.schedule
-                .send_batch(self.slot, &mut self.pack_to_worker);
-            self.schedule.handle_response(&mut self.worker_to_pack);
+            self.block_stage.tick(
+                self.slot,
+                self.vote_store
+                    .drain(BATCH_SIZE)
+                    .chain(drain(&mut self.vote_rx, BATCH_SIZE)),
+                &mut self.pack_to_worker,
+                &mut self.worker_to_pack,
+            );
         }
+
+        self.vote_store
+            .insert(self.block_stage.reset(&mut self.worker_to_pack));
+
         Ok(())
     }
 }

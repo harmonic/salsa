@@ -176,10 +176,13 @@ impl<'a> Storage<'a> {
         tx.free(self.allocator);
     }
 
-    /// Drain a transaction batch from storage (oldest entries first, FIFO)
+    /// Drain up to `max` transactions from storage (oldest entries first, FIFO)
     /// Cursor is rewound to preserve the `[0..cursor)` checked-or-inflight invariant
-    pub fn drain(&mut self) -> impl Iterator<Item = SharableTransactionRegion> + use<'_> {
-        let end = self.transactions.len().min(BATCH_SIZE);
+    pub fn drain(
+        &mut self,
+        max: usize,
+    ) -> impl Iterator<Item = SharableTransactionRegion> + use<'_> {
+        let end = self.transactions.len().min(max);
         self.cursor = self.cursor.saturating_sub(end);
         self.transactions.drain(..end).map(|(_, tx)| tx)
     }

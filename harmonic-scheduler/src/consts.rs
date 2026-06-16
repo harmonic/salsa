@@ -14,21 +14,21 @@ pub const BLOCK_QUEUE_CAPACITY: usize = 128;
 /// Remote TPU -> validator nonvote queue: `Vec<u8>`
 pub const REMOTE_TPU_QUEUE_CAPACITY: usize = 1024;
 /// TPU ingest -> scheduler queue capacity: `SharableTransactionRegion`
-pub const VOTE_QUEUE_CAPACITY: usize = 2 * 1024;
+pub const VOTE_QUEUE_CAPACITY: usize = 4 * 1024;
 /// TPU ingest -> scheduler queue capacity: `SharableTransactionRegion`
 pub const NONVOTE_QUEUE_CAPACITY: usize = 8 * 1024;
 
 /// Vote storage maximum capacity: `SharableTransactionRegion`
-pub const VOTE_STORAGE_CAPACITY: usize = 4 * 1024;
+pub const VOTE_STORAGE_CAPACITY: usize = 8 * 1024;
 /// Nonvote storage maximum capacity: `SharableTransactionRegion`
 pub const NONVOTE_STORAGE_CAPACITY: usize = 64 * 1024;
 
 /// `tpu_to_pack` queue: `TpuToPackMessage` (`SharableTransactionRegion`)
 pub const TPU_TO_PACK_CAPACITY: usize = 1024;
 /// `pack_to_worker` queue: `PackToWorkerMessage` (`SharableTransactionBatchRegion`)
-pub const PACK_TO_WORKER_CAPACITY: usize = 8;
+pub const PACK_TO_WORKER_CAPACITY: usize = 16;
 /// `worker_to_pack` queue: `WorkerToPackMessage` (`SharableTransactionBatchRegion` + `TransactionResponseRegion`)
-pub const WORKER_TO_PACK_CAPACITY: usize = 16;
+pub const WORKER_TO_PACK_CAPACITY: usize = 32;
 /// `progress_tracker` queue: 64 ticks per slot == one slot of messages
 pub const PROGRESS_TRACKER_CAPACITY: usize = 64;
 
