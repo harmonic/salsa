@@ -22,13 +22,17 @@ use bytes::Bytes;
 use log::{debug, info, warn};
 use rts_alloc::Allocator;
 use smallvec::SmallVec;
+use solana_clock::DEFAULT_MS_PER_SLOT;
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
 use std::sync::Arc;
+use std::time::Duration;
 use std::time::SystemTime;
 use tip_manager::{BlockBuilderFeeInfo, TipAccountData, TipManager};
 use tokio::sync::watch;
 
+/// Target wall-clock duration of a slot
+const SLOT_DURATION: Duration = Duration::from_millis(DEFAULT_MS_PER_SLOT);
 /// Slot % after which we abandon the block engine and fall back to nonvotes
 const BLOCK_STAGE_TIMEOUT_PERCENT: u8 = 75;
 /// Slot % at which block_stage yields to vote_stage (tail reserved for vote ingestion)
@@ -193,9 +197,11 @@ impl<'a> Scheduler<'a> {
     /// Start leader slot
     fn leader_starting(&mut self) -> Result<()> {
         info!("starting leader slot: slot={}", self.slot);
+        // Back-date the start to account for how far into the slot we already are
+        let elapsed = SLOT_DURATION * self.progress.last().current_slot_progress as u32 / 100;
         self.leader_tx.send(Some(LeaderNotification {
             slot: self.slot,
-            start_time: SystemTime::now(),
+            start_time: SystemTime::now() - elapsed,
         }))?;
         // Wait for the bank for our slot, but bail if the window shifts under us
         while self.progress.poll()?.leader_state == LEADER_STARTING
