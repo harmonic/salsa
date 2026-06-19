@@ -9,6 +9,49 @@ the data is the validator's own transaction ingress.
 The feature is **opt-in**. A validator that updates to this build but does not
 pass `--backrun-listen-addr` behaves exactly as before.
 
+## Updating an existing 4.0.3 validator
+
+This patch changes **only the `harmonic-scheduler` crate**. The agave validator
+binary, `scheduler-bindings`, the IPC surface, and on-disk state are all
+unchanged, so updating is just swapping the scheduler binary:
+
+1. Check out this branch and rebuild only the scheduler:
+   ```bash
+   cargo build --release -p harmonic-scheduler
+   ```
+2. Replace your running `harmonic-scheduler` binary with the new
+   `target/release/harmonic-scheduler`.
+3. Restart the scheduler, adding `--backrun-listen-addr` (and optionally
+   `--backrun-x-token`). Every other flag stays the same.
+
+No change to the agave validator process, no re-sync, no gossip/config changes.
+Rolling back is the same step in reverse (old binary, drop the flag).
+
+## Connection model
+
+By gRPC role the **validator is the server** and your **strategy box is the
+client** — even though the strategy is the one "listening" for transactions.
+This follows the `BackrunService` contract: the side that *has* the
+transactions streams them out (`SubscribeBackruns`, server→client) and *accepts*
+bundles (`SendBundle`, client→server). The validator has the transactions, so it
+hosts the server; the strategy dials in.
+
+The connection is **persistent**:
+
+- The server is started once at process startup and listens for the whole
+  lifetime of the scheduler, independent of its IPC reconnect loop.
+- The client opens a single long-lived `SubscribeBackruns` stream that is
+  **never closed based on leader state**. While not leader it carries only 5s
+  keepalive pings; while leader it carries transactions. So the stream stays
+  warm across slots — there is no per-slot connect/handshake latency.
+- Streaming is gated on leadership *at the data level only* (the `is_leader`
+  flag), not at the connection level.
+
+The strategy should treat the stream as long-lived and **reconnect on drop**
+(e.g. validator restart). The `searcher-client-example` client exits when the
+stream ends; for an always-on searcher, wrap its connect + subscribe loop in a
+retry.
+
 ## How it works
 
 ```

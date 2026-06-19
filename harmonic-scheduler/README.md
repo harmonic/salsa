@@ -49,3 +49,5 @@ Running `agave-validator set-identity` is propagated automatically.
 | `--commission-bps` | 0 | Validator tip commission (bps) |
 | `--strategy` | `fba` | Block builder strategy: `fifo`, `fba`, `mrev` |
 | `--log` / `-o` | — | Log file (SIGUSR1 to rotate) |
+| `--backrun-listen-addr` | — | Serve the co-located backrun stream (see [BACKRUN.md](BACKRUN.md)) |
+| `--backrun-x-token` | — | Optional shared secret required from backrun clients |
