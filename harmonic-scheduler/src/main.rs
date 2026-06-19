@@ -3,6 +3,7 @@
 
 mod admin_rpc;
 mod auth;
+mod backrun;
 mod block_engine;
 mod config;
 mod consts;
@@ -20,11 +21,12 @@ use consts::{BLOCK_QUEUE_CAPACITY, REMOTE_TPU_QUEUE_CAPACITY};
 use log::info;
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
+use bytes::Bytes;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tip_manager::{TipManager, TipManagerConfig};
 use tokio::signal::unix::{SignalKind, signal};
-use tokio::sync::{oneshot, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 
 const NUM_ASYNC_WORKER_THREADS: usize = 4;
 
@@ -71,12 +73,22 @@ fn main() -> Result<()> {
     // main -> admin rpc
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
+    // backrun stream <-> scheduler bridge
+    // scheduler/tpu -> searcher (incoming txs while leader)
+    let (backrun_out_tx, _) = tokio::sync::broadcast::channel::<Bytes>(backrun::TX_OUT_CAPACITY);
+    // searcher -> scheduler (backrun bundles)
+    let (backrun_bundle_tx, backrun_bundle_rx) = mpsc::unbounded_channel::<Vec<Bytes>>();
+    // set by the scheduler, read by the tpu thread to gate streaming on leadership
+    let backrun_is_leader = Arc::new(AtomicBool::new(false));
+
     std::thread::Builder::new()
         .name("hmonic-sched".into())
         .spawn({
             let fee_info = fee_info.clone();
             let identity_rx = identity_rx.clone();
             let tip_manager_rx = tip_manager_rx.clone();
+            let backrun_out_tx = backrun_out_tx.clone();
+            let backrun_is_leader = backrun_is_leader.clone();
             move || {
                 validator::run(
                     config.validator,
@@ -87,6 +99,9 @@ fn main() -> Result<()> {
                     packet_rx,
                     block_rx,
                     leader_tx,
+                    backrun_out_tx,
+                    backrun_is_leader,
+                    backrun_bundle_rx,
                 )
             }
         })?;
@@ -120,6 +135,16 @@ fn main() -> Result<()> {
         leader_rx,
         fee_info,
     ));
+    if let Some(addr) = config.backrun.backrun_listen_addr {
+        let bridge = backrun::BackrunBridge::new(
+            backrun_out_tx,
+            backrun_bundle_tx,
+            config.backrun.backrun_x_token,
+        );
+        rt.spawn(backrun::serve(addr, bridge));
+    } else {
+        info!("backrun stream disabled (set --backrun-listen-addr to enable)");
+    }
     if let Some(logfile) = config.log {
         rt.spawn(async move {
             let mut sigusr1 =

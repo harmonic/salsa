@@ -4,6 +4,7 @@ use agave_scheduling_utils::handshake::MAX_WORKERS;
 use clap::Parser;
 use clap::builder::RangedU64ValueParser;
 use solana_pubkey::Pubkey;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use validator_protos::block_engine::SchedulingStrategy;
 
@@ -33,6 +34,27 @@ pub struct Config {
 
     #[command(flatten)]
     pub tip: TipConfig,
+
+    #[command(flatten)]
+    pub backrun: BackrunConfig,
+}
+
+/// Co-located backrun stream. Disabled unless `--backrun-listen-addr` is set.
+///
+/// When enabled, the scheduler serves a `BackrunService` gRPC endpoint. While
+/// this validator is the leader it streams its own incoming (non-vote)
+/// transactions to the connected strategy server, and includes any backrun
+/// bundles the strategy sends back in the block it is building.
+#[derive(Debug, Parser)]
+pub struct BackrunConfig {
+    /// Address to serve the backrun gRPC stream on (e.g. 0.0.0.0:50051).
+    /// Leave unset to disable the feature entirely.
+    #[arg(long, value_name = "ADDR")]
+    pub backrun_listen_addr: Option<SocketAddr>,
+
+    /// If set, require this value in the `x-token` metadata of backrun clients.
+    #[arg(long, value_name = "TOKEN")]
+    pub backrun_x_token: Option<String>,
 }
 
 /// Block engine connection

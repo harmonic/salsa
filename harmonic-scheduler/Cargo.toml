@@ -26,6 +26,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 solana-sdk-ids = { workspace = true }
 rustc-hash = "2"
+prost = "0.14"
 prost-types = "0.14"
 rdtsc = { workspace = true }
 rts-alloc = { workspace = true }
@@ -42,8 +43,16 @@ solana-signer = { workspace = true }
 solana-transaction = { workspace = true }
 tip-manager = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "time", "sync", "signal"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
 thiserror = { workspace = true }
 tonic = { version = "0.14", features = ["transport", "tls-ring", "tls-native-roots", "tls-webpki-roots"] }
+tonic-prost = "0.14"
+
+[build-dependencies]
+tonic-prost-build = "0.14"
+
+[target.'cfg(not(windows))'.build-dependencies]
+protobuf-src = "1.1"
 
 [dev-dependencies]
 bincode = { workspace = true }

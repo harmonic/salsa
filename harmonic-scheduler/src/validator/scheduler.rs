@@ -12,8 +12,8 @@ use crate::state::scheduler_exit;
 use agave_scheduler_bindings::pack_message_flags::read_flags;
 use agave_scheduler_bindings::worker_message_types::{READ_RESPONSE, ReadResponse, read_results};
 use agave_scheduler_bindings::{
-    LEADER_READY, LEADER_STARTING, NOT_LEADER, PackToWorkerMessage, SharableTransactionRegion,
-    WorkerToPackMessage, pack_message_flags, processed_codes,
+    LEADER_READY, LEADER_STARTING, MAX_ALLOCATION_SIZE, NOT_LEADER, PackToWorkerMessage,
+    SharableTransactionRegion, WorkerToPackMessage, pack_message_flags, processed_codes,
 };
 use agave_scheduling_utils::handshake::client::ClientWorkerSession;
 use anyhow::{Result, bail};
@@ -26,10 +26,11 @@ use solana_clock::DEFAULT_MS_PER_SLOT;
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use std::time::SystemTime;
 use tip_manager::{BlockBuilderFeeInfo, TipAccountData, TipManager};
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 
 /// Target wall-clock duration of a slot
 const SLOT_DURATION: Duration = Duration::from_millis(DEFAULT_MS_PER_SLOT);
@@ -60,6 +61,10 @@ pub struct Scheduler<'a> {
     tip_manager_rx: watch::Receiver<Arc<TipManager>>,
     fee_info: Arc<ArcSwap<BlockBuilderFeeInfo>>,
     dropped_timer: rdtsc::Instant,
+    /// Set true while this validator is the leader; read by the TPU thread.
+    is_leader: Arc<AtomicBool>,
+    /// Backrun bundles received from the strategy server.
+    backrun_rx: &'a mut mpsc::UnboundedReceiver<Vec<Bytes>>,
 }
 
 impl<'a> Scheduler<'a> {
@@ -75,6 +80,8 @@ impl<'a> Scheduler<'a> {
         identity_rx: watch::Receiver<Arc<Keypair>>,
         tip_manager_rx: watch::Receiver<Arc<TipManager>>,
         fee_info: Arc<ArcSwap<BlockBuilderFeeInfo>>,
+        is_leader: Arc<AtomicBool>,
+        backrun_rx: &'a mut mpsc::UnboundedReceiver<Vec<Bytes>>,
     ) -> Self {
         let num_workers = workers.len();
         let (pack_to_worker, worker_to_pack): (Vec<_>, Vec<_>) = workers
@@ -100,6 +107,8 @@ impl<'a> Scheduler<'a> {
             tip_manager_rx,
             fee_info,
             dropped_timer: rdtsc::Instant::now(),
+            is_leader,
+            backrun_rx,
         }
     }
 
@@ -131,6 +140,7 @@ impl<'a> Scheduler<'a> {
 
     /// Run a not leader slot
     fn not_leader(&mut self) -> Result<()> {
+        self.is_leader.store(false, Ordering::Relaxed);
         self.vote_store.reset_cursor();
         self.nonvote_store.reset_cursor();
         let hold = self
@@ -196,6 +206,7 @@ impl<'a> Scheduler<'a> {
 
     /// Start leader slot
     fn leader_starting(&mut self) -> Result<()> {
+        self.is_leader.store(true, Ordering::Relaxed);
         info!("starting leader slot: slot={}", self.slot);
         // Back-date the start to account for how far into the slot we already are
         let elapsed = SLOT_DURATION * self.progress.last().current_slot_progress as u32 / 100;
@@ -384,6 +395,23 @@ impl<'a> Scheduler<'a> {
         Ok(false)
     }
 
+    /// Drain backrun bundles from the strategy server and allocate them as SHM
+    /// regions ready to schedule into the current block.
+    fn drain_backruns(&mut self) -> Vec<SharableTransactionRegion> {
+        let allocator = self.allocator;
+        let mut out = Vec::new();
+        while let Ok(bundle) = self.backrun_rx.try_recv() {
+            for data in bundle {
+                if data.is_empty() || data.len() > MAX_ALLOCATION_SIZE as usize {
+                    warn!("dropping invalid backrun tx: {} bytes", data.len());
+                    continue;
+                }
+                out.push(allocate(&data, allocator));
+            }
+        }
+        out
+    }
+
     fn block_stage(&mut self) -> Result<()> {
         info!("block received, entering block stage: slot={}", self.slot);
 
@@ -408,6 +436,20 @@ impl<'a> Scheduler<'a> {
             && self.progress.last().current_slot == self.slot
         {
             self.allocator.clean_remote_free_lists();
+            let backruns = self.drain_backruns();
+            if !backruns.is_empty() {
+                info!(
+                    "including {} backrun tx(s) in block: slot={}",
+                    backruns.len(),
+                    self.slot
+                );
+                self.block_stage.tick(
+                    self.slot,
+                    backruns,
+                    &mut self.pack_to_worker,
+                    &mut self.worker_to_pack,
+                );
+            }
             self.block_stage.tick(
                 self.slot,
                 drain(self.block_rx, usize::MAX)
@@ -427,6 +469,20 @@ impl<'a> Scheduler<'a> {
         );
         while self.progress.poll()?.current_slot == self.slot && !self.fallback_stage.done() {
             self.allocator.clean_remote_free_lists();
+            let backruns = self.drain_backruns();
+            if !backruns.is_empty() {
+                info!(
+                    "including {} backrun tx(s) in fallback block: slot={}",
+                    backruns.len(),
+                    self.slot
+                );
+                self.fallback_stage.tick(
+                    self.slot,
+                    backruns,
+                    &mut self.pack_to_worker,
+                    &mut self.worker_to_pack,
+                );
+            }
             if !self.vote_store.is_empty() {
                 self.fallback_stage.tick(
                     self.slot,

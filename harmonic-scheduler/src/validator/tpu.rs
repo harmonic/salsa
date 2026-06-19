@@ -1,7 +1,7 @@
 //! TPU packet ingestion into the scheduler vote/nonvote queues
 
 use crate::consts::BATCH_SIZE;
-use crate::ipc::shmem::{Free, allocate};
+use crate::ipc::shmem::{Free, Slice, allocate};
 use crate::ipc::tpu_to_pack;
 use crate::ipc::tpu_to_pack::Packet;
 use crate::state::tpu_exit;
@@ -11,6 +11,9 @@ use log::info;
 use rdtsc::Instant;
 use rtrb::chunks::ChunkError;
 use rts_alloc::Allocator;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::sync::broadcast;
 
 pub fn run(
     mut tpu_to_pack: shaq::Consumer<TpuToPackMessage>,
@@ -18,6 +21,8 @@ pub fn run(
     packet_rx: &mut rtrb::Consumer<Bytes>,
     mut vote_tx: rtrb::Producer<SharableTransactionRegion>,
     mut nonvote_tx: rtrb::Producer<SharableTransactionRegion>,
+    backrun_tx: broadcast::Sender<Bytes>,
+    is_leader: Arc<AtomicBool>,
 ) {
     let mut stats = Stats::new();
     while !tpu_exit() {
@@ -34,6 +39,11 @@ pub fn run(
                     }
                 }
                 Packet::Nonvote(tx) => {
+                    // While leader, mirror the validator's own incoming non-vote
+                    // transactions to the connected strategy server.
+                    if is_leader.load(Ordering::Relaxed) && backrun_tx.receiver_count() != 0 {
+                        let _ = backrun_tx.send(Bytes::copy_from_slice(tx.slice(&allocator)));
+                    }
                     if nonvote_tx.push(tx).is_err() {
                         tx.free(&allocator);
                         stats.dropped_nonvotes += 1;
@@ -58,7 +68,15 @@ pub fn run(
             read.commit_all();
             continue;
         };
-        write.fill_from_iter(read.into_iter().map(|data| allocate(&data, &allocator)));
+        let stream = is_leader.load(Ordering::Relaxed) && backrun_tx.receiver_count() != 0;
+        write.fill_from_iter(read.into_iter().map(|data| {
+            // Relayer-forwarded transactions are still the validator's own
+            // ingress; mirror them to the strategy while leader.
+            if stream {
+                let _ = backrun_tx.send(data.clone());
+            }
+            allocate(&data, &allocator)
+        }));
     }
 }
 
