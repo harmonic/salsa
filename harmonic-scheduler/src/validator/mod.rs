@@ -21,6 +21,7 @@ use std::thread;
 use std::time::Duration;
 use tip_manager::{BlockBuilderFeeInfo, TipManager};
 use tokio::sync::watch;
+use validator_protos::block_engine::SchedulingStrategy;
 
 /// Backoff between ipc connection attempts
 const IPC_CONNECTION_BACKOFF: Duration = Duration::from_secs(5);
@@ -48,6 +49,7 @@ pub fn run(
     mut packet_rx: rtrb::Consumer<Bytes>,
     mut block_rx: rtrb::Consumer<(u64, Vec<Bytes>)>,
     leader_tx: watch::Sender<Option<LeaderNotification>>,
+    strategy: SchedulingStrategy,
 ) {
     loop {
         for _ in drain(&mut block_rx, usize::MAX) {}
@@ -117,6 +119,7 @@ pub fn run(
                         identity_rx.clone(),
                         tip_manager_rx.clone(),
                         fee_info.clone(),
+                        strategy,
                     )
                     .run();
                 })

@@ -23,13 +23,14 @@ use log::{debug, info, warn};
 use rts_alloc::Allocator;
 use smallvec::SmallVec;
 use solana_clock::DEFAULT_MS_PER_SLOT;
+use solana_instruction::Instruction;
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
 use std::sync::Arc;
-use std::time::Duration;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 use tip_manager::{BlockBuilderFeeInfo, TipAccountData, TipManager};
 use tokio::sync::watch;
+use validator_protos::block_engine::SchedulingStrategy;
 
 /// Target wall-clock duration of a slot
 const SLOT_DURATION: Duration = Duration::from_millis(DEFAULT_MS_PER_SLOT);
@@ -39,6 +40,17 @@ const BLOCK_STAGE_TIMEOUT_PERCENT: u8 = 75;
 const VOTE_STAGE_START_PERCENT: u8 = 94;
 /// Stop checking stored transactions within this many slots of our leader window
 const PRE_LEADER_HOLD_SLOTS: u64 = 2;
+
+/// Memo instruction publishing `strategy` as a three-letter code
+fn strategy_memo(strategy: SchedulingStrategy) -> Instruction {
+    let memo = match strategy {
+        SchedulingStrategy::Mrev => "MRV",
+        SchedulingStrategy::Fba => "FBA",
+        SchedulingStrategy::Fifo => "FIF",
+        SchedulingStrategy::Unspecified => "???",
+    };
+    spl_memo_interface::instruction::build_memo(&spl_memo_interface::v3::id(), memo.as_bytes(), &[])
+}
 
 /// Drives the leader-slot state machine and worker IPC
 pub struct Scheduler<'a> {
@@ -59,6 +71,7 @@ pub struct Scheduler<'a> {
     identity_rx: watch::Receiver<Arc<Keypair>>,
     tip_manager_rx: watch::Receiver<Arc<TipManager>>,
     fee_info: Arc<ArcSwap<BlockBuilderFeeInfo>>,
+    strategy: SchedulingStrategy,
     dropped_timer: rdtsc::Instant,
 }
 
@@ -75,6 +88,7 @@ impl<'a> Scheduler<'a> {
         identity_rx: watch::Receiver<Arc<Keypair>>,
         tip_manager_rx: watch::Receiver<Arc<TipManager>>,
         fee_info: Arc<ArcSwap<BlockBuilderFeeInfo>>,
+        strategy: SchedulingStrategy,
     ) -> Self {
         let num_workers = workers.len();
         let (pack_to_worker, worker_to_pack): (Vec<_>, Vec<_>) = workers
@@ -99,6 +113,7 @@ impl<'a> Scheduler<'a> {
             identity_rx,
             tip_manager_rx,
             fee_info,
+            strategy,
             dropped_timer: rdtsc::Instant::now(),
         }
     }
@@ -348,10 +363,12 @@ impl<'a> Scheduler<'a> {
             &identity,
             &fee_info,
             blockhash,
+            strategy_memo(self.strategy),
         ) {
             Ok(txs) => self.pending_tip_bundle.extend(txs),
             Err(e) => warn!("get_tip_programs_crank_bundle failed: {e}"),
         }
+
         debug!(
             "built tip bundle with {} transactions",
             self.pending_tip_bundle.len()

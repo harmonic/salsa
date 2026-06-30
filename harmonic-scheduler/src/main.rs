@@ -87,6 +87,7 @@ fn main() -> Result<()> {
                     packet_rx,
                     block_rx,
                     leader_tx,
+                    config.block_engine.strategy,
                 )
             }
         })?;

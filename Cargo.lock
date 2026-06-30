@@ -3368,6 +3368,7 @@ dependencies = [
  "solana-signature",
  "solana-signer",
  "solana-transaction",
+ "spl-memo-interface",
  "tempfile",
  "thiserror 2.0.18",
  "tip-manager",

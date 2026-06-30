@@ -395,6 +395,7 @@ impl TipManager {
         block_builder: &Pubkey,
         block_builder_commission: u64,
         tip_payment_config: &JitoTipPaymentConfig,
+        memo_ix: Instruction,
     ) -> Result<Vec<u8>> {
         self.build_change_tip_receiver_and_block_builder_tx(
             &tip_payment_config.tip_receiver(),
@@ -404,6 +405,7 @@ impl TipManager {
             &tip_payment_config.block_builder(),
             block_builder,
             block_builder_commission,
+            memo_ix,
         )
     }
 
@@ -416,6 +418,7 @@ impl TipManager {
         old_block_builder: &Pubkey,
         block_builder: &Pubkey,
         block_builder_commission: u64,
+        memo_ix: Instruction,
     ) -> Result<Vec<u8>> {
         let change_tip_ix = Instruction {
             program_id: self.tip_payment_program_info.program_id,
@@ -457,7 +460,7 @@ impl TipManager {
             ],
         };
         let tx = Transaction::new_signed_with_payer(
-            &[change_tip_ix, change_block_builder_ix],
+            &[change_tip_ix, change_block_builder_ix, memo_ix],
             Some(&keypair.pubkey()),
             &[keypair],
             blockhash,
@@ -494,6 +497,7 @@ impl TipManager {
         keypair: &Keypair,
         block_builder_fee_info: &BlockBuilderFeeInfo,
         blockhash: Hash,
+        memo_ix: Instruction,
     ) -> Result<SmallVec<[Vec<u8>; 2]>> {
         let mut transactions = SmallVec::with_capacity(2);
         if self.should_init_tip_distribution_account(account_state) {
@@ -521,6 +525,7 @@ impl TipManager {
                 &block_builder_fee_info.block_builder,
                 block_builder_fee_info.block_builder_commission,
                 &tip_payment_config,
+                memo_ix,
             )?);
         }
 
