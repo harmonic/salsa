@@ -396,9 +396,11 @@ impl<'a> Scheduler<'a> {
             );
             self.block_stage.tick(
                 self.slot,
-                self.pending_tip_bundle
-                    .drain(..)
-                    .map(|tx| allocate(&tx, allocator)),
+                std::iter::once(
+                    self.pending_tip_bundle
+                        .drain(..)
+                        .map(|tx| allocate(&tx, allocator)),
+                ),
                 &mut self.pack_to_worker,
                 &mut self.worker_to_pack,
             );
@@ -411,8 +413,7 @@ impl<'a> Scheduler<'a> {
             self.block_stage.tick(
                 self.slot,
                 drain(self.block_rx, usize::MAX)
-                    .flat_map(|(_, txs)| txs)
-                    .map(|tx| allocate(&tx, allocator)),
+                    .map(|(_, txs)| txs.into_iter().map(|tx| allocate(&tx, allocator))),
                 &mut self.pack_to_worker,
                 &mut self.worker_to_pack,
             );
@@ -486,7 +487,8 @@ impl<'a> Scheduler<'a> {
                 self.slot,
                 self.vote_store
                     .drain(BATCH_SIZE)
-                    .chain(drain(&mut self.vote_rx, BATCH_SIZE)),
+                    .chain(drain(&mut self.vote_rx, BATCH_SIZE))
+                    .map(std::iter::once),
                 &mut self.pack_to_worker,
                 &mut self.worker_to_pack,
             );
