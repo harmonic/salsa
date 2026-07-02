@@ -17,7 +17,7 @@ agave-scheduler-bindings = { workspace = true, features = ["agave-unstable-api"]
 agave-transaction-view = { workspace = true }
 agave-scheduling-utils = { workspace = true, features = ["agave-unstable-api"] }
 clap = { version = "4", features = ["derive"] }
-validator-protos = { git = "https://github.com/harmonic/validator-protos.git", tag = "v0.1.0", version = "0.1.0", features = ["client"] }
+validator-protos = { git = "https://github.com/harmonic/validator-protos.git", tag = "v0.1.1", version = "0.1.1", features = ["client"] }
 indexmap = { workspace = true }
 jsonrpc-core = { workspace = true }
 jsonrpc-core-client = { workspace = true, features = ["ipc"] }

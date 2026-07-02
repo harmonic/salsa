@@ -10,6 +10,7 @@ mod ipc;
 mod remote_tpu;
 mod state;
 mod validator;
+mod version;
 
 use admin_rpc::TpuConfig;
 use anyhow::Result;

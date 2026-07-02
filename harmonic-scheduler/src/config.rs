@@ -10,7 +10,7 @@ use validator_protos::block_engine::SchedulingStrategy;
 #[derive(Debug, Parser)]
 #[command(
     name = "harmonic-scheduler",
-    version,
+    version = crate::version::BUILD_VERSION,
     about = "External scheduler for the Agave validator"
 )]
 pub struct Config {
