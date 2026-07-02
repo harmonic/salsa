@@ -23,8 +23,8 @@ use tonic::transport::Channel;
 use validator_protos::block_engine::block_engine_validator_client::BlockEngineValidatorClient;
 use validator_protos::block_engine::{
     BlockBuilderFeeInfoRequest, SetStrategyRequest, SubmitLeaderWindowInfoRequest,
-    SubscribeBundlesRequest, SubscribeBundlesResponse, SubscribePacketsRequest,
-    SubscribePacketsResponse,
+    SubscribeBlocksRequest, SubscribeBundlesRequest, SubscribeBundlesResponse,
+    SubscribePacketsRequest, SubscribePacketsResponse,
 };
 
 /// How often to refresh the block-builder fee info from the block engine
@@ -152,7 +152,10 @@ async fn connect(
     info!("subscribing to block stream");
     let block_stream = session
         .client
-        .subscribe_blocks(SubscribeBundlesRequest {})
+        .subscribe_blocks(SubscribeBlocksRequest {
+            version: crate::version::VERSION.to_string(),
+            commit_hash: crate::version::COMMIT.to_string(),
+        })
         .await?
         .into_inner();
     Ok((session, bundles_stream, packets_stream, block_stream))
