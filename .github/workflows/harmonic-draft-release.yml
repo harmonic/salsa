@@ -1,0 +1,188 @@
+name: Harmonic Draft Release
+
+# Creates a draft GitHub release for the harmonic fork.
+#
+# Run from a harmonic release branch (vX.Y-harmonic). Parses the upstream
+# version from Cargo.toml, builds via scripts/cargo-install-all.sh, checks the
+# tree is clean and that agave-validator and harmonic-scheduler report that
+# version, then drafts a release tagged vX.Y.Z-harmonic at the branch HEAD (the
+# tag is created only when the draft is published).
+#
+# A pre-release version (-alpha, -beta, ...) is marked pre-release and described
+# as testnet-only; otherwise it is described as stable (Testnet and Mainnet Beta).
+
+on:
+  workflow_dispatch:
+    inputs:
+      scheduler_changelog:
+        description: "harmonic-scheduler changelog (markdown, e.g. '- Minor bugfixes')"
+        required: false
+        type: string
+        default: ""
+      harmonic_patch:
+        description: "Harmonic patch number for a release between upstream versions (e.g. '1' -> vX.Y.Z-harmonic.1). Leave blank for a normal release."
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      branch: ${{ steps.version.outputs.branch }}
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - name: Check out the selected branch
+        uses: actions/checkout@v4
+
+      - name: Determine version and validate branch
+        id: version
+        env:
+          HARMONIC_PATCH: ${{ inputs.harmonic_patch }}
+        run: |
+          set -euo pipefail
+
+          branch="${GITHUB_REF_NAME}"
+
+          # Parse the upstream version from [workspace.package] in Cargo.toml.
+          version="$(grep -m1 '^version = ' Cargo.toml | sed -E 's/^version = "(.*)"$/\1/')"
+          if [ -z "${version}" ]; then
+            echo "::error::Could not parse version from Cargo.toml"
+            exit 1
+          fi
+
+          # Derive the expected release branch (vX.Y-harmonic) from the version
+          # and confirm the workflow is running on it.
+          minor="$(echo "${version}" | cut -d. -f1-2)"
+          expected_branch="v${minor}-harmonic"
+          if [ "${branch}" != "${expected_branch}" ]; then
+            echo "::error::Run this workflow from '${expected_branch}' (got '${branch}') to match Cargo.toml version ${version}"
+            exit 1
+          fi
+
+          # A pre-release suffix (-alpha, -beta, ...) means testnet-only.
+          if echo "${version}" | grep -q '-'; then
+            prerelease=true
+          else
+            prerelease=false
+          fi
+
+          # Optionally append a harmonic patch number for a release between
+          # upstream versions, e.g. v4.2.0-harmonic.1.
+          tag="v${version}-harmonic"
+          if [ -n "${HARMONIC_PATCH}" ]; then
+            if ! echo "${HARMONIC_PATCH}" | grep -qE '^[1-9][0-9]*$'; then
+              echo "::error::harmonic_patch must be a positive integer (got '${HARMONIC_PATCH}')"
+              exit 1
+            fi
+            tag="${tag}.${HARMONIC_PATCH}"
+          fi
+
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "branch=${branch}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "prerelease=${prerelease}" >> "${GITHUB_OUTPUT}"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev libclang-dev
+
+      - name: Build validator binaries (debug)
+        run: |
+          ./scripts/cargo-install-all.sh \
+            --debug \
+            --no-build-dev-bins \
+            --no-build-deprecated-bins \
+            --no-build-dcou-bins \
+            --no-build-end-user-bins \
+            --no-build-platform-tools \
+            --no-spl-token \
+            "${RUNNER_TEMP}/install"
+
+      - name: Ensure the working tree is clean
+        run: |
+          set -euo pipefail
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::Build left the working tree dirty:"
+            git status --porcelain
+            exit 1
+          fi
+
+      - name: Verify binary versions match the release tag
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          bin="${RUNNER_TEMP}/install/bin"
+
+          # agave-validator prints: "agave-validator X.Y.Z (src:...; feat:...)"
+          validator_ver="$("${bin}/agave-validator" --version | awk '{print $2}')"
+          # harmonic-scheduler prints: "harmonic-scheduler X.Y.Z+<git-hash>"
+          scheduler_ver="$("${bin}/harmonic-scheduler" --version | awk '{print $2}' | cut -d+ -f1)"
+
+          echo "Cargo.toml:         ${VERSION}"
+          echo "agave-validator:    ${validator_ver}"
+          echo "harmonic-scheduler: ${scheduler_ver}"
+
+          if [ "${validator_ver}" != "${VERSION}" ] || [ "${scheduler_ver}" != "${VERSION}" ]; then
+            echo "::error::Binary versions do not agree with the release version ${VERSION}"
+            exit 1
+          fi
+
+  draft-release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.build.outputs.tag }}
+          BRANCH: ${{ needs.build.outputs.branch }}
+          VERSION: ${{ needs.build.outputs.version }}
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
+          SCHEDULER_CHANGELOG: ${{ inputs.scheduler_changelog }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "::error::Release ${TAG} already exists"
+            exit 1
+          fi
+
+          if [ "${PRERELEASE}" = "true" ]; then
+            net="Testnet"
+            header="This is a Testnet only release."
+          else
+            net="Mainnet"
+            header="This is a stable release suitable for Testnet and Mainnet Beta."
+          fi
+
+          cat > notes.md <<EOF
+          ${header}
+
+          ## What's Changed
+
+          ### Agave Validator (\`agave-validator\`)
+
+          - Upstream Changes: https://github.com/anza-xyz/agave/releases/tag/v${VERSION}
+
+          ### Harmonic Scheduler (\`harmonic-scheduler\`)
+
+          ${SCHEDULER_CHANGELOG}
+          EOF
+
+          args=(--draft --target "${BRANCH}" --title "${net} ${TAG}" --notes-file notes.md)
+          if [ "${PRERELEASE}" = "true" ]; then
+            args+=(--prerelease)
+          else
+            args+=(--latest)
+          fi
+
+          gh release create "${TAG}" "${args[@]}"
