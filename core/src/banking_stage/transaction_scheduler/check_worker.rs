@@ -912,7 +912,7 @@ pub(crate) mod external {
             }
 
             fn allocate_batch(&self, transactions: &[Vec<u8>]) -> SharedBatch {
-                type Batch<'a> = TransactionPtrBatch<'a>;
+                type Batch = TransactionPtrBatch;
                 assert!(transactions.len() <= MAX_TRANSACTIONS_PER_MESSAGE);
 
                 let batch_ptr = self

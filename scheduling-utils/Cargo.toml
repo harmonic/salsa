@@ -35,6 +35,7 @@ wincode = { workspace = true, optional = true }
 
 [dev-dependencies]
 solana-pubkey = { workspace = true, features = ["rand"] }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

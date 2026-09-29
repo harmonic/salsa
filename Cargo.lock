@@ -340,6 +340,7 @@ dependencies = [
  "solana-runtime-transaction",
  "solana-transaction",
  "solana-transaction-error",
+ "tempfile",
  "wincode",
 ]
 
