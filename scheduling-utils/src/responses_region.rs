@@ -89,6 +89,10 @@ pub struct CheckResponsesPtr {
     count: usize,
 }
 
+// SAFETY: The pointee lives in the shared mapping, which is valid on every
+// thread, and any allocator handle can free it.
+unsafe impl Send for CheckResponsesPtr {}
+
 impl CheckResponsesPtr {
     /// Constructions a [`CheckResponsesPtr`] from raw parts.
     ///
@@ -154,6 +158,10 @@ pub struct ExecutionResponsesPtr {
     ptr: NonNull<ExecutionResponse>,
     count: usize,
 }
+
+// SAFETY: The pointee lives in the shared mapping, which is valid on every
+// thread, and any allocator handle can free it.
+unsafe impl Send for ExecutionResponsesPtr {}
 
 impl ExecutionResponsesPtr {
     /// Constructions a [`ExecutionResponsesPtr`] from raw parts.
