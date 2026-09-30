@@ -8,7 +8,7 @@ use agave_scheduling_utils::handshake::MAX_WORKERS;
 /// Standardized queue pull/dispatch size per tick
 pub const BATCH_SIZE: usize = MAX_TRANSACTIONS_PER_MESSAGE;
 
-/// Block engine -> scheduler block queue: `(usize, Vec<Vec<u8>>)`
+/// Block engine -> scheduler block queue: one entry per block engine message
 pub const BLOCK_QUEUE_CAPACITY: usize = 128 * 1024;
 /// Remote TPU -> validator nonvote queue: `Vec<u8>`
 pub const REMOTE_TPU_QUEUE_CAPACITY: usize = 64 * 1024;

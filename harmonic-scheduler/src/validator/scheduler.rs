@@ -4,7 +4,7 @@ use super::block_stage::BlockStage;
 use super::drain;
 use super::fallback_stage::FallbackStage;
 use super::storage::Storage;
-use crate::block_engine::LeaderNotification;
+use crate::block_engine::{LeaderNotification, split_bundles};
 use crate::consts::{BATCH_SIZE, NONVOTE_STORAGE_CAPACITY, VOTE_STORAGE_CAPACITY};
 use crate::ipc::shmem::{Free, Slice, allocate, allocate_batch};
 use crate::ipc::{ProgressTracker, pack_to_worker, worker_to_pack};
@@ -18,7 +18,6 @@ use agave_scheduler_bindings::{
 use agave_scheduling_utils::handshake::ClientWorkerSession;
 use anyhow::{Result, bail};
 use arc_swap::ArcSwap;
-use bytes::Bytes;
 use log::{debug, info, warn};
 use rts_alloc::Allocator;
 use smallvec::SmallVec;
@@ -30,6 +29,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tip_manager::{BlockBuilderFeeInfo, TipAccountData, TipManager};
 use tokio::sync::watch;
+use validator_protos::block::Block;
 use validator_protos::block_engine::SchedulingStrategy;
 
 /// Target wall-clock duration of a slot
@@ -60,7 +60,7 @@ pub struct Scheduler<'a> {
     allocator: &'a Allocator,
     vote_rx: rtrb::Consumer<SharableTransactionRegion>,
     nonvote_rx: rtrb::Consumer<SharableTransactionRegion>,
-    block_rx: &'a mut rtrb::Consumer<(u64, Vec<Bytes>)>,
+    block_rx: &'a mut rtrb::Consumer<Block>,
     leader_tx: &'a watch::Sender<Option<LeaderNotification>>,
     block_stage: BlockStage<'a>,
     fallback_stage: FallbackStage<'a>,
@@ -83,7 +83,7 @@ impl<'a> Scheduler<'a> {
         allocator: &'a Allocator,
         vote_rx: rtrb::Consumer<SharableTransactionRegion>,
         nonvote_rx: rtrb::Consumer<SharableTransactionRegion>,
-        block_rx: &'a mut rtrb::Consumer<(u64, Vec<Bytes>)>,
+        block_rx: &'a mut rtrb::Consumer<Block>,
         leader_tx: &'a watch::Sender<Option<LeaderNotification>>,
         identity_rx: watch::Receiver<Arc<Keypair>>,
         tip_manager_rx: watch::Receiver<Arc<TipManager>>,
@@ -173,8 +173,12 @@ impl<'a> Scheduler<'a> {
             }
 
             // Drain any stale blocks
-            for (slot, txs) in drain(self.block_rx, usize::MAX) {
-                warn!("discarded stale block: slot={slot} txs={}", txs.len());
+            for block in drain(self.block_rx, usize::MAX) {
+                warn!(
+                    "discarded stale block: slot={} txs={}",
+                    block.slot,
+                    block.transactions.len()
+                );
             }
 
             // Store and dedup incoming transactions
@@ -383,15 +387,19 @@ impl<'a> Scheduler<'a> {
         while self.progress.poll()?.current_slot_progress < BLOCK_STAGE_TIMEOUT_PERCENT
             && self.progress.last().current_slot == self.slot
         {
-            if let Ok((slot, _)) = self.block_rx.peek() {
-                if *slot == self.slot {
+            if let Ok(block) = self.block_rx.peek() {
+                if block.slot == self.slot {
                     return Ok(true);
                 }
-                let (slot, txs) = self
+                let block = self
                     .block_rx
                     .pop()
                     .expect("peek confirmed slot is available");
-                warn!("discarded stale block: slot={slot} txs={}", txs.len());
+                warn!(
+                    "discarded stale block: slot={} txs={}",
+                    block.slot,
+                    block.transactions.len()
+                );
             }
             self.allocator.clean_remote_free_lists();
             self.vote_store.insert(drain(&mut self.vote_rx, BATCH_SIZE));
@@ -413,11 +421,12 @@ impl<'a> Scheduler<'a> {
             );
             self.block_stage.tick(
                 self.slot,
-                std::iter::once(
+                std::iter::once((
+                    true,
                     self.pending_tip_bundle
                         .drain(..)
                         .map(|tx| allocate(&tx, allocator)),
-                ),
+                )),
                 &mut self.pack_to_worker,
                 &mut self.worker_to_pack,
             );
@@ -427,13 +436,25 @@ impl<'a> Scheduler<'a> {
             && self.progress.last().current_slot == self.slot
         {
             self.allocator.clean_remote_free_lists();
+            // Borrow blocks in place so coalesced messages split without per-bundle allocation
+            let chunk = self
+                .block_rx
+                .read_chunk(self.block_rx.slots())
+                .expect("slots should be available");
+            let (head, tail) = chunk.as_slices();
             self.block_stage.tick(
                 self.slot,
-                drain(self.block_rx, usize::MAX)
-                    .map(|(_, txs)| txs.into_iter().map(|tx| allocate(&tx, allocator))),
+                head.iter()
+                    .chain(tail)
+                    .flat_map(split_bundles)
+                    .map(|(revert_protected, txs)| {
+                        let txs = txs.iter().map(|tx| allocate(&tx.transaction, allocator));
+                        (revert_protected, txs)
+                    }),
                 &mut self.pack_to_worker,
                 &mut self.worker_to_pack,
             );
+            chunk.commit_all();
         }
         Ok(())
     }
@@ -505,7 +526,7 @@ impl<'a> Scheduler<'a> {
                 self.vote_store
                     .drain(BATCH_SIZE)
                     .chain(drain(&mut self.vote_rx, BATCH_SIZE))
-                    .map(std::iter::once),
+                    .map(|vote| (false, std::iter::once(vote))),
                 &mut self.pack_to_worker,
                 &mut self.worker_to_pack,
             );

@@ -8,7 +8,6 @@ use crate::ipc::shmem::is_valid_tx_len;
 use crate::state::block_engine_active;
 use anyhow::{Context, Result};
 use arc_swap::ArcSwap;
-use bytes::Bytes;
 use log::{error, info, trace, warn};
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
@@ -21,6 +20,7 @@ use tokio::time::{MissedTickBehavior, sleep};
 use tonic::Streaming;
 use tonic::codegen::InterceptedService;
 use tonic::transport::Channel;
+use validator_protos::block::{Block, Transaction};
 use validator_protos::block_engine::block_engine_validator_client::BlockEngineValidatorClient;
 use validator_protos::block_engine::{
     BlockBuilderFeeInfoRequest, SetStrategyRequest, SubmitLeaderWindowInfoRequest,
@@ -58,7 +58,7 @@ impl std::fmt::Display for LeaderNotification {
 pub async fn run(
     config: BlockEngineConfig,
     mut identity_rx: watch::Receiver<Arc<Keypair>>,
-    mut block_tx: rtrb::Producer<(u64, Vec<Bytes>)>,
+    mut block_tx: rtrb::Producer<Block>,
     leader_rx: watch::Receiver<Option<LeaderNotification>>,
     block_builder_fee_info: Arc<ArcSwap<BlockBuilderFeeInfo>>,
 ) {
@@ -123,7 +123,7 @@ async fn connect(
     AuthSession<Client>,
     Streaming<SubscribeBundlesResponse>,
     Streaming<SubscribePacketsResponse>,
-    Streaming<SubscribeBundlesResponse>,
+    Streaming<Block>,
 )> {
     info!("connecting to {}", config.block_engine_url);
     let mut session = auth::connect(&config.block_engine_url, identity, |svc| {
@@ -153,7 +153,7 @@ async fn connect(
     info!("subscribing to block stream");
     let block_stream = session
         .client
-        .subscribe_blocks(SubscribeBlocksRequest {
+        .subscribe_blocks2(SubscribeBlocksRequest {
             version: crate::version::VERSION.to_string(),
             commit_hash: crate::version::COMMIT.to_string(),
         })
@@ -164,8 +164,8 @@ async fn connect(
 
 /// Forward block subscription messages into `block_tx`
 async fn forward_blocks(
-    stream: &mut Streaming<SubscribeBundlesResponse>,
-    block_tx: &mut rtrb::Producer<(u64, Vec<Bytes>)>,
+    stream: &mut Streaming<Block>,
+    block_tx: &mut rtrb::Producer<Block>,
 ) -> Result<(), tonic::Status> {
     let mut dropped: usize = 0;
     let mut tick = tokio::time::interval(Duration::from_secs(1));
@@ -174,44 +174,11 @@ async fn forward_blocks(
         tokio::select! {
             biased;
             msg = stream.message() => match msg? {
-                Some(response) => {
-                    for (uuid, bundle) in response
-                        .bundles
-                        .into_iter()
-                        .filter_map(|b| b.bundle.map(|bundle| (b.uuid, bundle)))
-                    {
-                        let slot = match uuid.parse::<u64>() {
-                            Ok(slot) => slot,
-                            Err(e) => {
-                                warn!("ignoring block with invalid slot '{uuid}': {e}");
-                                continue;
-                            }
-                        };
-                        // Bundles are atomic: bail on the first transaction the
-                        // SHM allocator cannot hold
-                        let txs: Result<Vec<Bytes>, usize> = bundle
-                            .packets
-                            .into_iter()
-                            .map(|p| {
-                                if is_valid_tx_len(&p.data) {
-                                    Ok(p.data)
-                                } else {
-                                    Err(p.data.len())
-                                }
-                            })
-                            .collect();
-                        let txs = match txs {
-                            Ok(txs) => txs,
-                            Err(len) => {
-                                warn!("dropping bundle with invalid transaction length: slot={slot} len={len}");
-                                continue;
-                            }
-                        };
-                        let n = txs.len();
-                        trace!("received {n} transactions: slot={slot}");
-                        if block_tx.push((slot, txs)).is_err() {
-                            dropped = dropped.saturating_add(n);
-                        }
+                Some(block) => {
+                    let n = block.transactions.len();
+                    trace!("received {n} transactions: slot={}", block.slot);
+                    if block_tx.push(block).is_err() {
+                        dropped = dropped.saturating_add(n);
                     }
                 }
                 None => return Ok(()),
@@ -224,6 +191,28 @@ async fn forward_blocks(
             }
         }
     }
+}
+
+/// Split a block at bundle boundaries into `(revert_protected, transactions)`; `bundle_id == 0`
+/// marks a standalone transaction. Bundles are atomic, so one unallocatable member drops the bundle.
+pub fn split_bundles(block: &Block) -> impl Iterator<Item = (bool, &[Transaction])> {
+    block
+        .transactions
+        .chunk_by(|a, b| a.bundle_id != 0 && a.bundle_id == b.bundle_id)
+        .filter(
+            |group| match group.iter().find(|tx| !is_valid_tx_len(&tx.transaction)) {
+                Some(tx) => {
+                    warn!(
+                        "dropping bundle with invalid transaction length: slot={} len={}",
+                        block.slot,
+                        tx.transaction.len()
+                    );
+                    false
+                }
+                None => true,
+            },
+        )
+        .map(|group| (group[0].bundle_id != 0, group))
 }
 
 /// Submit leader window notifications
@@ -277,5 +266,64 @@ async fn refresh_fee_info(
             block_builder,
             block_builder_commission,
         }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::Bytes;
+
+    fn tx(marker: u8, bundle_id: u64) -> Transaction {
+        Transaction {
+            transaction: Bytes::from(vec![marker]),
+            bundle_id,
+        }
+    }
+
+    #[test]
+    fn split_bundles_marks_length_one_bundles_revert_protected() {
+        let block = Block {
+            slot: 7,
+            transactions: vec![
+                tx(1, 0),
+                tx(2, 5),
+                tx(3, 0),
+                tx(4, 0),
+                tx(5, 9),
+                tx(6, 9),
+                tx(7, 5),
+            ],
+        };
+        let shape: Vec<(bool, Vec<u8>)> = split_bundles(&block)
+            .map(|(protected, txs)| (protected, txs.iter().map(|tx| tx.transaction[0]).collect()))
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                (false, vec![1]),
+                (true, vec![2]),
+                (false, vec![3]),
+                (false, vec![4]),
+                (true, vec![5, 6]),
+                (true, vec![7]),
+            ]
+        );
+    }
+
+    #[test]
+    fn split_bundles_drops_whole_bundle_with_invalid_member() {
+        let empty = Transaction {
+            transaction: Bytes::new(),
+            bundle_id: 3,
+        };
+        let block = Block {
+            slot: 7,
+            transactions: vec![tx(1, 3), empty, tx(2, 0)],
+        };
+        let shape: Vec<u8> = split_bundles(&block)
+            .flat_map(|(_, txs)| txs.iter().map(|tx| tx.transaction[0]))
+            .collect();
+        assert_eq!(shape, vec![2]);
     }
 }

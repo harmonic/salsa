@@ -13230,8 +13230,8 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "validator-protos"
-version = "0.1.1"
-source = "git+https://github.com/harmonic/validator-protos.git?tag=v0.1.1#a3a62fecad8a797685bfdd205368ea677daecb6c"
+version = "0.2.0"
+source = "git+https://github.com/harmonic/validator-protos.git?tag=v0.2.0#ac6d8382468d3c4cbb712f09ed9d7dbbea0a500f"
 dependencies = [
  "prost 0.14.4",
  "prost-types 0.14.4",

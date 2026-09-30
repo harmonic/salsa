@@ -21,6 +21,7 @@ use std::thread;
 use std::time::Duration;
 use tip_manager::{BlockBuilderFeeInfo, TipManager};
 use tokio::sync::watch;
+use validator_protos::block::Block;
 use validator_protos::block_engine::SchedulingStrategy;
 
 /// Backoff between ipc connection attempts
@@ -47,7 +48,7 @@ pub fn run(
     tip_manager_rx: watch::Receiver<Arc<TipManager>>,
     fee_info: Arc<ArcSwap<BlockBuilderFeeInfo>>,
     mut packet_rx: rtrb::Consumer<Bytes>,
-    mut block_rx: rtrb::Consumer<(u64, Vec<Bytes>)>,
+    mut block_rx: rtrb::Consumer<Block>,
     leader_tx: watch::Sender<Option<LeaderNotification>>,
     strategy: SchedulingStrategy,
 ) {

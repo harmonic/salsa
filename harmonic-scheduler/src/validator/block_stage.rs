@@ -23,8 +23,8 @@ use solana_pubkey::Pubkey;
 use solana_sdk_ids::compute_budget;
 use std::collections::VecDeque;
 
-/// A batch executed atomically: a single transaction, or a bundle sent as one
-/// all-or-nothing EXECUTE. Locking uses the union of member accounts.
+/// A batch sent as one EXECUTE: a single transaction, or a bundle.
+/// Locking uses the union of member accounts.
 struct Task {
     /// The full batch, allocated at insert; `[0]`'s signature keys the task.
     batch: SharableTransactionBatchRegion,
@@ -36,6 +36,8 @@ struct Task {
     alt_remaining: u8,
     /// Whether or not this is a batch of vote transactions
     is_vote: bool,
+    /// Executes ALL_OR_NOTHING | DROP_ON_FAILURE, including length one bundles
+    revert_protected: bool,
     /// Lifecycle stage of the task
     state: TaskState,
 }
@@ -244,17 +246,21 @@ impl<'a> BlockStage<'a> {
     }
 
     /// Advance the execution pipeline
+    /// `bundles` yields `(revert_protected, transactions)` per task.
     pub fn tick(
         &mut self,
         slot: u64,
         bundles: impl IntoIterator<
-            Item = impl IntoIterator<Item = SharableTransactionRegion, IntoIter: ExactSizeIterator>,
+            Item = (
+                bool,
+                impl IntoIterator<Item = SharableTransactionRegion, IntoIter: ExactSizeIterator>,
+            ),
         >,
         producers: &mut [shaq::spsc::Producer<PackToWorkerMessage>],
         consumers: &mut [shaq::spsc::Consumer<WorkerToPackMessage>],
     ) {
-        for bundle in bundles {
-            self.insert(bundle);
+        for (revert_protected, bundle) in bundles {
+            self.insert(revert_protected, bundle);
         }
         self.check(slot, producers);
         self.execute(slot, producers);
@@ -317,6 +323,7 @@ impl<'a> BlockStage<'a> {
     /// Insert one batch as a [`Task`], deduplicated by its first signature.
     fn insert(
         &mut self,
+        revert_protected: bool,
         bundle: impl IntoIterator<Item = SharableTransactionRegion, IntoIter: ExactSizeIterator>,
     ) {
         let txs = bundle.into_iter();
@@ -400,6 +407,7 @@ impl<'a> BlockStage<'a> {
             cu,
             alt_remaining,
             is_vote,
+            revert_protected,
             state,
         });
     }
@@ -466,7 +474,7 @@ impl<'a> BlockStage<'a> {
                     .min_by_key(|&w| self.compute_units[w])
                     .expect("num_workers is nonzero");
                 // Bundles execute atomically: any failure aborts the whole batch.
-                let flags = if task.batch.num_transactions > 1 {
+                let flags = if task.revert_protected {
                     pack_message_flags::EXECUTE
                         | pack_message_flags::execution_flags::ALL_OR_NOTHING
                         | pack_message_flags::execution_flags::DROP_ON_FAILURE
@@ -770,6 +778,60 @@ mod tests {
     }
 
     #[test]
+    fn length_one_bundles_are_revert_protected() {
+        let allocator =
+            unsafe { Allocator::create(&tempfile().unwrap(), TEST_ALLOC_SIZE, 1, SLAB_SIZE) }
+                .unwrap();
+        let mut block_stage = BlockStage::new(1, &allocator);
+        let (mut producers, mut worker_rx): (Vec<_>, Vec<_>) =
+            [shaq_channel::<PackToWorkerMessage>(PACK_TO_WORKER_CAPACITY)]
+                .into_iter()
+                .unzip();
+        let mut expected = HashMap::new();
+        for (revert_protected, size) in [(true, 1), (false, 1), (true, 2)] {
+            // Unique fee payers keep accounts disjoint so every task dispatches at once.
+            let txs: Vec<Transaction> = (0..size)
+                .map(|_| {
+                    let ix = Instruction::new_with_bytes(
+                        Pubkey::default(),
+                        &[],
+                        vec![AccountMeta::new(Pubkey::new_unique(), true)],
+                    );
+                    let mut tx = Transaction::new_unsigned(Message::new(&[ix], None));
+                    tx.signatures[0] = Signature::new_unique();
+                    tx
+                })
+                .collect();
+            expected.insert(*txs[0].signatures[0].as_array(), revert_protected);
+            block_stage.insert(
+                revert_protected,
+                txs.iter()
+                    .map(|tx| allocate(serialize(tx).unwrap(), &allocator)),
+            );
+        }
+
+        block_stage.execute(1, &mut producers);
+        let rx = &mut worker_rx[0];
+        rx.sync();
+        let mut seen = 0;
+        while let Some(message) = rx.try_read() {
+            let key = signature(&message.batch.slice(&allocator)[0], &allocator).unwrap();
+            let protected = pack_message_flags::EXECUTE
+                | pack_message_flags::execution_flags::ALL_OR_NOTHING
+                | pack_message_flags::execution_flags::DROP_ON_FAILURE;
+            let flags = if expected[&key] {
+                protected
+            } else {
+                pack_message_flags::EXECUTE
+            };
+            assert_eq!(message.flags, flags);
+            seen += 1;
+        }
+        rx.finalize();
+        assert_eq!(seen, expected.len());
+    }
+
+    #[test]
     fn fifo_random_workload() {
         const NUM_WORKERS: usize = 8;
         const NUM_ACCOUNTS: usize = 256;
@@ -800,11 +862,12 @@ mod tests {
             .map(|_| random_transaction(&mut rng, &accounts))
             .collect();
 
-        // Random bundles of 1..=5 to exercise the atomic-batch pathways.
+        // Random bundles of 1..=5, including length one bundles, to exercise the atomic-batch pathways.
         let mut i = 0;
         while i < txs.len() {
             let size = rng.random_range(1..=5).min(txs.len() - i);
             block_stage.insert(
+                size > 1 || rng.random_bool(0.5),
                 txs[i..i + size]
                     .iter()
                     .map(|tx| allocate(serialize(tx).unwrap(), &allocator)),
