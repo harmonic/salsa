@@ -197,9 +197,6 @@ pub struct BlockStage<'a> {
     /// First Resolved task. tasks[resolved..unresolved] need EXECUTE.
     /// Increases monotonically as EXECUTE_RESPONSEs are received.
     resolved_idx: usize,
-    /// Index of the first vote transaction
-    vote_idx: usize,
-
     /// Account locks held by currently executing transactions
     running: AccountLocks,
     /// Account locks held by account-blocked tasks `try_idx` has skipped
@@ -234,7 +231,6 @@ impl<'a> BlockStage<'a> {
             unresolved_idx: 0,
             try_idx: 0,
             resolved_idx: 0,
-            vote_idx: usize::MAX,
             running: AccountLocks::new(),
             priority: AccountLocks::new(),
             num_workers,
@@ -246,7 +242,7 @@ impl<'a> BlockStage<'a> {
     }
 
     /// Advance the execution pipeline
-    /// `bundles` yields `(revert_protected, transactions)` per task.
+    /// `bundles` yields `(revert_protected, transactions)` per task; `votes` are simple votes.
     pub fn tick(
         &mut self,
         slot: u64,
@@ -256,19 +252,19 @@ impl<'a> BlockStage<'a> {
                 impl IntoIterator<Item = SharableTransactionRegion, IntoIter: ExactSizeIterator>,
             ),
         >,
+        votes: impl IntoIterator<Item = SharableTransactionRegion>,
         producers: &mut [shaq::spsc::Producer<PackToWorkerMessage>],
         consumers: &mut [shaq::spsc::Consumer<WorkerToPackMessage>],
     ) {
         for (revert_protected, bundle) in bundles {
-            self.insert(revert_protected, bundle);
+            self.insert(false, revert_protected, bundle);
+        }
+        for vote in votes {
+            self.insert(true, false, std::iter::once(vote));
         }
         self.check(slot, producers);
         self.execute(slot, producers);
         self.resolve(consumers);
-    }
-
-    pub fn vote_stage(&mut self) {
-        self.vote_idx = self.tasks.len();
     }
 
     /// Clear the schedule, returning unexecuted simple votes as a lazy iterator.
@@ -296,7 +292,6 @@ impl<'a> BlockStage<'a> {
         self.unresolved_idx = 0;
         self.try_idx = 0;
         self.resolved_idx = 0;
-        self.vote_idx = usize::MAX;
         self.running.clear();
         self.priority.clear();
         self.check_pending.clear();
@@ -323,6 +318,7 @@ impl<'a> BlockStage<'a> {
     /// Insert one batch as a [`Task`], deduplicated by its first signature.
     fn insert(
         &mut self,
+        is_vote: bool,
         revert_protected: bool,
         bundle: impl IntoIterator<Item = SharableTransactionRegion, IntoIter: ExactSizeIterator>,
     ) {
@@ -346,7 +342,6 @@ impl<'a> BlockStage<'a> {
             Entry::Vacant(entry) => entry,
         };
 
-        let is_vote = self.vote_idx != usize::MAX;
         let task_idx = entry.index();
         let mut accounts: SmallVec<[(Pubkey, bool); 32]> = SmallVec::new();
         let mut checks: SmallVec<[Check; 4]> = SmallVec::new();
@@ -804,6 +799,7 @@ mod tests {
                 .collect();
             expected.insert(*txs[0].signatures[0].as_array(), revert_protected);
             block_stage.insert(
+                false,
                 revert_protected,
                 txs.iter()
                     .map(|tx| allocate(serialize(tx).unwrap(), &allocator)),
@@ -829,6 +825,37 @@ mod tests {
         }
         rx.finalize();
         assert_eq!(seen, expected.len());
+    }
+
+    #[test]
+    fn reset_returns_only_unexecuted_votes() {
+        let allocator =
+            unsafe { Allocator::create(&tempfile().unwrap(), TEST_ALLOC_SIZE, 1, SLAB_SIZE) }
+                .unwrap();
+        let mut block_stage = BlockStage::new(1, &allocator);
+        let (_, mut consumers): (Vec<_>, Vec<_>) =
+            [shaq_channel::<WorkerToPackMessage>(WORKER_TO_PACK_CAPACITY)]
+                .into_iter()
+                .unzip();
+        let accounts: Vec<Pubkey> = (0..64).map(|_| Pubkey::new_unique()).collect();
+        let tx = |rng: &mut ChaChaRng| {
+            allocate(
+                serialize(&random_transaction(rng, &accounts)).unwrap(),
+                &allocator,
+            )
+        };
+        let mut rng = ChaChaRng::seed_from_u64(0);
+        let (block_tx, vote, late_block_tx) = (tx(&mut rng), tx(&mut rng), tx(&mut rng));
+        let vote_key = signature(&vote, &allocator).unwrap();
+        // A block transaction arriving after a vote must not be treated as one.
+        block_stage.insert(false, false, std::iter::once(block_tx));
+        block_stage.insert(true, false, std::iter::once(vote));
+        block_stage.insert(false, true, std::iter::once(late_block_tx));
+
+        let returned: Vec<_> = block_stage.reset(&mut consumers).unwrap().collect();
+        assert_eq!(returned.len(), 1);
+        assert_eq!(signature(&returned[0], &allocator).unwrap(), vote_key);
+        returned[0].free(&allocator);
     }
 
     #[test]
@@ -867,6 +894,7 @@ mod tests {
         while i < txs.len() {
             let size = rng.random_range(1..=5).min(txs.len() - i);
             block_stage.insert(
+                false,
                 size > 1 || rng.random_bool(0.5),
                 txs[i..i + size]
                     .iter()

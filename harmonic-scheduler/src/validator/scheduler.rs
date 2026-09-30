@@ -36,7 +36,7 @@ use validator_protos::block_engine::SchedulingStrategy;
 const SLOT_DURATION: Duration = Duration::from_millis(DEFAULT_MS_PER_SLOT);
 /// Slot % after which we abandon the block engine and fall back to nonvotes
 const BLOCK_STAGE_TIMEOUT_PERCENT: u8 = 75;
-/// Slot % at which block_stage yields to vote_stage (tail reserved for vote ingestion)
+/// Slot % at which votes start interleaving with block transactions
 const VOTE_STAGE_START_PERCENT: u8 = 94;
 /// Stop checking stored transactions within this many slots of our leader window
 const PRE_LEADER_HOLD_SLOTS: u64 = 2;
@@ -252,7 +252,6 @@ impl<'a> Scheduler<'a> {
             && self.wait_for_block()?
         {
             self.block_stage()?;
-            self.vote_stage()?;
         } else if self.progress.last().current_slot == self.slot {
             self.fallback_stage()?;
         }
@@ -427,14 +426,21 @@ impl<'a> Scheduler<'a> {
                         .drain(..)
                         .map(|tx| allocate(&tx, allocator)),
                 )),
+                std::iter::empty(),
                 &mut self.pack_to_worker,
                 &mut self.worker_to_pack,
             );
         }
 
-        while self.progress.poll()?.current_slot_progress < VOTE_STAGE_START_PERCENT
-            && self.progress.last().current_slot == self.slot
-        {
+        // Block transactions stream until the slot ends; votes interleave from VOTE_STAGE_START_PERCENT
+        let mut vote_batch = 0;
+        while self.progress.poll()?.current_slot == self.slot {
+            if vote_batch == 0
+                && self.progress.last().current_slot_progress >= VOTE_STAGE_START_PERCENT
+            {
+                info!("entering vote stage: slot={}", self.slot);
+                vote_batch = BATCH_SIZE;
+            }
             self.allocator.clean_remote_free_lists();
             // Borrow blocks in place so coalesced messages split without per-bundle allocation
             let chunk = self
@@ -451,11 +457,17 @@ impl<'a> Scheduler<'a> {
                         let txs = txs.iter().map(|tx| allocate(&tx.transaction, allocator));
                         (revert_protected, txs)
                     }),
+                self.vote_store
+                    .drain(vote_batch)
+                    .chain(drain(&mut self.vote_rx, vote_batch)),
                 &mut self.pack_to_worker,
                 &mut self.worker_to_pack,
             );
             chunk.commit_all();
         }
+
+        self.vote_store
+            .insert(self.block_stage.reset(&mut self.worker_to_pack)?);
         Ok(())
     }
 
@@ -513,28 +525,6 @@ impl<'a> Scheduler<'a> {
             self.nonvote_store
                 .insert(drain(&mut self.nonvote_rx, BATCH_SIZE));
         }
-        Ok(())
-    }
-
-    fn vote_stage(&mut self) -> Result<()> {
-        info!("entering vote stage: slot={}", self.slot);
-        self.block_stage.vote_stage();
-        while self.progress.poll()?.current_slot == self.slot {
-            self.allocator.clean_remote_free_lists();
-            self.block_stage.tick(
-                self.slot,
-                self.vote_store
-                    .drain(BATCH_SIZE)
-                    .chain(drain(&mut self.vote_rx, BATCH_SIZE))
-                    .map(|vote| (false, std::iter::once(vote))),
-                &mut self.pack_to_worker,
-                &mut self.worker_to_pack,
-            );
-        }
-
-        self.vote_store
-            .insert(self.block_stage.reset(&mut self.worker_to_pack)?);
-
         Ok(())
     }
 }
