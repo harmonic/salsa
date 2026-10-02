@@ -21,7 +21,6 @@ use arc_swap::ArcSwap;
 use log::{debug, info, warn};
 use rts_alloc::Allocator;
 use smallvec::SmallVec;
-use solana_clock::DEFAULT_MS_PER_SLOT;
 use solana_instruction::Instruction;
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
@@ -32,8 +31,6 @@ use tokio::sync::watch;
 use validator_protos::block::Block;
 use validator_protos::block_engine::SchedulingStrategy;
 
-/// Target wall-clock duration of a slot
-const SLOT_DURATION: Duration = Duration::from_millis(DEFAULT_MS_PER_SLOT);
 /// Slot % after which we abandon the block engine and fall back to nonvotes
 const BLOCK_STAGE_TIMEOUT_PERCENT: u8 = 75;
 /// Slot % at which votes start interleaving with block transactions
@@ -216,12 +213,6 @@ impl<'a> Scheduler<'a> {
     /// Start leader slot
     fn leader_starting(&mut self) -> Result<()> {
         info!("starting leader slot: slot={}", self.slot);
-        // Back-date the start to account for how far into the slot we already are
-        let elapsed = SLOT_DURATION * self.progress.last().current_slot_progress as u32 / 100;
-        self.leader_tx.send(Some(LeaderNotification {
-            slot: self.slot,
-            start_time: SystemTime::now() - elapsed,
-        }))?;
         // Wait for the bank for our slot, but bail if the window shifts under us
         while self.progress.poll()?.leader_state == LEADER_STARTING
             && self.progress.last().current_slot == self.slot
@@ -247,6 +238,16 @@ impl<'a> Scheduler<'a> {
             );
             return Ok(());
         }
+
+        // Announce the slot once the bank exists; PoH can reset the slot timeline before then
+        let slot_duration = Duration::from_nanos(self.progress.last().slot_duration_ns);
+        let elapsed = slot_duration * u32::from(self.progress.last().current_slot_progress) / 100;
+        let start_time = SystemTime::now();
+        self.leader_tx.send(Some(LeaderNotification {
+            slot: self.slot,
+            start_time,
+            end_time: start_time + slot_duration.saturating_sub(elapsed),
+        }))?;
 
         if self.progress.last().current_slot_progress < BLOCK_STAGE_TIMEOUT_PERCENT
             && self.wait_for_block()?

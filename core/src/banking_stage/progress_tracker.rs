@@ -199,6 +199,7 @@ impl ProgressTracker {
                 leader_range_end: next_leader_range_end,
                 remaining_cost_units: self.remaining_block_cost(),
                 latest_blockhash: working_bank.last_blockhash().to_bytes(),
+                slot_duration_ns: working_bank.ns_per_slot as u64,
             }
         } else {
             self.last_observed_bank_id = None;
@@ -236,6 +237,7 @@ impl ProgressTracker {
                 leader_range_end: next_leader_range_end,
                 remaining_cost_units: 0,
                 latest_blockhash: [0; 32],
+                slot_duration_ns: 0,
             }
         };
 
@@ -370,6 +372,7 @@ mod tests {
         assert_eq!(message.leader_range_end, u64::MAX);
         assert_eq!(message.epoch, 0);
         assert_eq!(message.latest_blockhash, [0; 32]);
+        assert_eq!(message.slot_duration_ns, 0);
 
         let expected_tick_height = 2 * ticks_per_slot;
         shared_leader_state.store(Arc::new(LeaderState::new(
@@ -464,6 +467,7 @@ mod tests {
         assert_eq!(message.current_slot_progress, 0);
         assert_eq!(message.epoch, bank.epoch());
         assert_eq!(message.latest_blockhash, bank.last_blockhash().to_bytes());
+        assert_eq!(u128::from(message.slot_duration_ns), bank.ns_per_slot);
 
         bank.fill_bank_with_ticks_for_tests();
         assert!(bank.is_complete());

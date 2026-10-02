@@ -39,17 +39,20 @@ type Client = BlockEngineValidatorClient<InterceptedService<Channel, AuthInterce
 pub struct LeaderNotification {
     /// The slot we are leader for
     pub slot: u64,
-    /// Wall-clock time at which the leader slot began
+    /// Wall-clock time the slot was announced, used by the block engine to measure latency
     pub start_time: SystemTime,
+    /// Wall-clock time at which the leader slot ends
+    pub end_time: SystemTime,
 }
 
 impl std::fmt::Display for LeaderNotification {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(
             f,
-            "slot={} start_time={}",
+            "slot={} start_time={} end_time={}",
             self.slot,
-            humantime::format_rfc3339(self.start_time)
+            humantime::format_rfc3339(self.start_time),
+            humantime::format_rfc3339(self.end_time)
         )
     }
 }
@@ -229,6 +232,7 @@ async fn submit_leader_notifications(
                 .submit_leader_window_info(SubmitLeaderWindowInfoRequest {
                     start_timestamp: Some(prost_types::Timestamp::from(notification.start_time)),
                     slot: notification.slot,
+                    end_timestamp: Some(prost_types::Timestamp::from(notification.end_time)),
                 })
                 .await?;
             info!(

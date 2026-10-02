@@ -218,6 +218,9 @@ pub struct ProgressMessage {
     /// The latest blockhash of the working bank.
     /// Only valid if `leader_state == LEADER_READY`, otherwise zeroed.
     pub latest_blockhash: [u8; 32],
+    /// Target wall-clock duration of the working bank's slot in nanoseconds.
+    /// Only valid if `leader_state == LEADER_READY`, otherwise zeroed.
+    pub slot_duration_ns: u64,
 }
 
 /// Maximum bytes supported by a single rts-alloc allocation. Every

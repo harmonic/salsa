@@ -36,6 +36,7 @@ fn message_passing_on_all_queues() {
         leader_range_end: 16,
         remaining_cost_units: 12_000_000,
         latest_blockhash: [42; 32],
+        slot_duration_ns: 400_000_000,
     };
     let pack_to_worker = PackToWorkerMessage {
         flags: 123,
