@@ -30,6 +30,10 @@ use validator_protos::block_engine::{
 
 /// How often to refresh the block-builder fee info from the block engine
 pub const FEE_INFO_REFRESH_INTERVAL: Duration = Duration::from_mins(10);
+/// Offset of the periodic fee refreshes from the session's token checks, so the two calls never
+/// reach the connection at the same instant
+const FEE_INFO_REFRESH_PHASE: Duration =
+    Duration::from_secs(auth::REFRESH_CHECK_INTERVAL.as_secs() / 2);
 
 /// Authenticated block-engine gRPC client with the scheduler's bearer-token interceptor
 type Client = BlockEngineValidatorClient<InterceptedService<Channel, AuthInterceptor>>;
@@ -72,7 +76,7 @@ pub async fn run(
         let identity = identity_rx.borrow_and_update().clone();
 
         // Connect to block engine and subscribe to streams
-        let (session, mut bundle_stream, mut packet_stream, mut block_stream) =
+        let (session, _block_client, mut bundle_stream, mut packet_stream, mut block_stream) =
             match connect(&config, identity).await {
                 Ok(result) => result,
                 Err(e) => {
@@ -97,9 +101,8 @@ pub async fn run(
                 Ok(()) => {}
                 Err(_) => return,
             },
-            Err(e) = refresh_fee_info(session.client.clone(), block_builder_fee_info.clone()) => {
-                warn!("fee refresh failed: {e:#}")
-            }
+            // Never completes: a failed refresh is logged without tearing down the session
+            () = refresh_fee_info(session.client.clone(), block_builder_fee_info.clone()) => {}
             res = drain_stream(&mut bundle_stream) => match res {
                 Ok(()) => {} // clean shutdown
                 Err(e) => error!("bundle stream error: {e:#}"),
@@ -119,11 +122,16 @@ async fn drain_stream<T>(stream: &mut Streaming<T>) -> Result<(), tonic::Status>
 }
 
 /// Connect to the block engine and subscribe to data streams
+///
+/// The block stream gets its own connection so block data never shares a flow-control window
+/// with the bundle and packet streams. The returned client owns that connection and must be held
+/// for as long as the block stream is in use.
 async fn connect(
     config: &BlockEngineConfig,
     identity: Arc<Keypair>,
 ) -> Result<(
     AuthSession<Client>,
+    Client,
     Streaming<SubscribeBundlesResponse>,
     Streaming<SubscribePacketsResponse>,
     Streaming<Block>,
@@ -154,15 +162,21 @@ async fn connect(
         .await?
         .into_inner();
     info!("subscribing to block stream");
-    let block_stream = session
-        .client
+    let mut block_client = session.connect_dedicated().await?;
+    let block_stream = block_client
         .subscribe_blocks2(SubscribeBlocksRequest {
             version: crate::version::VERSION.to_string(),
             commit_hash: crate::version::COMMIT.to_string(),
         })
         .await?
         .into_inner();
-    Ok((session, bundles_stream, packets_stream, block_stream))
+    Ok((
+        session,
+        block_client,
+        bundles_stream,
+        packets_stream,
+        block_stream,
+    ))
 }
 
 /// Forward block subscription messages into `block_tx`
@@ -223,8 +237,11 @@ async fn submit_leader_notifications(
     mut client: Client,
     mut leader_rx: watch::Receiver<Option<LeaderNotification>>,
 ) -> Result<(), tonic::Status> {
-    while leader_rx.changed().await.is_ok() {
-        let notification = *leader_rx.borrow_and_update();
+    // Each session's receiver still holds the last notification; resend it only if that slot
+    // hasn't ended, so a reconnect never announces a past slot
+    let mut notification =
+        (*leader_rx.borrow_and_update()).filter(|n| n.end_time > SystemTime::now());
+    loop {
         if let Some(notification) = notification {
             info!("submitting leader notification: {notification}");
             let timer = rdtsc::Instant::now();
@@ -240,37 +257,52 @@ async fn submit_leader_notifications(
                 timer.elapsed_us()
             );
         }
+        if leader_rx.changed().await.is_err() {
+            return Ok(());
+        }
+        notification = *leader_rx.borrow_and_update();
     }
-    Ok(())
 }
 
-/// Periodically refresh the block-builder fee info
-async fn refresh_fee_info(
-    mut client: Client,
-    fee_info: Arc<ArcSwap<BlockBuilderFeeInfo>>,
-) -> Result<()> {
-    let mut tick = tokio::time::interval(FEE_INFO_REFRESH_INTERVAL);
+/// Periodically refresh the block-builder fee info, keeping the previous value on failure
+async fn refresh_fee_info(mut client: Client, fee_info: Arc<ArcSwap<BlockBuilderFeeInfo>>) {
+    // Refresh at connect, then midway between token checks
+    let mut tick = tokio::time::interval_at(
+        tokio::time::Instant::now() + FEE_INFO_REFRESH_PHASE,
+        FEE_INFO_REFRESH_INTERVAL,
+    );
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
+        if let Err(e) = fetch_fee_info(&mut client, &fee_info).await {
+            warn!("fee refresh failed: {e:#}");
+        }
         tick.tick().await;
-        info!("refreshing block builder fee info");
-        let info = client
-            .get_block_builder_fee_info(BlockBuilderFeeInfoRequest {})
-            .await
-            .context("get_block_builder_fee_info")?
-            .into_inner();
-        let block_builder = Pubkey::from_str(&info.pubkey)
-            .with_context(|| format!("invalid block builder pubkey '{}'", info.pubkey))?;
-        let block_builder_commission = info.commission;
-        info!(
-            "refreshed block builder fee info: pubkey={block_builder}, \
-             commission={block_builder_commission}",
-        );
-        fee_info.store(Arc::new(BlockBuilderFeeInfo {
-            block_builder,
-            block_builder_commission,
-        }));
     }
+}
+
+/// Fetch the block-builder fee info once and publish it to `fee_info`
+async fn fetch_fee_info(
+    client: &mut Client,
+    fee_info: &ArcSwap<BlockBuilderFeeInfo>,
+) -> Result<()> {
+    info!("refreshing block builder fee info");
+    let info = client
+        .get_block_builder_fee_info(BlockBuilderFeeInfoRequest {})
+        .await
+        .context("get_block_builder_fee_info")?
+        .into_inner();
+    let block_builder = Pubkey::from_str(&info.pubkey)
+        .with_context(|| format!("invalid block builder pubkey '{}'", info.pubkey))?;
+    let block_builder_commission = info.commission;
+    info!(
+        "refreshed block builder fee info: pubkey={block_builder}, \
+         commission={block_builder_commission}",
+    );
+    fee_info.store(Arc::new(BlockBuilderFeeInfo {
+        block_builder,
+        block_builder_commission,
+    }));
+    Ok(())
 }
 
 #[cfg(test)]

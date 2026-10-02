@@ -25,6 +25,14 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const RPC_TIMEOUT: Duration = Duration::from_secs(10);
 /// TCP keepalive idle time
 const TCP_KEEPALIVE: Duration = Duration::from_mins(1);
+/// Interval between unanswered TCP keepalive probes
+const TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
+/// Unanswered TCP keepalive probes before the connection is declared dead
+const TCP_KEEPALIVE_RETRIES: u32 = 3;
+/// HTTP/2 PING interval when no frames have been received
+const HTTP2_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
+/// Deadline for an HTTP/2 PING ack before the connection is closed
+const HTTP2_KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(10);
 /// HTTP/2 connection-level flow-control window
 const HTTP2_CONNECTION_WINDOW: u32 = 64 * 1024 * 1024;
 /// HTTP/2 per-stream flow-control window
@@ -32,7 +40,7 @@ const HTTP2_STREAM_WINDOW: u32 = 16 * 1024 * 1024;
 /// Max gRPC message size on inbound responses; matches the auction server's encoding cap
 pub const MAX_GRPC_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
 /// How often the background refresh task wakes to check token expiry
-const REFRESH_CHECK_INTERVAL: Duration = Duration::from_mins(5);
+pub const REFRESH_CHECK_INTERVAL: Duration = Duration::from_mins(5);
 /// Refresh any token whose expiry is within this window
 const REFRESH_WITHIN: Duration = Duration::from_hours(1);
 /// Backoff between gRPC connection / authentication attempts
@@ -42,6 +50,21 @@ pub const GRPC_CONNECTION_BACKOFF: Duration = Duration::from_secs(5);
 pub struct AuthSession<C> {
     pub client: C,
     pub refresh: JoinHandle<()>,
+    endpoint: Endpoint,
+    bearer: Arc<ArcSwap<AsciiMetadataValue>>,
+    build: fn(InterceptedService<Channel, AuthInterceptor>) -> C,
+}
+
+impl<C> AuthSession<C> {
+    /// Open another client on its own HTTP/2 connection, authenticated with this session's tokens
+    pub async fn connect_dedicated(&self) -> Result<C> {
+        debug!("opening dedicated connection to {}", self.endpoint.uri());
+        let channel = self.endpoint.connect().await?;
+        Ok((self.build)(InterceptedService::new(
+            channel,
+            AuthInterceptor(self.bearer.clone()),
+        )))
+    }
 }
 
 impl<C> Drop for AuthSession<C> {
@@ -77,9 +100,18 @@ pub async fn connect<C>(
     let tokens = generate_auth_tokens(&mut auth_client, &identity).await?;
     let bearer = Arc::new(ArcSwap::from_pointee(bearer_header(&tokens.access)?));
     let refresh = tokio::spawn(refresh_loop(auth_client, identity, bearer.clone(), tokens));
-    let client = build(InterceptedService::new(channel, AuthInterceptor(bearer)));
+    let client = build(InterceptedService::new(
+        channel,
+        AuthInterceptor(bearer.clone()),
+    ));
     debug!("authenticated to {url}");
-    Ok(AuthSession { client, refresh })
+    Ok(AuthSession {
+        client,
+        refresh,
+        endpoint,
+        bearer,
+        build,
+    })
 }
 
 /// The access + refresh token pair returned by the auth service
@@ -240,9 +272,14 @@ fn make_endpoint(url: &str) -> Result<Endpoint> {
         .timeout(RPC_TIMEOUT)
         .tcp_nodelay(true)
         .tcp_keepalive(Some(TCP_KEEPALIVE))
+        .tcp_keepalive_interval(Some(TCP_KEEPALIVE_INTERVAL))
+        .tcp_keepalive_retries(Some(TCP_KEEPALIVE_RETRIES))
+        .http2_keep_alive_interval(HTTP2_KEEPALIVE_INTERVAL)
+        .keep_alive_timeout(HTTP2_KEEPALIVE_TIMEOUT)
+        .keep_alive_while_idle(true)
+        // Fixed windows: adaptive flow control resets both to 64KB and only grows them via BDP pings
         .initial_connection_window_size(HTTP2_CONNECTION_WINDOW)
-        .initial_stream_window_size(HTTP2_STREAM_WINDOW)
-        .http2_adaptive_window(true);
+        .initial_stream_window_size(HTTP2_STREAM_WINDOW);
     if endpoint.uri().scheme_str() == Some("https") {
         endpoint =
             endpoint.tls_config(tonic::transport::ClientTlsConfig::new().with_enabled_roots())?;
