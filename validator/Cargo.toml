@@ -3,7 +3,7 @@ name = "agave-validator"
 readme = "../README.md"
 documentation = "https://docs.rs/agave-validator"
 default-run = "agave-validator"
-version = { workspace = true }
+version = "4.3.0-harmonic.1"
 authors = { workspace = true }
 description = { workspace = true }
 repository = { workspace = true }

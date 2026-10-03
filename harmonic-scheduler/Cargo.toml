@@ -1,7 +1,7 @@
 [package]
 name = "harmonic-scheduler"
 description = "Harmonic external scheduler for Agave validator"
-version = { workspace = true }
+version = "4.3.0-harmonic.1"
 authors = { workspace = true }
 repository = { workspace = true }
 homepage = { workspace = true }

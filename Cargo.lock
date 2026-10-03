@@ -377,7 +377,7 @@ dependencies = [
 
 [[package]]
 name = "agave-validator"
-version = "4.3.0"
+version = "4.3.0-harmonic.1"
 dependencies = [
  "agave-cpu-utils",
  "agave-feature-set",
@@ -3438,7 +3438,7 @@ checksum = "eabb4a44450da02c90444cf74558da904edde8fb4e9035a9a6a4e15445af0bd7"
 
 [[package]]
 name = "harmonic-scheduler"
-version = "4.3.0"
+version = "4.3.0-harmonic.1"
 dependencies = [
  "agave-logger",
  "agave-scheduler-bindings",

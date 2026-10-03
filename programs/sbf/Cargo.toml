@@ -105,7 +105,7 @@ new_without_default = "allow"
 agave-feature-set = { path = "../../feature-set", version = "=4.3.0" }
 agave-logger = { path = "../../logger", version = "=4.3.0" }
 agave-reserved-account-keys = { path = "../../reserved-account-keys", version = "=4.3.0" }
-agave-validator = { path = "../../validator", version = "=4.3.0" }
+agave-validator = { path = "../../validator", version = "=4.3.0-harmonic.1" }
 array-bytes = "=1.4.1"
 bincode = { version = "1.1.4", default-features = false }
 blake3 = "1.0.0"
