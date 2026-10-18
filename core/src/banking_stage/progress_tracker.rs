@@ -23,7 +23,9 @@ use {
     },
 };
 
-const ALPENGLOW_PROGRESS_SPIN_DURATION: Duration = Duration::from_millis(1);
+const ALPENGLOW_PROGRESS_SPIN_DURATION: Duration = Duration::from_micros(100);
+/// longest wait between progress checks under alpenglow.
+const ALPENGLOW_PROGRESS_MAX_WAIT: Duration = Duration::from_millis(1);
 
 /// Spawns a thread to track and send progress updates.
 pub fn spawn(
@@ -134,6 +136,10 @@ impl ProgressTracker {
             std::thread::yield_now();
             return;
         };
+        // The deadline is measured from the slot clock, which a late ParentReady for a
+        // mid-window slot moves to "now". Waiting a bank offset past that oversleeps the
+        // window's last slot, so the scheduler never sees it start.
+        let deadline = deadline.min(Instant::now() + ALPENGLOW_PROGRESS_MAX_WAIT);
 
         let sleep_until = deadline
             .checked_sub(ALPENGLOW_PROGRESS_SPIN_DURATION)
