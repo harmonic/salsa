@@ -8,7 +8,8 @@ use {
     crate::{
         banking_trace::{BankingPacketSender, BankingTracer},
         block_creation_loop::rewards::{
-            certs_requestor::CertsRequestor, msg_types::RewardRespSucc,
+            certs_requestor::CertsRequestor,
+            msg_types::{RewardRequestToken, RewardRespSucc},
             reward_certs_service::RewardCertsService,
         },
         replay_stage::{Finalizer, ReplayStage},
@@ -599,6 +600,7 @@ fn produce_window(
 ) -> Result<(), StartLeaderError> {
     update_leader_window_clock(ctx, start_slot, block_timer);
 
+    let mut reward_cert_request = request_reward_certs(ctx, start_slot)?;
     // Insert the first bank
     let mut working_bank = start_leader_wait_for_parent_replay(
         start_slot,
@@ -625,9 +627,14 @@ fn produce_window(
         let mut bank_completion_measure = Measure::start("bank_completion");
         let optimistic_parent =
             (fast_leader_handover && slot == start_slot).then_some(parent_block);
-        if let Err(e) =
-            record_and_complete_block(ctx, slot, optimistic_parent, &mut block_timer, timeout)
-        {
+        if let Err(e) = record_and_complete_block(
+            ctx,
+            slot,
+            optimistic_parent,
+            reward_cert_request,
+            &mut block_timer,
+            timeout,
+        ) {
             if ctx.exit.load(Ordering::Relaxed) {
                 return Ok(());
             }
@@ -653,6 +660,7 @@ fn produce_window(
             break;
         }
 
+        reward_cert_request = request_reward_certs(ctx, slot)?;
         // Although `slot - 1`has been cleared from `poh_recorder`, it might not have finished processing in
         // `replay_stage`, which is why we use `start_leader_retry_replay`
         working_bank = start_leader_wait_for_parent_replay(slot, slot - 1, None, block_timer, ctx)?;
@@ -661,6 +669,30 @@ fn produce_window(
     window_production_start.stop();
     ctx.metrics.window_production_elapsed += window_production_start.as_us();
     Ok(())
+}
+
+/// Asks the rewards service to build the reward certs for `slot`'s footer.
+///
+/// Call this before waiting for the parent. That wait can use up most of the slot's budget, and
+/// the footer doesn't wait for the reply, so requesting afterwards can leave the rewards service
+/// no time to answer.
+fn request_reward_certs(
+    ctx: &mut LeaderContext,
+    slot: Slot,
+) -> Result<Option<RewardRequestToken>, StartLeaderError> {
+    // Do not build reward certs for the first NUM_SLOTS_FOR_REWARD AG slots as the reward slots
+    // would be tower slots.
+    if slot
+        <= ctx
+            .genesis_cert_block_marker
+            .slot
+            .saturating_add(NUM_SLOTS_FOR_REWARD)
+    {
+        return Ok(None);
+    }
+    ctx.reward_certs_requestor
+        .request_reward_certs(ctx.my_pubkey, slot)
+        .map_err(|()| StartLeaderError::PohRecorder(PohRecorderError::ChannelDisconnected))
 }
 
 /// Records incoming transactions until we reach the block timeout.
@@ -674,23 +706,10 @@ fn record_and_complete_block(
     ctx: &mut LeaderContext,
     bank_slot: Slot,
     mut optimistic_parent: Option<Block>,
+    reward_cert_request: Option<RewardRequestToken>,
     block_timer: &mut Instant,
     block_timeout: Duration,
 ) -> Result<(), PohRecorderError> {
-    // Do not build reward certs for the first NUM_SLOTS_FOR_REWARD AG slots as the reward slots
-    // would be tower slots.
-    let reward_cert_request = if bank_slot
-        > ctx
-            .genesis_cert_block_marker
-            .slot
-            .saturating_add(NUM_SLOTS_FOR_REWARD)
-    {
-        ctx.reward_certs_requestor
-            .request_reward_certs(ctx.my_pubkey, bank_slot)
-            .map_err(|()| PohRecorderError::ChannelDisconnected)?
-    } else {
-        None
-    };
     let mut accumulated_txs = vec![];
     let mut records_shutdown = false;
     let window_has_moved_on = loop {
@@ -1882,7 +1901,7 @@ mod tests {
 
         let start = Instant::now();
         let result =
-            record_and_complete_block(&mut ctx, 1, None, &mut Instant::now(), Duration::ZERO);
+            record_and_complete_block(&mut ctx, 1, None, None, &mut Instant::now(), Duration::ZERO);
         assert!(matches!(result, Err(PohRecorderError::WindowMovedOn(1))));
         assert!(start.elapsed() < Duration::from_millis(250));
         assert!(!ctx.poh_recorder.read().unwrap().has_bank());
