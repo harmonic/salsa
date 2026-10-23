@@ -1,13 +1,15 @@
 //! Shared slot timing calculations for Alpenglow.
 
 use {
-    solana_clock::Slot, solana_runtime::leader_schedule_utils::last_of_consecutive_leader_slots,
+    crate::block_creation_loop::block_deadline,
+    solana_clock::Slot,
+    solana_runtime::leader_schedule_utils::{last_of_consecutive_leader_slots, leader_slot_index},
     std::time::Duration,
 };
 
 pub(super) const ALPENGLOW_PROGRESS_STEP: u8 = 5;
 
-fn alpenglow_progress(elapsed: Duration, slot_duration: Duration) -> u8 {
+pub(super) fn alpenglow_progress(elapsed: Duration, slot_duration: Duration) -> u8 {
     if slot_duration.is_zero() {
         return 100;
     }
@@ -18,6 +20,21 @@ fn alpenglow_progress(elapsed: Duration, slot_duration: Duration) -> u8 {
         .saturating_div(slot_duration.as_nanos())
         .min(100) as u8;
     (percentage / ALPENGLOW_PROGRESS_STEP) * ALPENGLOW_PROGRESS_STEP
+}
+
+/// Returns `(start, length)` of the elapsed leader-window time during which `bank_slot` records:
+/// from the previous slot's deadline, or the window start, to its own deadline.
+pub(super) fn alpenglow_bank_window(
+    bank_slot: Slot,
+    slot_duration: Duration,
+) -> (Duration, Duration) {
+    let end = block_deadline(slot_duration, bank_slot);
+    let start = if leader_slot_index(bank_slot) == 0 {
+        Duration::ZERO
+    } else {
+        block_deadline(slot_duration, bank_slot.saturating_sub(1))
+    };
+    (start, end.saturating_sub(start))
 }
 
 pub(super) fn alpenglow_slot_progress(
@@ -72,6 +89,15 @@ mod tests {
             100
         );
         assert_eq!(alpenglow_progress(Duration::ZERO, Duration::ZERO), 100);
+    }
+
+    #[test]
+    fn test_alpenglow_bank_window() {
+        let ms = Duration::from_millis;
+        assert_eq!(alpenglow_bank_window(4, ms(200)), (ms(0), ms(144)));
+        assert_eq!(alpenglow_bank_window(5, ms(200)), (ms(144), ms(200)));
+        assert_eq!(alpenglow_bank_window(7, ms(200)), (ms(544), ms(200)));
+        assert_eq!(alpenglow_bank_window(8, ms(200)), (ms(0), ms(144)));
     }
 
     #[test]

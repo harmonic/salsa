@@ -2,7 +2,9 @@
 //!
 
 use {
-    super::alpenglow_timing::{ALPENGLOW_PROGRESS_STEP, alpenglow_slot_progress},
+    super::alpenglow_timing::{
+        ALPENGLOW_PROGRESS_STEP, alpenglow_bank_window, alpenglow_progress, alpenglow_slot_progress,
+    },
     crate::banking_stage::consume_worker::ConsumeWorkerMetrics,
     agave_scheduler_bindings::ProgressMessage,
     agave_votor::slot_clock::SharedAlpenglowSlotClock,
@@ -21,7 +23,9 @@ use {
     },
 };
 
-const ALPENGLOW_PROGRESS_SPIN_DURATION: Duration = Duration::from_millis(1);
+const ALPENGLOW_PROGRESS_SPIN_DURATION: Duration = Duration::from_micros(100);
+/// longest wait between progress checks under alpenglow.
+const ALPENGLOW_PROGRESS_MAX_WAIT: Duration = Duration::from_millis(1);
 
 /// Spawns a thread to track and send progress updates.
 pub fn spawn(
@@ -115,9 +119,14 @@ impl ProgressTracker {
     fn wait_for_next_progress_boundary(&self) {
         let deadline = if self.migration_status.is_alpenglow_enabled() {
             self.alpenglow_slot_clock.load().and_then(|slot_info| {
+                // Step through the working bank's recording window, which progress is measured on
+                let (start, length) = match self.shared_leader_state.load().working_bank() {
+                    Some(bank) => alpenglow_bank_window(bank.slot(), slot_info.slot_duration),
+                    None => (Duration::ZERO, slot_info.slot_duration),
+                };
                 next_alpenglow_progress_deadline(
-                    slot_info.started_at,
-                    slot_info.slot_duration,
+                    slot_info.started_at.checked_add(start)?,
+                    length,
                     Instant::now(),
                 )
             })
@@ -128,6 +137,9 @@ impl ProgressTracker {
             std::thread::yield_now();
             return;
         };
+        // The next bank is installed just after the current bank's last progress boundary, so
+        // sleeping to the following boundary would report its start up to a full step late.
+        let deadline = deadline.min(Instant::now() + ALPENGLOW_PROGRESS_MAX_WAIT);
 
         let sleep_until = deadline
             .checked_sub(ALPENGLOW_PROGRESS_SPIN_DURATION)
@@ -173,21 +185,31 @@ impl ProgressTracker {
                 self.last_observed_bank_id = Some(bank_id);
             }
 
-            let current_slot_progress = if self.migration_status.is_alpenglow_enabled() {
-                self.alpenglow_slot_clock
-                    .load()
-                    .map(|slot_info| {
-                        alpenglow_bank_progress(
-                            working_bank.slot(),
-                            slot_info.slot,
-                            slot_info.started_at.elapsed(),
-                            Duration::from_nanos_u128(working_bank.ns_per_slot),
-                        )
-                    })
-                    .unwrap_or(0)
-            } else {
-                progress(working_bank.slot(), tick_height, self.ticks_per_slot)
-            };
+            let slot_target_bank_time_ms = target_bank_time_ms(working_bank.ns_per_slot);
+            let (current_slot_progress, target_bank_time_ms) =
+                if self.migration_status.is_alpenglow_enabled() {
+                    self.alpenglow_slot_clock
+                        .load()
+                        .map(|slot_info| {
+                            // Against the bank's recording deadline, which is earlier than the
+                            // slot boundary, so 100 means the bank is closing
+                            let (_, length) =
+                                alpenglow_bank_window(working_bank.slot(), slot_info.slot_duration);
+                            let progress = alpenglow_bank_progress(
+                                working_bank.slot(),
+                                slot_info.slot,
+                                slot_info.started_at.elapsed(),
+                                slot_info.slot_duration,
+                            );
+                            (progress, target_bank_time_ms(length.as_nanos()))
+                        })
+                        .unwrap_or((0, slot_target_bank_time_ms))
+                } else {
+                    (
+                        progress(working_bank.slot(), tick_height, self.ticks_per_slot),
+                        slot_target_bank_time_ms,
+                    )
+                };
 
             ProgressMessage {
                 leader_state: agave_scheduler_bindings::LEADER_READY,
@@ -200,7 +222,7 @@ impl ProgressTracker {
                 remaining_allocated_accounts_data_size: self
                     .remaining_allocated_accounts_data_size(),
                 latest_blockhash: working_bank.last_blockhash().to_bytes(),
-                target_bank_time_ms: target_bank_time_ms(working_bank.ns_per_slot),
+                target_bank_time_ms,
             }
         } else {
             self.last_observed_bank_id = None;
@@ -300,19 +322,21 @@ fn next_alpenglow_progress_deadline(
     started_at.checked_add(Duration::from_nanos_u128(next_boundary_nanos))
 }
 
+/// Progress of `bank_slot` through its recording window (see [`alpenglow_bank_window`])
 fn alpenglow_bank_progress(
     bank_slot: Slot,
     window_start_slot: Slot,
     elapsed: Duration,
     slot_duration: Duration,
 ) -> u8 {
-    let (clock_slot, clock_progress) =
-        alpenglow_slot_progress(window_start_slot, elapsed, slot_duration);
-    match bank_slot.cmp(&clock_slot) {
-        std::cmp::Ordering::Less => 100,
-        std::cmp::Ordering::Equal => clock_progress,
-        std::cmp::Ordering::Greater => 0,
+    if bank_slot < window_start_slot {
+        return 100;
     }
+    if bank_slot > last_of_consecutive_leader_slots(window_start_slot) {
+        return 0;
+    }
+    let (start, length) = alpenglow_bank_window(bank_slot, slot_duration);
+    alpenglow_progress(elapsed.saturating_sub(start), length)
 }
 
 /// Calculate progress through a slot based on tick-height.
@@ -564,27 +588,55 @@ mod tests {
 
     #[test]
     fn test_alpenglow_bank_progress() {
+        // Recording stops 56ms before each slot boundary: slot 4 records over [0, 344ms),
+        // slot 5 over [344ms, 744ms)
         let slot_duration = Duration::from_millis(400);
-        assert_eq!(
-            alpenglow_bank_progress(4, 4, Duration::from_millis(399), slot_duration),
-            95
+        let ms = Duration::from_millis;
+        assert_eq!(alpenglow_bank_progress(4, 4, ms(0), slot_duration), 0);
+        assert_eq!(alpenglow_bank_progress(4, 4, ms(171), slot_duration), 45);
+        assert_eq!(alpenglow_bank_progress(4, 4, ms(172), slot_duration), 50);
+        assert_eq!(alpenglow_bank_progress(4, 4, ms(344), slot_duration), 100);
+        assert_eq!(alpenglow_bank_progress(4, 4, ms(399), slot_duration), 100);
+        assert_eq!(alpenglow_bank_progress(5, 4, ms(344), slot_duration), 0);
+        assert_eq!(alpenglow_bank_progress(5, 4, ms(544), slot_duration), 50);
+        assert_eq!(alpenglow_bank_progress(5, 4, ms(744), slot_duration), 100);
+        // Banks outside the clock's window
+        assert_eq!(alpenglow_bank_progress(7, 8, ms(0), slot_duration), 100);
+        assert_eq!(alpenglow_bank_progress(8, 4, ms(1_600), slot_duration), 0);
+    }
+
+    #[test]
+    fn test_alpenglow_progress_with_working_bank() {
+        let (bank, _bank_forks) =
+            Bank::new_for_tests(&solana_genesis_config::create_genesis_config(1).0)
+                .wrap_with_bank_forks_for_tests();
+        let mut shared_leader_state = SharedLeaderState::new(0, None, None);
+        shared_leader_state.store(Arc::new(LeaderState::new(
+            Some(bank.clone()),
+            bank.tick_height(),
+            Some(0),
+            Some((0, 3)),
+        )));
+        let alpenglow_slot_clock = SharedAlpenglowSlotClock::default();
+        let mut progress_tracker = ProgressTracker::new(
+            Arc::default(),
+            shared_leader_state,
+            vec![],
+            DEFAULT_TICKS_PER_SLOT,
+            Arc::new(MigrationStatus::post_migration_status()),
+            alpenglow_slot_clock.clone(),
         );
-        assert_eq!(
-            alpenglow_bank_progress(4, 4, slot_duration, slot_duration),
-            100
-        );
-        assert_eq!(
-            alpenglow_bank_progress(5, 4, slot_duration, slot_duration),
-            0
-        );
-        assert_eq!(
-            alpenglow_bank_progress(7, 8, Duration::ZERO, slot_duration),
-            100
-        );
-        assert_eq!(
-            alpenglow_bank_progress(8, 4, Duration::from_millis(1_600), slot_duration),
-            0
-        );
+
+        // 180ms into a 400ms slot whose bank records for 344ms: 52% of the bank's window
+        let started_at = Instant::now()
+            .checked_sub(Duration::from_millis(180))
+            .unwrap();
+        alpenglow_slot_clock.update(0, started_at, Duration::from_millis(400));
+        let (message, _) = progress_tracker.produce_progress_message().unwrap();
+        assert_eq!(message.leader_state, agave_scheduler_bindings::LEADER_READY);
+        assert_eq!(message.current_slot, bank.slot());
+        assert_eq!(message.current_slot_progress, 50);
+        assert_eq!(message.target_bank_time_ms, 344);
     }
 
     #[test]
