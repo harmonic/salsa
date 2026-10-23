@@ -1,5 +1,8 @@
 use {
-    crate::{banking_stage::BankingControlMsg, repair::repair_service::OutstandingShredRepairs},
+    crate::{
+        banking_stage::BankingControlMsg, repair::repair_service::OutstandingShredRepairs,
+        tpu_override::TpuOverride,
+    },
     agave_event_system::EventSystem,
     agave_votor::event::VotorEventSender,
     arc_swap::ArcSwap,
@@ -12,7 +15,7 @@ use {
     std::{
         collections::{HashMap, HashSet},
         net::UdpSocket,
-        sync::{Arc, RwLock},
+        sync::{Arc, Mutex, RwLock},
     },
     tokio::sync::mpsc,
 };
@@ -87,6 +90,7 @@ pub struct AdminRpcRequestMetadataPostInit {
     pub outstanding_repair_requests: Arc<RwLock<OutstandingShredRepairs>>,
     pub node: Option<Arc<NodeMultihoming>>,
     pub banking_control_sender: mpsc::Sender<BankingControlMsg>,
+    pub tpu_override: Arc<Mutex<TpuOverride>>,
     pub snapshot_controller: Arc<SnapshotController>,
     pub blockstore: Arc<Blockstore>,
     pub votor_event_sender: VotorEventSender,
