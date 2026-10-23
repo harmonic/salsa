@@ -21,6 +21,7 @@ use {
         sigverify_stage::SigVerifyStage,
         staked_nodes_updater_service::StakedNodesUpdaterService,
         tpu_entry_notifier::TpuEntryNotifier,
+        tpu_override::TpuOverride,
         validator::{BlockProductionMethod, GeneratorConfig},
     },
     agave_banking_stage_ingress_types::SchedulerPriorityFloor,
@@ -66,7 +67,7 @@ use {
         net::{Ipv4Addr, SocketAddr, UdpSocket},
         num::NonZeroUsize,
         path::PathBuf,
-        sync::{Arc, RwLock, atomic::AtomicBool},
+        sync::{Arc, Mutex, RwLock, atomic::AtomicBool},
         thread::{self, JoinHandle},
     },
     tokio::sync::mpsc,
@@ -163,6 +164,7 @@ impl Tpu {
         key_notifiers: Arc<RwLock<KeyUpdaters>>,
         banking_control_receiver: mpsc::Receiver<BankingControlMsg>,
         scheduler_bindings: Option<(PathBuf, mpsc::Sender<BankingControlMsg>)>,
+        tpu_override: Arc<Mutex<TpuOverride>>,
         cancel: CancellationToken,
         votor_event_sender: VotorEventSender,
         shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
@@ -329,6 +331,7 @@ impl Tpu {
             prioritization_fee_cache,
             filter_keys,
             scheduler_priority_floor,
+            Some(tpu_override),
         );
 
         #[cfg(unix)]
