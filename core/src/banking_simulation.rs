@@ -831,6 +831,7 @@ impl BankingSimulator {
             None,
             Arc::default(),
             Arc::new(SchedulerPriorityFloor::default()),
+            None,
         );
 
         let (&_slot, &raw_base_event_time) = freeze_time_by_slot

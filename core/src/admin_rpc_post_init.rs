@@ -1,7 +1,7 @@
 use {
     crate::{
         banking_stage::BankingControlMsg, cluster_slots_service::cluster_slots::ClusterSlots,
-        repair::repair_service::OutstandingShredRepairs,
+        repair::repair_service::OutstandingShredRepairs, tpu_override::TpuOverride,
     },
     agave_votor::event::VotorEventSender,
     arc_swap::ArcSwap,
@@ -14,7 +14,7 @@ use {
     std::{
         collections::{HashMap, HashSet},
         net::UdpSocket,
-        sync::{Arc, RwLock},
+        sync::{Arc, Mutex, RwLock},
     },
     tokio::sync::mpsc,
 };
@@ -89,6 +89,7 @@ pub struct AdminRpcRequestMetadataPostInit {
     pub cluster_slots: Arc<ClusterSlots>,
     pub node: Option<Arc<NodeMultihoming>>,
     pub banking_control_sender: mpsc::Sender<BankingControlMsg>,
+    pub tpu_override: Arc<Mutex<TpuOverride>>,
     pub snapshot_controller: Arc<SnapshotController>,
     pub blockstore: Arc<Blockstore>,
     pub votor_event_sender: VotorEventSender,
