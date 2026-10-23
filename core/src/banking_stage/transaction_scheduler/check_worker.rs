@@ -429,9 +429,18 @@ pub(crate) mod external {
             let preloaded_addresses =
                 if flags & check_message_flags::LOAD_ADDRESS_LOOKUP_TABLES != 0 {
                     response.resolve_flags |= resolve_flags::PERFORMED;
-                    let Ok((addresses, deactivation_slot)) =
-                        root_bank.load_addresses_for_view(&transaction)
-                    else {
+                    // A transaction over the lock limit can never execute, and its loaded
+                    // addresses might not fit one allocation.
+                    let within_lock_limit = root_bank
+                        .get_transaction_account_lock_limits()
+                        .for_version(transaction.version().into())
+                        .is_ok_and(|limit| usize::from(transaction.total_num_accounts()) <= limit);
+                    let resolved = if within_lock_limit {
+                        root_bank.load_addresses_for_view(&transaction).ok()
+                    } else {
+                        None
+                    };
+                    let Some((addresses, deactivation_slot)) = resolved else {
                         response.resolve_flags |= resolve_flags::FAILED;
                         if flags & check_message_flags::CALCULATE_SCHEDULING_DETAILS != 0 {
                             response.scheduling_details_flags |= scheduling_details_flags::FAILED;
@@ -733,6 +742,7 @@ pub(crate) mod external {
             },
             solana_compute_budget_interface::ComputeBudgetInstruction,
             solana_hash::Hash,
+            solana_instruction::{AccountMeta, Instruction},
             solana_keypair::Keypair,
             solana_leader_schedule::SlotLeader,
             solana_ledger::genesis_utils::GenesisConfigInfo,
@@ -1384,6 +1394,65 @@ pub(crate) mod external {
             assert_eq!(responses[0].resolution_slot, test_frame.bank.slot());
             assert_eq!(responses[0].resolved_pubkeys.num_pubkeys, 0);
             assert_eq!(responses[0].min_alt_deactivation_slot, u64::MAX);
+
+            test_frame.free_batch(batch);
+        }
+
+        #[test]
+        fn test_resolve_over_account_lock_limit() {
+            let mut test_frame = setup_check_worker_test_frame();
+            let fee_payer = Keypair::new();
+            // Exporting this many addresses would not fit one allocation.
+            let num_loaded = rts_alloc::MAX_ALLOC_SIZE / core::mem::size_of::<Pubkey>() + 1;
+            let addresses: Vec<_> = (0..num_loaded).map(|_| Pubkey::new_unique()).collect();
+            let table_key = Pubkey::new_unique();
+            let table_data = AddressLookupTable {
+                meta: LookupTableMeta::default(),
+                addresses: addresses.clone().into(),
+            }
+            .serialize_for_tests()
+            .unwrap();
+            let table_account = AccountSharedData::new_with_data(1, table_data, &program::id());
+            test_frame.bank.store_account(&table_key, &table_account);
+            let instruction = Instruction::new_with_bytes(
+                Pubkey::new_unique(),
+                &[],
+                addresses
+                    .iter()
+                    .map(|key| AccountMeta::new_readonly(*key, false))
+                    .collect(),
+            );
+            let transaction = VersionedTransaction::try_new(
+                VersionedMessage::V0(
+                    v0::Message::try_compile(
+                        &fee_payer.pubkey(),
+                        &[instruction],
+                        &[AddressLookupTableAccount {
+                            key: table_key,
+                            addresses,
+                        }],
+                        test_frame.bank.confirmed_last_blockhash(),
+                    )
+                    .unwrap(),
+                ),
+                &[&fee_payer],
+            )
+            .unwrap();
+            let batch = test_frame.allocate_batch(&[wincode::serialize(&transaction).unwrap()]);
+
+            test_frame.send_message(PackToCheckWorkerMessage {
+                flags: check_message_flags::LOAD_ADDRESS_LOOKUP_TABLES,
+                batch: batch.region,
+            });
+            test_frame.iterate().unwrap();
+            let response = test_frame.recv_response();
+            assert_eq!(response.processed_code, processed_codes::PROCESSED);
+            let responses = test_frame.check_responses(&response.responses);
+            assert_eq!(
+                responses[0].resolve_flags,
+                resolve_flags::REQUESTED | resolve_flags::PERFORMED | resolve_flags::FAILED
+            );
+            assert_eq!(responses[0].resolved_pubkeys.num_pubkeys, 0);
 
             test_frame.free_batch(batch);
         }
