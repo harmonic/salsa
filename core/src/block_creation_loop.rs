@@ -464,7 +464,15 @@ fn reset_poh_recorder(bank: &Arc<Bank>, ctx: &LeaderContext) {
 
 /// Returns the elapsed leader-window time at which `slot` must be completed.
 fn block_timeout(bank: &Bank, slot: Slot) -> Duration {
-    Duration::from_nanos_u128(bank.ns_per_slot_at_slot(slot))
+    block_deadline(
+        Duration::from_nanos_u128(bank.ns_per_slot_at_slot(slot)),
+        slot,
+    )
+}
+
+/// Returns the elapsed leader-window time at which `slot` must be completed, given `slot_duration`.
+pub(crate) fn block_deadline(slot_duration: Duration, slot: Slot) -> Duration {
+    slot_duration
         .saturating_mul((leader_slot_index(slot) as u32).saturating_add(1))
         .saturating_sub(TIME_TO_COMPLETE_BLOCK_BROADCAST)
         .saturating_sub(BLOCK_PRODUCTION_BUFFER)
