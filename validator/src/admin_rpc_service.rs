@@ -1,8 +1,12 @@
 use {
-    crate::shred_receiver_addresses::parse_shred_receiver_addresses,
+    crate::{
+        shred_receiver_addresses::parse_shred_receiver_addresses,
+        tip_crank::{MEMO_LEN, TipCrank, TipCrankError},
+    },
     agave_votor::{
         event::VotorEvent, vote_history::VoteHistory, vote_history_storage::VoteHistoryStorage,
     },
+    base64::{Engine, prelude::BASE64_STANDARD},
     crossbeam_channel::Sender,
     jsonrpc_core::{BoxFuture, ErrorCode, MetaIoHandler, Metadata, Result},
     jsonrpc_core_client::{RpcError, transports::ipc},
@@ -64,6 +68,7 @@ pub struct AdminRpcRequestMetadata {
     pub staked_nodes_overrides: Arc<RwLock<HashMap<Pubkey, u64>>>,
     pub post_init: Arc<RwLock<Option<AdminRpcRequestMetadataPostInit>>>,
     pub rpc_to_plugin_manager_sender: Option<Sender<GeyserPluginManagerRequest>>,
+    pub tip_crank: Option<Arc<TipCrank>>,
 }
 
 impl Metadata for AdminRpcRequestMetadata {}
@@ -347,6 +352,24 @@ pub trait AdminRpc {
         meta: Self::Metadata,
         challenge: String,
     ) -> Result<AdminRpcAuthSignature>;
+
+    /// The tip-payment program the tip crank calls
+    #[rpc(meta, name = "getTipPaymentProgram")]
+    fn get_tip_payment_program(&self, meta: Self::Metadata) -> Result<String>;
+
+    /// Build and sign the crank that points this validator's tips at its tip
+    /// distribution account and `block_builder`, against the bank of `slot`,
+    /// which this identity must be producing. Returns the base64 transaction,
+    /// or null if the tips already go there
+    #[rpc(meta, name = "signTipCrank")]
+    fn sign_tip_crank(
+        &self,
+        meta: Self::Metadata,
+        slot: Slot,
+        block_builder: String,
+        block_builder_commission: u64,
+        memo: String,
+    ) -> Result<Option<String>>;
 
     #[rpc(meta, name = "manageBlockProduction")]
     fn manage_block_production(
@@ -1034,6 +1057,87 @@ impl AdminRpc for AdminRpcImpl {
         })
     }
 
+    fn get_tip_payment_program(&self, meta: Self::Metadata) -> Result<String> {
+        debug!("get_tip_payment_program request received");
+        let Some(tip_crank) = meta.tip_crank.as_deref() else {
+            return Err(jsonrpc_core::Error {
+                code: ErrorCode::InvalidRequest,
+                message: "No tip programs configured".to_string(),
+                data: None,
+            });
+        };
+        Ok(tip_crank.tip_payment_program_id().to_string())
+    }
+
+    fn sign_tip_crank(
+        &self,
+        meta: Self::Metadata,
+        slot: Slot,
+        block_builder: String,
+        block_builder_commission: u64,
+        memo: String,
+    ) -> Result<Option<String>> {
+        debug!("sign_tip_crank request received");
+        let Some(tip_crank) = meta.tip_crank.as_deref() else {
+            return Err(jsonrpc_core::Error {
+                code: ErrorCode::InvalidRequest,
+                message: "No tip programs configured".to_string(),
+                data: None,
+            });
+        };
+        let block_builder = block_builder.parse::<Pubkey>().map_err(|err| {
+            jsonrpc_core::error::Error::invalid_params(format!(
+                "Failed to parse block builder pubkey '{block_builder}': {err}"
+            ))
+        })?;
+        if block_builder_commission > 100 {
+            return Err(jsonrpc_core::error::Error::invalid_params(format!(
+                "Block builder commission {block_builder_commission} exceeds 100 percent"
+            )));
+        }
+        let memo = <[u8; MEMO_LEN]>::try_from(memo.as_bytes()).map_err(|_| {
+            jsonrpc_core::error::Error::invalid_params(format!("memo must be {MEMO_LEN} bytes"))
+        })?;
+        meta.with_post_init(|post_init| {
+            let keypair = post_init.cluster_info.keypair();
+            let bank = post_init
+                .bank_forks
+                .read()
+                .unwrap()
+                .get(slot)
+                .ok_or_else(|| {
+                    jsonrpc_core::error::Error::invalid_params(format!("No bank for slot {slot}"))
+                })?;
+            // Only sign for blocks this identity is producing right now
+            if *bank.leader_id() != keypair.pubkey() || bank.is_frozen() {
+                return Err(jsonrpc_core::error::Error::invalid_params(format!(
+                    "Slot {slot} is not being produced by {}",
+                    keypair.pubkey()
+                )));
+            }
+            let crank = tip_crank
+                .crank(
+                    &bank,
+                    &keypair,
+                    &block_builder,
+                    block_builder_commission,
+                    memo,
+                )
+                .map_err(|err| {
+                    warn!("Failed to build the tip crank for slot {slot}: {err}");
+                    jsonrpc_core::Error {
+                        code: match err {
+                            TipCrankError::InvalidBlockBuilder => ErrorCode::InvalidParams,
+                            _ => ErrorCode::InternalError,
+                        },
+                        message: format!("Failed to build the tip crank: {err}"),
+                        data: None,
+                    }
+                })?;
+            Ok(crank.map(|tx| BASE64_STANDARD.encode(tx)))
+        })
+    }
+
     fn manage_block_production(
         &self,
         meta: Self::Metadata,
@@ -1400,6 +1504,7 @@ mod tests {
         assert_matches::assert_matches,
         crossbeam_channel::bounded,
         serde_json::Value,
+        solana_account::AccountSharedData,
         solana_accounts_db::{
             accounts_db::{ACCOUNTS_DB_CONFIG_FOR_TESTING, AccountsDbConfig},
             accounts_index::AccountSecondaryIndexes,
@@ -1410,6 +1515,7 @@ mod tests {
             validator::{Validator, ValidatorConfig, ValidatorTpuConfig},
         },
         solana_gossip::{cluster_info::ClusterInfo, node::Node},
+        solana_leader_schedule::SlotLeader,
         solana_ledger::{
             blockstore::Blockstore,
             create_new_tmp_ledger,
@@ -1425,6 +1531,7 @@ mod tests {
             bank_forks::BankForks,
             genesis_utils::{ValidatorVoteKeypairs, create_genesis_config_with_vote_accounts},
         },
+        solana_transaction::Transaction,
         solana_turbine::ShredReceiverAddresses,
         std::{collections::HashSet, fs::remove_dir_all, sync::atomic::AtomicBool},
         tokio::sync::mpsc,
@@ -1434,6 +1541,7 @@ mod tests {
     struct TestConfig {
         account_indexes: AccountSecondaryIndexes,
         votor_event_sender: Option<VotorEventSender>,
+        tip_crank: Option<Arc<TipCrank>>,
     }
 
     struct RpcHandler {
@@ -1517,6 +1625,7 @@ mod tests {
                 }))),
                 staked_nodes_overrides: Arc::new(RwLock::new(HashMap::new())),
                 rpc_to_plugin_manager_sender: None,
+                tip_crank: config.tip_crank,
             };
             let mut io = MetaIoHandler::default();
             io.extend_with(AdminRpcImpl.to_delegate());
@@ -1571,14 +1680,142 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_sign_tip_crank() {
+        let tip_payment_program = Pubkey::new_unique();
+        let tip_distribution_program = Pubkey::new_unique();
+        let tip_crank = TipCrank::new(crate::tip_crank::TipCrankConfig {
+            tip_payment_program_id: tip_payment_program,
+            tip_distribution_program_id: tip_distribution_program,
+            merkle_root_upload_authority: Pubkey::new_unique(),
+            commission_bps: 0,
+        });
+        let RpcHandler { io, meta } = RpcHandler::start_with_config(TestConfig {
+            tip_crank: Some(Arc::new(tip_crank)),
+            ..TestConfig::default()
+        });
+        let (identity, bank_forks) = {
+            let post_init = meta.post_init.read().unwrap();
+            let post_init = post_init.as_ref().unwrap();
+            (post_init.cluster_info.id(), post_init.bank_forks.clone())
+        };
+        let root = bank_forks.read().unwrap().root_bank();
+        let vote_account = Pubkey::new_unique();
+        let leader = SlotLeader {
+            id: identity,
+            vote_address: vote_account,
+        };
+        for (slot, leader) in [(1, leader), (2, SlotLeader::new_unique())] {
+            let bank = Bank::new_from_parent(root.clone(), leader, slot);
+            bank_forks.write().unwrap().insert(bank);
+        }
+        let bank = bank_forks.read().unwrap().get(1).unwrap();
+
+        let request = |slot: Slot, block_builder: &str, commission: u64, memo: &str| -> Value {
+            let request = format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"signTipCrank","params":[{slot},{block_builder:?},{commission},{memo:?}]}}"#
+            );
+            serde_json::from_str(&io.handle_request_sync(&request, meta.clone()).unwrap()).unwrap()
+        };
+        let block_builder = Pubkey::new_unique();
+        let config = Pubkey::find_program_address(&[b"CONFIG_ACCOUNT"], &tip_payment_program).0;
+        let tip_receiver = Pubkey::find_program_address(
+            &[
+                b"TIP_DISTRIBUTION_ACCOUNT",
+                vote_account.as_ref(),
+                &bank.epoch().to_le_bytes(),
+            ],
+            &tip_distribution_program,
+        )
+        .0;
+        let store = |key: &Pubkey, data: Vec<u8>, owner: &Pubkey| {
+            let mut account = AccountSharedData::new(1_000_000, 0, owner);
+            account.set_data_from_slice(&data);
+            bank.store_account(key, &account);
+        };
+        let store_config = |tip_receiver: Pubkey| {
+            let data = [
+                &[155, 12, 170, 224, 30, 250, 204, 130][..],
+                tip_receiver.as_ref(),
+                block_builder.as_ref(),
+                &5u64.to_le_bytes(),
+                &[0; 9],
+            ]
+            .concat();
+            store(&config, data, &tip_payment_program);
+        };
+        let code = |response: Value| response["error"]["code"].clone();
+
+        let builder = block_builder.to_string();
+        // The tip payment program has no config yet
+        assert_eq!(
+            code(request(1, &builder, 5, "FBA")),
+            ErrorCode::InternalError.code()
+        );
+        store_config(Pubkey::new_unique());
+        let response = request(1, &builder, 5, "FBA");
+        let tx = BASE64_STANDARD
+            .decode(response["result"].as_str().unwrap())
+            .unwrap();
+        let tx: Transaction = bincode::deserialize(&tx).unwrap();
+        assert_eq!(tx.message.account_keys[0], identity);
+        assert_eq!(tx.message.recent_blockhash, bank.last_blockhash());
+        assert!(tx.verify().is_ok());
+
+        store_config(tip_receiver);
+        store(&tip_receiver, vec![1], &tip_distribution_program);
+        assert_eq!(request(1, &builder, 5, "FBA")["result"], Value::Null);
+
+        let default = Pubkey::default().to_string();
+        let config = config.to_string();
+        for (slot, block_builder, commission, memo) in [
+            (0, builder.as_str(), 5, "FBA"),
+            (2, builder.as_str(), 5, "FBA"),
+            (3, builder.as_str(), 5, "FBA"),
+            (1, default.as_str(), 5, "FBA"),
+            (1, "not a pubkey", 5, "FBA"),
+            (1, config.as_str(), 5, "FBA"),
+            (1, builder.as_str(), 101, "FBA"),
+            (1, builder.as_str(), 5, ""),
+            (1, builder.as_str(), 5, "FB"),
+            (1, builder.as_str(), 5, "FBAX"),
+        ] {
+            assert_eq!(
+                code(request(slot, block_builder, commission, memo)),
+                ErrorCode::InvalidParams.code(),
+                "slot={slot} block_builder={block_builder} commission={commission} memo={memo:?}"
+            );
+        }
+        bank.freeze();
+        assert_eq!(
+            code(request(1, &builder, 5, "FBA")),
+            ErrorCode::InvalidParams.code()
+        );
+
+        let request = r#"{"jsonrpc":"2.0","id":1,"method":"getTipPaymentProgram"}"#;
+        let response: Value =
+            serde_json::from_str(&io.handle_request_sync(request, meta).unwrap()).unwrap();
+        assert_eq!(response["result"], tip_payment_program.to_string());
+        let RpcHandler { io, meta } = RpcHandler::start_with_config(TestConfig::default());
+        let unconfigured = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"signTipCrank","params":[1,{builder:?},5,"FBA"]}}"#
+        );
+        for request in [request, unconfigured.as_str()] {
+            let response: Value =
+                serde_json::from_str(&io.handle_request_sync(request, meta.clone()).unwrap())
+                    .unwrap();
+            assert_eq!(code(response), ErrorCode::InvalidRequest.code());
+        }
+    }
+
     // This test checks that the rpc call to `set_identity` works a expected with
     // Bank but without validator.
     #[test]
     fn test_set_identity() {
         let (votor_event_sender, votor_event_receiver) = bounded(1024);
         let rpc = RpcHandler::start_with_config(TestConfig {
-            account_indexes: AccountSecondaryIndexes::default(),
             votor_event_sender: Some(votor_event_sender),
+            ..TestConfig::default()
         });
 
         let RpcHandler { io, meta, .. } = rpc;
@@ -1919,6 +2156,7 @@ mod tests {
                 post_init: post_init.clone(),
                 staked_nodes_overrides: Arc::new(RwLock::new(HashMap::new())),
                 rpc_to_plugin_manager_sender: None,
+                tip_crank: None,
             };
 
             let validator = Validator::new(
@@ -2007,6 +2245,7 @@ mod tests {
             post_init: post_init.clone(),
             staked_nodes_overrides: Arc::new(RwLock::new(HashMap::new())),
             rpc_to_plugin_manager_sender: None,
+            tip_crank: None,
         };
 
         let snapshot_controller = meta.snapshot_controller();
@@ -2103,6 +2342,7 @@ mod tests {
             post_init: Arc::new(RwLock::new(None)),
             staked_nodes_overrides: Arc::new(RwLock::new(HashMap::new())),
             rpc_to_plugin_manager_sender: None,
+            tip_crank: None,
         };
 
         let response = io.handle_request_sync(request, meta_no_post_init);

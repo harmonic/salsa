@@ -465,6 +465,7 @@ fn main() {
             tower_storage: tower_storage.clone(),
             vote_history_storage: vote_history_storage.clone(),
             rpc_to_plugin_manager_sender,
+            tip_crank: None,
         },
     );
     let dashboard = if output == Output::Dashboard {
