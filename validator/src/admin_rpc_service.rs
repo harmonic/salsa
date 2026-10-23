@@ -92,6 +92,15 @@ impl AdminRpcRequestMetadata {
     }
 }
 
+/// The identity's signature over an external scheduler's auth challenge
+#[derive(Debug, Deserialize, Serialize)]
+pub struct AdminRpcAuthSignature {
+    /// The identity that signed
+    pub pubkey: String,
+    /// Signature over `"<pubkey>-<challenge>"`
+    pub signature: String,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct AdminRpcContactInfo {
     pub id: String,
@@ -330,6 +339,15 @@ pub trait AdminRpc {
         public_tvu_addr: SocketAddr,
     ) -> Result<()>;
 
+    /// Sign `"<identity>-<challenge>"` so an external scheduler can authenticate
+    /// as this validator without holding its keypair
+    #[rpc(meta, name = "signAuthChallenge")]
+    fn sign_auth_challenge(
+        &self,
+        meta: Self::Metadata,
+        challenge: String,
+    ) -> Result<AdminRpcAuthSignature>;
+
     #[rpc(meta, name = "manageBlockProduction")]
     fn manage_block_production(
         &self,
@@ -346,6 +364,9 @@ pub trait AdminRpc {
     #[rpc(meta, name = "blockstorePurge")]
     fn blockstore_purge(&self, meta: Self::Metadata, maximum_purge_slot: Slot) -> Result<()>;
 }
+
+/// Length of an accepted auth challenge
+const AUTH_CHALLENGE_LEN: usize = 9;
 
 pub struct AdminRpcImpl;
 impl AdminRpc for AdminRpcImpl {
@@ -987,6 +1008,32 @@ impl AdminRpc for AdminRpcImpl {
         })
     }
 
+    fn sign_auth_challenge(
+        &self,
+        meta: Self::Metadata,
+        challenge: String,
+    ) -> Result<AdminRpcAuthSignature> {
+        debug!("sign_auth_challenge rpc request received");
+        if challenge.len() != AUTH_CHALLENGE_LEN {
+            warn!(
+                "Refused to sign an auth challenge of {} bytes",
+                challenge.len()
+            );
+            return Err(jsonrpc_core::error::Error::invalid_params(format!(
+                "challenge must be {AUTH_CHALLENGE_LEN} bytes"
+            )));
+        }
+        meta.with_post_init(|post_init| {
+            let keypair = post_init.cluster_info.keypair();
+            let pubkey = keypair.pubkey();
+            let signature = keypair.sign_message(format!("{pubkey}-{challenge}").as_bytes());
+            Ok(AdminRpcAuthSignature {
+                pubkey: pubkey.to_string(),
+                signature: signature.to_string(),
+            })
+        })
+    }
+
     fn manage_block_production(
         &self,
         meta: Self::Metadata,
@@ -1489,6 +1536,39 @@ mod tests {
 
         let bank = Bank::new_with_paths_for_tests(&genesis_config, Some(config), vec![], None);
         (BankForks::new_rw_arc(bank), Arc::new(voting_keypair))
+    }
+
+    #[test]
+    fn test_sign_auth_challenge() {
+        let RpcHandler { io, meta } = RpcHandler::start_with_config(TestConfig::default());
+        let request = |challenge: &str| -> Value {
+            let request = format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"signAuthChallenge","params":[{challenge:?}]}}"#
+            );
+            serde_json::from_str(&io.handle_request_sync(&request, meta.clone()).unwrap()).unwrap()
+        };
+
+        let keypair = meta
+            .post_init
+            .read()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .cluster_info
+            .keypair();
+        let identity = keypair.pubkey();
+        let response = request("aZ09-_xyz");
+        assert_eq!(response["result"]["pubkey"], identity.to_string());
+        // ed25519 signing is deterministic
+        let expected = keypair.sign_message(format!("{identity}-aZ09-_xyz").as_bytes());
+        assert_eq!(response["result"]["signature"], expected.to_string());
+
+        for challenge in ["", "12345678", "1234567890"] {
+            assert!(
+                request(challenge)["error"].is_object(),
+                "signed {challenge:?}"
+            );
+        }
     }
 
     // This test checks that the rpc call to `set_identity` works a expected with
