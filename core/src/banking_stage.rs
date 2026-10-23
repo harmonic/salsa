@@ -13,6 +13,7 @@ use {
                 scheduler_error::SchedulerError,
             },
         },
+        tpu_override::TpuOverride,
         validator::BlockProductionMethod,
     },
     agave_banking_stage_ingress_types::{BankingPacketReceiver, SchedulerPriorityFloor},
@@ -35,7 +36,7 @@ use {
         collections::HashSet,
         num::{NonZeroU64, NonZeroUsize},
         sync::{
-            Arc, RwLock,
+            Arc, Mutex, RwLock,
             atomic::{AtomicBool, Ordering},
         },
         thread::{self, Builder, JoinHandle},
@@ -103,6 +104,7 @@ pub struct BankingStage {
     log_messages_bytes_limit: Option<usize>,
     filter_keys: Arc<HashSet<Pubkey>>,
     priority_floor: Arc<SchedulerPriorityFloor>,
+    tpu_override: Option<Arc<Mutex<TpuOverride>>>,
     threads: FuturesUnordered<NamedTask<std::thread::Result<()>>>,
 }
 
@@ -124,6 +126,7 @@ impl BankingStage {
         prioritization_fee_cache: Option<Arc<PrioritizationFeeCache>>,
         filter_keys: Arc<HashSet<Pubkey>>,
         priority_floor: Arc<SchedulerPriorityFloor>,
+        tpu_override: Option<Arc<Mutex<TpuOverride>>>,
     ) -> BankingStageHandle {
         let committer = Committer::new(transaction_status_sender, prioritization_fee_cache);
 
@@ -143,6 +146,7 @@ impl BankingStage {
             log_messages_bytes_limit,
             filter_keys,
             priority_floor,
+            tpu_override,
             threads: FuturesUnordered::default(),
         };
 
@@ -210,6 +214,11 @@ impl BankingStage {
             }
         }
 
+        // The external scheduler's TPU override, if any, ends with its session.
+        if let Some(tpu_override) = &self.tpu_override {
+            tpu_override.lock().unwrap().end_session();
+        }
+
         // Revert the exit signal.
         self.worker_exit_signal.store(false, Ordering::Relaxed);
 
@@ -241,7 +250,12 @@ impl BankingStage {
                 }
             },
             #[cfg(unix)]
-            BankingControlMsg::External { session } => self.spawn_external(session),
+            BankingControlMsg::External { session } => {
+                if let Some(tpu_override) = &self.tpu_override {
+                    tpu_override.lock().unwrap().start_session();
+                }
+                self.spawn_external(session)
+            }
         })?;
 
         self.threads.extend(threads.into_iter().map(|handle| {
@@ -771,6 +785,7 @@ mod tests {
             None,
             Arc::default(),
             Arc::new(SchedulerPriorityFloor::new()),
+            None,
         );
         drop(non_vote_sender);
         banking_stage.join().unwrap();
@@ -821,6 +836,7 @@ mod tests {
             None,
             Arc::default(),
             Arc::new(SchedulerPriorityFloor::new()),
+            None,
         );
 
         // This packet is valid, but explicitly discarded before BankingStage sees it.
@@ -939,6 +955,7 @@ mod tests {
             None,
             Arc::default(),
             Arc::new(SchedulerPriorityFloor::new()),
+            None,
         );
 
         let alice = Keypair::new();

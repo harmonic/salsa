@@ -25,6 +25,7 @@ use {
             transaction_scheduler::scheduler_controller::SchedulerConfig,
         },
         repair::repair_service,
+        tpu_override::TpuOverrideError,
         validator::{
             BlockProductionMethod, SchedulerPacing, TransactionStructure, ValidatorStartProgress,
             should_require_vote_history_file,
@@ -376,6 +377,18 @@ pub trait AdminRpc {
         block_builder_commission: u64,
         memo: String,
     ) -> Result<Option<String>>;
+
+    /// Advertise an external scheduler's TPU addresses until its session ends.
+    #[rpc(meta, name = "setTpuOverride")]
+    fn set_tpu_override(
+        &self,
+        meta: Self::Metadata,
+        tpu: SocketAddr,
+        tpu_forwards: SocketAddr,
+    ) -> Result<()>;
+
+    #[rpc(meta, name = "clearTpuOverride")]
+    fn clear_tpu_override(&self, meta: Self::Metadata) -> Result<()>;
 
     #[rpc(meta, name = "manageBlockProduction")]
     fn manage_block_production(
@@ -876,6 +889,8 @@ impl AdminRpc for AdminRpcImpl {
                 jsonrpc_core::Error::invalid_params("`Node` not initialized in post_init")
             })?;
 
+            // The interface's TPU addresses replace an external scheduler's override
+            post_init.tpu_override.lock().unwrap().clear();
             node.switch_active_interface(interface, &post_init.cluster_info)
                 .map_err(|e| {
                     jsonrpc_core::Error::invalid_params(format!(
@@ -964,6 +979,8 @@ impl AdminRpc for AdminRpcImpl {
                     );
                     jsonrpc_core::error::Error::internal_error()
                 })?;
+            // The operator's address is the node's own; an external scheduler's override yields
+            post_init.tpu_override.lock().unwrap().clear();
             post_init
                 .cluster_info
                 .set_tpu_quic(public_tpu_addr)
@@ -1000,6 +1017,7 @@ impl AdminRpc for AdminRpcImpl {
                     );
                     jsonrpc_core::error::Error::internal_error()
                 })?;
+            post_init.tpu_override.lock().unwrap().clear();
             post_init
                 .cluster_info
                 .set_tpu_forwards_quic(public_tpu_forwards_addr)
@@ -1159,6 +1177,39 @@ impl AdminRpc for AdminRpcImpl {
                     }
                 })?;
             Ok(crank.map(|tx| BASE64_STANDARD.encode(tx)))
+        })
+    }
+
+    fn set_tpu_override(
+        &self,
+        meta: Self::Metadata,
+        tpu: SocketAddr,
+        tpu_forwards: SocketAddr,
+    ) -> Result<()> {
+        debug!("set_tpu_override rpc request received: tpu={tpu} tpu_forwards={tpu_forwards}");
+        meta.with_post_init(|post_init| {
+            post_init
+                .tpu_override
+                .lock()
+                .unwrap()
+                .set(tpu, tpu_forwards)
+                .map_err(|err| jsonrpc_core::Error {
+                    code: match err {
+                        TpuOverrideError::NoSession => ErrorCode::InvalidRequest,
+                        TpuOverrideError::NotPublished => ErrorCode::InternalError,
+                        TpuOverrideError::InvalidAddress(_) => ErrorCode::InvalidParams,
+                    },
+                    message: err.to_string(),
+                    data: None,
+                })
+        })
+    }
+
+    fn clear_tpu_override(&self, meta: Self::Metadata) -> Result<()> {
+        debug!("clear_tpu_override rpc request received");
+        meta.with_post_init(|post_init| {
+            post_init.tpu_override.lock().unwrap().clear();
+            Ok(())
         })
     }
 
@@ -1523,6 +1574,7 @@ mod tests {
         },
         solana_core::{
             admin_rpc_post_init::{KeyUpdaterType, KeyUpdaters},
+            tpu_override::TpuOverride,
             validator::{Validator, ValidatorConfig, ValidatorTpuConfig},
         },
         solana_gossip::{cluster_info::ClusterInfo, node::Node},
@@ -1544,7 +1596,12 @@ mod tests {
         },
         solana_transaction::Transaction,
         solana_turbine::ShredReceiverAddresses,
-        std::{assert_matches, collections::HashSet, fs::remove_dir_all, sync::atomic::AtomicBool},
+        std::{
+            assert_matches,
+            collections::HashSet,
+            fs::remove_dir_all,
+            sync::{Mutex, atomic::AtomicBool},
+        },
         tokio::sync::mpsc,
     };
 
@@ -1614,6 +1671,7 @@ mod tests {
                 ),
                 post_init: Arc::new(RwLock::new(Some(AdminRpcRequestMetadataPostInit {
                     event_system: agave_event_system::EventSystem::stub(),
+                    tpu_override: Arc::new(Mutex::new(TpuOverride::new(cluster_info.clone()))),
                     cluster_info,
                     bank_forks,
                     vote_account: Arc::new(RwLock::new(vote_account)),
@@ -1817,6 +1875,24 @@ mod tests {
                     .unwrap();
             assert_eq!(code(response), ErrorCode::InvalidRequest.code());
         }
+    }
+
+    #[test]
+    fn test_tpu_override_requires_external_session() {
+        let RpcHandler { io, meta } = RpcHandler::start_with_config(TestConfig::default());
+        let request = |method: &str, params: &str| -> Value {
+            let request =
+                format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":[{params}]}}"#);
+            serde_json::from_str(&io.handle_request_sync(&request, meta.clone()).unwrap()).unwrap()
+        };
+
+        let response = request("setTpuOverride", r#""10.0.0.1:8009", "10.0.0.1:8010""#);
+        assert_eq!(response["error"]["code"], ErrorCode::InvalidRequest.code());
+        assert_eq!(
+            response["error"]["message"],
+            TpuOverrideError::NoSession.to_string()
+        );
+        assert_eq!(request("clearTpuOverride", "")["result"], Value::Null);
     }
 
     // This test checks that the rpc call to `set_identity` works a expected with

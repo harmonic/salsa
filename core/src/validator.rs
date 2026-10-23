@@ -25,6 +25,7 @@ use {
             verify_net_stats_access,
         },
         tpu::{Tpu, TpuSockets},
+        tpu_override::TpuOverride,
         tvu::{AlpenglowInitializationState, Tvu, TvuConfig, TvuSockets},
     },
     agave_event_system::{EventSystem, stream_policy::StreamPolicy},
@@ -1705,6 +1706,7 @@ impl Validator {
             }
         };
         let (banking_control_sender, banking_control_receiver) = mpsc::channel(1);
+        let tpu_override = Arc::new(Mutex::new(TpuOverride::new(cluster_info.clone())));
         let tpu = Tpu::new_with_client(
             &cluster_info,
             &poh_recorder,
@@ -1751,6 +1753,7 @@ impl Validator {
                     banking_control_sender.clone(),
                 )
             }),
+            tpu_override.clone(),
             cancel,
             votor_event_sender.clone(),
             config.shred_receiver_addresses.clone(),
@@ -1786,6 +1789,7 @@ impl Validator {
             outstanding_repair_requests,
             node: Some(node_multihoming),
             banking_control_sender,
+            tpu_override,
             snapshot_controller,
             blockstore: blockstore.clone(),
             votor_event_sender,

@@ -38,6 +38,7 @@ pub mod stats_reporter_service;
 pub mod system_monitor_service;
 pub mod tpu;
 mod tpu_entry_notifier;
+pub mod tpu_override;
 mod transaction_priority;
 pub mod tvu;
 pub mod validator;
