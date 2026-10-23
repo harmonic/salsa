@@ -20,6 +20,7 @@ use {
         },
         ledger_lockfile, lock_ledger,
         shred_receiver_addresses::parse_shred_receiver_addresses,
+        tip_crank::{TipCrank, TipCrankConfig},
     },
     agave_votor::vote_history_storage,
     agave_votor_transport::MAX_ENDPOINTS,
@@ -685,6 +686,24 @@ pub fn execute(
         } else {
             (None, None)
         };
+    // clap requires all three together
+    let tip_crank = match (
+        pubkey_of(matches, "tip_payment_program_pubkey"),
+        pubkey_of(matches, "tip_distribution_program_pubkey"),
+        pubkey_of(matches, "merkle_root_upload_authority"),
+    ) {
+        (
+            Some(tip_payment_program_id),
+            Some(tip_distribution_program_id),
+            Some(merkle_root_upload_authority),
+        ) => Some(Arc::new(TipCrank::new(TipCrankConfig {
+            tip_payment_program_id,
+            tip_distribution_program_id,
+            merkle_root_upload_authority,
+            commission_bps: value_t!(matches, "commission_bps", u16).unwrap_or_default(),
+        }))),
+        _ => None,
+    };
     admin_rpc_service::run(
         &ledger_path,
         admin_rpc_service::AdminRpcRequestMetadata {
@@ -699,6 +718,7 @@ pub fn execute(
             vote_history_storage: validator_config.vote_history_storage.clone(),
             staked_nodes_overrides,
             rpc_to_plugin_manager_sender,
+            tip_crank,
         },
     );
 
