@@ -29,6 +29,7 @@ agave-votor = { workspace = true }
 agave-votor-transport = { workspace = true }
 agave-xdp = { workspace = true }
 arc-swap = { workspace = true }
+base64 = { workspace = true }
 bytesize = { workspace = true }
 chrono = { workspace = true, features = ["default", "serde"] }
 clap = { workspace = true }
@@ -76,7 +77,7 @@ solana-native-token = { workspace = true }
 solana-net-utils = { workspace = true }
 solana-perf = { workspace = true }
 solana-poh = { workspace = true }
-solana-pubkey = { workspace = true }
+solana-pubkey = { workspace = true, features = ["curve25519"] }
 solana-rayon-threadlimit = { workspace = true }
 solana-rent = { workspace = true }
 solana-rpc = { workspace = true }
@@ -96,6 +97,7 @@ solana-unified-scheduler-pool = { workspace = true }
 solana-validator-exit = { workspace = true }
 solana-version = { workspace = true }
 solana-vote-program = { workspace = true }
+spl-memo-interface = { workspace = true }
 symlink = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
@@ -109,15 +111,18 @@ libc = { workspace = true }
 [dev-dependencies]
 assert_cmd = { workspace = true }
 assert_matches = { workspace = true }
+bincode = { workspace = true }
 predicates = { workspace = true }
 pretty_assertions = { workspace = true }
 scopeguard = { workspace = true }
 solana-account-decoder = { path = "../account-decoder", features = ["agave-unstable-api"] }
 solana-core = { path = "../core", features = ["agave-unstable-api", "dev-context-only-utils"] }
+solana-leader-schedule = { workspace = true }
 solana-program-option = { workspace = true }
 solana-program-pack = { workspace = true }
 solana-runtime = { path = "../runtime", features = ["agave-unstable-api", "dev-context-only-utils"] }
 solana-time-utils = { workspace = true }
+solana-transaction = { workspace = true, features = ["serde", "verify"] }
 tempfile = { workspace = true }
 test-case = { workspace = true }
 

@@ -487,6 +487,44 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
             ),
     )
     .arg(
+        Arg::with_name("tip_payment_program_pubkey")
+            .long("tip-payment-program-pubkey")
+            .value_name("TIP_PAYMENT_PROGRAM_PUBKEY")
+            .takes_value(true)
+            .validator(is_pubkey)
+            .requires_all(&[
+                "tip_distribution_program_pubkey",
+                "merkle_root_upload_authority",
+            ])
+            .help("The public key of the tip-payment program"),
+    )
+    .arg(
+        Arg::with_name("tip_distribution_program_pubkey")
+            .long("tip-distribution-program-pubkey")
+            .value_name("TIP_DISTRIBUTION_PROGRAM_PUBKEY")
+            .takes_value(true)
+            .validator(is_pubkey)
+            .requires("tip_payment_program_pubkey")
+            .help("The public key of the tip-distribution program."),
+    )
+    .arg(
+        Arg::with_name("merkle_root_upload_authority")
+            .long("merkle-root-upload-authority")
+            .value_name("MERKLE_ROOT_UPLOAD_AUTHORITY")
+            .takes_value(true)
+            .validator(is_pubkey)
+            .requires("tip_payment_program_pubkey")
+            .help("The public key of the authorized merkle-root uploader."),
+    )
+    .arg(
+        Arg::with_name("commission_bps")
+            .long("commission-bps")
+            .value_name("COMMISSION_BPS")
+            .takes_value(true)
+            .validator(|s| is_within_range(s, 0..=10_000usize))
+            .help("The commission validator takes from tips expressed in basis points."),
+    )
+    .arg(
         Arg::with_name("disable_multicast_shred_check")
             .long("disable-multicast-shred-check")
             .takes_value(false)
