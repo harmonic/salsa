@@ -24,3 +24,7 @@
 /votor/ @anza-xyz/consensus
 /votor-messages/ @anza-xyz/consensus
 /xdp/ @anza-xyz/networking
+
+# Temporal: this team approves every change (ruleset: Code owner review).
+# Kept last so it overrides the upstream owners above, who have no access here.
+* @harmonic/harmonic-validator-owners
