@@ -128,6 +128,7 @@ members = [
     "worker-pool",
     "xdp",
     "xdp-ebpf",
+    "harmonic-scheduler",
 ]
 
 exclude = [
@@ -160,6 +161,7 @@ val-op = [
     "solana-gossip",
     "solana-genesis",
     "solana-faucet",
+    "harmonic-scheduler",
 ]
 dcou = ["agave-ledger-tool"]
 # These bins are deprecated and will be removed in a future release
