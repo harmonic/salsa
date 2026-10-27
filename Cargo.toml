@@ -125,6 +125,7 @@ members = [
     "watchtower",
     "xdp",
     "xdp-ebpf",
+    "harmonic-scheduler",
 ]
 
 exclude = [

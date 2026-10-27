@@ -1,0 +1,84 @@
+[package]
+name = "harmonic-scheduler"
+description = "Harmonic scheduler"
+version = { workspace = true }
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+publish = false
+
+[dependencies]
+agave-scheduler-bindings = { workspace = true }
+agave-scheduler-handshake = { workspace = true }
+agave-scheduling-utils = { workspace = true }
+agave-transaction-view = { workspace = true }
+anyhow = { workspace = true }
+arc-swap = { workspace = true }
+arrayvec = { workspace = true }
+base64 = { workspace = true }
+bytes = { workspace = true }
+clap = { version = "4.6.7", features = ["derive"] }
+humantime = { workspace = true }
+jsonrpc-core = { workspace = true }
+jsonrpc-core-client = { workspace = true, features = ["ipc"] }
+nix = { workspace = true, features = ["fs"] }
+prost-types = { workspace = true }
+rtrb = "0.4.1"
+rts-alloc = { workspace = true }
+rustc-hash = "2.1.3"
+serde = { workspace = true }
+serde_json = { workspace = true }
+shaq = { workspace = true }
+slab = { workspace = true }
+smallvec = { workspace = true }
+solana-clock = { workspace = true }
+solana-pubkey = { workspace = true }
+solana-signature = { workspace = true }
+strum_macros = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
+tokio-util = { workspace = true }
+tonic = { workspace = true, features = ["transport", "tls-ring", "tls-webpki-roots"] }
+tracing = { workspace = true }
+tracing-appender = "0.2.5"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+validator-protos = { git = "https://github.com/harmonic/validator-protos.git", tag = "v0.2.1", version = "0.2.1", features = ["client"] }
+
+[dev-dependencies]
+bincode = { workspace = true }
+solana-hash = { workspace = true }
+solana-instruction = { workspace = true }
+solana-keypair = { workspace = true }
+solana-message = { workspace = true }
+solana-signature = { workspace = true, features = ["rand"] }
+solana-signer = { workspace = true }
+solana-transaction = { workspace = true, features = ["serde"] }
+tempfile = { workspace = true }
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_qualifications = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+# Opt-in lints from clippy's restriction group
+allow_attributes_without_reason = "deny"
+arithmetic_side_effects = "deny"
+dbg_macro = "deny"
+exit = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+let_underscore_must_use = "deny"
+multiple_unsafe_ops_per_block = "deny"
+panic = "deny"
+panic_in_result_fn = "deny"
+print_stderr = "deny"
+print_stdout = "deny"
+todo = "deny"
+undocumented_unsafe_blocks = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+unwrap_used = "deny"
+wildcard_enum_match_arm = "deny"

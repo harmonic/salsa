@@ -1,0 +1,8 @@
+#:tombi toml-version = "v1.0.0"
+
+allow-expect-in-tests = true
+allow-indexing-slicing-in-tests = true
+allow-panic-in-tests = true
+allow-unwrap-in-tests = true
+# A const's unwrap fails the build, never a run
+allow-unwrap-in-consts = true

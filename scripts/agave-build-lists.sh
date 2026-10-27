@@ -27,6 +27,7 @@ AGAVE_BINS_VAL_OP=(
   solana-gossip
   solana-genesis
   solana-faucet
+  harmonic-scheduler
 )
 
 AGAVE_BINS_DCOU=(
