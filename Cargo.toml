@@ -128,6 +128,7 @@ members = [
     "worker-pool",
     "xdp",
     "xdp-ebpf",
+    "harmonic-scheduler",
 ]
 
 exclude = [
@@ -166,6 +167,7 @@ val-op = [
     "solana-gossip",
     "solana-genesis",
     "solana-faucet",
+    "harmonic-scheduler",
 ]
 dcou = [
     "agave-ledger-tool",
