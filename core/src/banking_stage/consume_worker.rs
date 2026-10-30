@@ -127,6 +127,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
                 simulate: false,
                 drop_on_failure: false,
                 all_or_nothing: false,
+                defer_cost_admission: false,
             },
         );
         self.metrics.update_for_consume(&output);
@@ -408,6 +409,8 @@ pub(crate) mod external {
                 simulate,
                 drop_on_failure: message.flags & execution_message_flags::DROP_ON_FAILURE != 0,
                 all_or_nothing: message.flags & execution_message_flags::ALL_OR_NOTHING != 0,
+                // The external scheduler's batches are admitted by actual cost
+                defer_cost_admission: true,
             };
             if execution_flags.all_or_nothing && translation_results.len() != transactions.len() {
                 let response = self.execution_response(
@@ -1067,6 +1070,7 @@ pub(crate) mod external {
                 simulate: false,
                 drop_on_failure: false,
                 all_or_nothing: false,
+                defer_cost_admission: true,
             };
 
             let responses = ExternalWorker::consume_response_iterator(
@@ -1174,6 +1178,7 @@ pub(crate) mod external {
                 simulate: false,
                 drop_on_failure: false,
                 all_or_nothing,
+                defer_cost_admission: true,
             };
 
             assert_eq!(
