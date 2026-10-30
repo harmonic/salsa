@@ -12,6 +12,7 @@ use {
     },
     solana_runtime::bank::Bank,
     solana_runtime_transaction::transaction_with_meta::{TransactionWithMeta, writable_accounts},
+    solana_svm::transaction_processing_result::TransactionProcessingResult,
     solana_transaction_error::TransactionError,
 };
 
@@ -19,7 +20,7 @@ mod transaction {
     pub use solana_transaction_error::TransactionResult as Result;
 }
 
-type TransactionCostResults = SmallVec<
+pub(crate) type TransactionCostResults = SmallVec<
     [transaction::Result<TransactionCost>; super::consumer::TARGET_NUM_TRANSACTIONS_PER_BATCH],
 >;
 
@@ -39,11 +40,17 @@ impl QosService {
         bank: &Bank,
         transactions: &[Tx],
         pre_results: impl Iterator<Item = transaction::Result<()>>,
+        defer_cost_admission: bool,
     ) -> (TransactionCostResults, u64) {
         let transaction_costs =
             Self::compute_transaction_costs(&bank.feature_set, transactions.iter(), pre_results);
-        let (transactions_qos_cost_results, num_included) =
-            Self::select_transactions_per_cost(transactions.iter(), transaction_costs, bank);
+        // Deferred admission books actual costs after execution, in `try_add_actual_costs`
+        let (transactions_qos_cost_results, num_included) = if defer_cost_admission {
+            let num_included = transaction_costs.iter().filter(|cost| cost.is_ok()).count();
+            (transaction_costs, num_included)
+        } else {
+            Self::select_transactions_per_cost(transactions.iter(), transaction_costs, bank)
+        };
         let cost_model_throttled_transactions_count =
             transactions.len().saturating_sub(num_included) as u64;
 
@@ -201,6 +208,61 @@ impl QosService {
                 }
             });
         cost_tracker.sub_transactions_in_flight(num_included);
+    }
+
+    /// Add each processed transaction's actual cost to the cost tracker, in batch order.
+    ///
+    /// A transaction whose cost does not fit gets the cost tracker's error, and every processed
+    /// transaction after it gets `CommitCancelled`, since it may have read the rejected one's
+    /// writes. With `all_or_nothing`, a rejection also removes the costs already added and
+    /// cancels the transactions before it.
+    ///
+    /// The results are settled with `remove_or_update_costs`, as reserved costs are.
+    pub fn try_add_actual_costs<Tx: TransactionWithMeta>(
+        bank: &Bank,
+        transactions: &[Tx],
+        processing_results: &[TransactionProcessingResult],
+        all_or_nothing: bool,
+    ) -> TransactionCostResults {
+        // Compute costs before taking the cost tracker lock
+        let mut results: TransactionCostResults = transactions
+            .iter()
+            .zip(processing_results)
+            .map(|(tx, processing_result)| match processing_result {
+                Ok(processed_tx) => Ok(CostModel::calculate_cost_for_executed_transaction(
+                    tx,
+                    processed_tx.executed_units(),
+                    processed_tx.loaded_accounts_data_size(),
+                    &bank.feature_set,
+                )),
+                Err(err) => Err(err.clone()),
+            })
+            .collect();
+
+        let mut cost_tracker = bank.write_cost_tracker().unwrap();
+        let mut rejected = false;
+        for (tx, result) in transactions.iter().zip(results.iter_mut()) {
+            let Ok(cost) = result else {
+                continue;
+            };
+            if rejected {
+                *result = Err(TransactionError::CommitCancelled);
+            } else if let Err(err) = cost_tracker.try_add(cost, writable_accounts(tx)) {
+                *result = Err(TransactionError::from(err));
+                rejected = true;
+            }
+        }
+        if all_or_nothing && rejected {
+            for (tx, result) in transactions.iter().zip(results.iter_mut()) {
+                if let Ok(cost) = result {
+                    cost_tracker.remove(cost, writable_accounts(tx));
+                    *result = Err(TransactionError::CommitCancelled);
+                }
+            }
+        }
+        cost_tracker.add_transactions_in_flight(results.iter().filter(|cost| cost.is_ok()).count());
+
+        results
     }
 
     /// Remove reserved units for transaction batch that unsuccessfully recorded.
