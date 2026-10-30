@@ -1233,7 +1233,9 @@ impl ClusterInfo {
         let keypair = self.keypair();
         let node = {
             let mut node = self.my_contact_info.write().unwrap();
-            node.set_wallclock(timestamp());
+            // Strictly increasing, so a refresh within the same millisecond still overrides the last
+            let wallclock = timestamp().max(node.wallclock().saturating_add(1));
+            node.set_wallclock(wallclock);
             node.clone()
         };
         let node = CrdsValue::new(CrdsData::ContactInfo(node), &keypair);
@@ -3000,6 +3002,28 @@ mod tests {
         let d = ContactInfo::new_localhost(&keypair.pubkey(), timestamp());
         let cluster_info = ClusterInfo::new(d.clone(), keypair, SocketAddrSpace::Unspecified);
         assert_eq!(d.pubkey(), &cluster_info.id());
+    }
+
+    #[test]
+    fn test_back_to_back_address_updates_reach_crds() {
+        let keypair = Arc::new(Keypair::new());
+        let id = keypair.pubkey();
+        let node = ContactInfo::new_localhost(&id, timestamp());
+        let cluster_info = ClusterInfo::new(node, keypair, SocketAddrSpace::Unspecified);
+        // Most pairs of updates land within the same millisecond
+        for port in 10_000..10_100 {
+            let tpu = SocketAddr::from(([127, 0, 0, 1], port));
+            let tpu_forwards = SocketAddr::from(([127, 0, 0, 2], port));
+            cluster_info.set_tpu_quic(tpu).unwrap();
+            cluster_info.set_tpu_forwards_quic(tpu_forwards).unwrap();
+            let advertised = cluster_info.lookup_contact_info(&id, |node| {
+                (
+                    node.tpu(contact_info::Protocol::QUIC),
+                    node.tpu_forwards(contact_info::Protocol::QUIC),
+                )
+            });
+            assert_eq!(advertised, Some((Some(tpu), Some(tpu_forwards))));
+        }
     }
 
     #[test]
