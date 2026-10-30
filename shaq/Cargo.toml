@@ -1,0 +1,35 @@
+[package]
+name = "shaq"
+authors = ["Anza Maintainers <maintainers@anza.xyz>"]
+version = "4.4.0"
+description = "SPSC FIFO queue backed by shared memory for IPC"
+readme = "README.md"
+homepage = "https://anza.xyz/"
+repository = "https://github.com/anza-xyz/shaq"
+license = "Apache-2.0"
+edition = "2021"
+
+[target."cfg(unix)".dependencies]
+libc = { version = "0.2.180" }
+
+[target."cfg(windows)".dependencies]
+windows-sys = {
+    version = "0.61",
+    features = [
+        "Win32_Foundation",
+        "Win32_Security",
+        "Win32_Storage_FileSystem",
+        "Win32_System_Memory",
+    ]
+}
+
+[dev-dependencies]
+core_affinity = "0.8.3"
+ctrlc = "3.5.2"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+multiple_unsafe_ops_per_block = "deny"
+undocumented_unsafe_blocks = "deny"
