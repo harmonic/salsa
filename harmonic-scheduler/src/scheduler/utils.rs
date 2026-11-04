@@ -13,7 +13,9 @@ use {
     },
     rts_alloc::Allocator,
     smallvec::SmallVec,
+    solana_message::AccountKeys,
     solana_pubkey::Pubkey,
+    solana_runtime_transaction::transaction_with_meta::implicit_read_locks,
 };
 
 /// Each account a batch uses once, with whether it writes it
@@ -53,7 +55,10 @@ pub fn parse(
     let mut lookups = SmallVec::new();
     for (tx, ()) in batch.iter() {
         let view = UnsanitizedTransactionView::try_new_unsanitized(tx.data()).ok()?;
-        union_extend(&mut accounts, static_accounts(&view));
+        union_extend(
+            &mut accounts,
+            static_accounts(&view).chain(programdata_reads(view.static_account_keys())),
+        );
         if view.num_address_table_lookups() != 0 {
             // SAFETY: The batch's transactions are in this session's mapping,
             // which `allocator` is a handle of.
@@ -92,7 +97,10 @@ pub fn add_resolved(
     let writable = usize::from(checked.meta.writable);
     union_extend(
         accounts,
-        keys.iter().enumerate().map(|(i, key)| (*key, i < writable)),
+        keys.iter()
+            .enumerate()
+            .map(|(i, key)| (*key, i < writable))
+            .chain(programdata_reads(keys)),
     );
     true
 }
@@ -107,6 +115,14 @@ pub fn union_extend(accounts: &mut Accounts, keys: impl IntoIterator<Item = (Pub
         earlier.1 |= same && later.1;
         same
     });
+}
+
+/// The read locks the validator adds for `keys`: each key's loader-v3 programdata address
+///
+/// The validator drops them once the size-floor feature is rooted; holding them after only
+/// costs parallelism, while missing one fails the batch with `ACCOUNT_IN_USE`.
+pub fn programdata_reads(keys: &[Pubkey]) -> impl Iterator<Item = (Pubkey, bool)> + '_ {
+    implicit_read_locks(AccountKeys::new(keys, None)).map(|address| (address, false))
 }
 
 /// A transaction's static account keys, with whether it writes each

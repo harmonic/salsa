@@ -34,7 +34,9 @@ shaq = { workspace = true }
 slab = { workspace = true }
 smallvec = { workspace = true }
 solana-clock = { workspace = true }
+solana-message = { workspace = true }
 solana-pubkey = { workspace = true }
+solana-runtime-transaction = { workspace = true }
 solana-signature = { workspace = true }
 strum_macros = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
@@ -50,7 +52,7 @@ bincode = { workspace = true }
 solana-hash = { workspace = true }
 solana-instruction = { workspace = true }
 solana-keypair = { workspace = true }
-solana-message = { workspace = true }
+solana-loader-v3-interface = { workspace = true }
 solana-signature = { workspace = true, features = ["rand"] }
 solana-signer = { workspace = true }
 solana-transaction = { workspace = true, features = ["serde"] }

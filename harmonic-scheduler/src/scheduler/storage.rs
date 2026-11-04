@@ -5,7 +5,9 @@ use {
         CHECK_QUEUE_CAPACITY, MAX_BUNDLE_TXS,
         channel::BundleMeta,
         check::{CheckMeta, CheckResult, Checker, MAX_CHECK_TXS},
-        utils::{Accounts, add_resolved, free_batch, static_accounts, union_extend},
+        utils::{
+            Accounts, add_resolved, free_batch, programdata_reads, static_accounts, union_extend,
+        },
     },
     agave_scheduler_bindings::{
         TpuToPackMessage, check_message_flags,
@@ -375,7 +377,10 @@ impl<'a> Storage<'a> {
                 };
                 signatures.push(signature);
                 writable.push(view.total_writable_lookup_accounts());
-                union_extend(&mut accounts, static_accounts(&view));
+                union_extend(
+                    &mut accounts,
+                    static_accounts(&view).chain(programdata_reads(view.static_account_keys())),
+                );
                 true
             });
         // Only the crank may use the tip-payment program
@@ -527,7 +532,9 @@ mod tests {
         },
         agave_scheduling_utils::responses_region::resolve_responses_from_iter,
         solana_hash::Hash,
+        solana_instruction::{AccountMeta, Instruction},
         solana_keypair::Keypair,
+        solana_loader_v3_interface::get_program_data_address,
         solana_signer::Signer,
         solana_transaction::Transaction,
     };
@@ -733,6 +740,52 @@ mod tests {
             pop_all(&mut storage, &allocator),
             expected,
             "best first, the pruned gone"
+        );
+        assert_eq!(allocator.outstanding_allocation_bytes(), 0);
+    }
+
+    /// An entry locks what the validator does: a read on each key's programdata address,
+    /// unless the entry locks that address itself
+    #[test]
+    fn locks_programdata_addresses() {
+        let allocator = allocator();
+        let (mut checker, requests, replies) = checker(&allocator);
+        let mut storage = storage(1024, &allocator);
+        let program = Pubkey::new_unique();
+        let programdata = get_program_data_address(&program);
+        let signed = |instruction| {
+            let payer = Keypair::new();
+            let tx = Transaction::new_signed_with_payer(
+                &[instruction],
+                Some(&payer.pubkey()),
+                &[&payer],
+                Hash::default(),
+            );
+            TransactionPtr::from_slice(&bincode::serialize(&tx).unwrap(), &allocator).unwrap()
+        };
+        let uses = signed(Instruction::new_with_bytes(program, &[], vec![]));
+        let writes = signed(Instruction::new_with_bytes(
+            Pubkey::new_unique(),
+            &[],
+            vec![
+                AccountMeta::new_readonly(program, false),
+                AccountMeta::new(programdata, false),
+            ],
+        ));
+        storage.push_packets(&mut checker, [uses, writes]).unwrap();
+        answer(&allocator, &requests, &replies, |i| landable(i as u64 + 1));
+        checker.poll(|result| storage.checked(&result)).unwrap();
+
+        let mut locks = vec![];
+        while let Some((batch, accounts)) = storage.pop(|_| true) {
+            locks.extend(accounts.into_iter().filter(|(key, _)| *key == programdata));
+            // SAFETY: Taken out of the store, so the test's alone.
+            unsafe { free_batch(batch, &allocator) };
+        }
+        assert_eq!(
+            locks,
+            [(programdata, true), (programdata, false)],
+            "the writer pays more, so it comes out first; the user only reads"
         );
         assert_eq!(allocator.outstanding_allocation_bytes(), 0);
     }
